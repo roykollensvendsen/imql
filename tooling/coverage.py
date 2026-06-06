@@ -29,9 +29,14 @@ GREEN, RED, YELLOW, RESET = "\033[32m", "\033[31m", "\033[33m", "\033[0m"
 
 
 def is_extern_leaf(s: dict) -> bool:
-    # A leaf is opaque when its metric is bespoke (metric_kind 'other') and no family resolves it,
-    # or it is explicitly flagged extern.
-    return bool(s.get("extern")) or (s.get("metric_kind") == "other" and not s.get("metric_family"))
+    # A leaf is opaque when its metric is bespoke (metric_kind 'other') and no family resolves it
+    # (via the ontology), or it is explicitly flagged extern.
+    if s.get("extern"):
+        return True
+    if s.get("metric_kind") != "other":
+        return False
+    fam, _ = C.resolve_metric(s)
+    return not fam
 
 
 def main(argv):

@@ -13,7 +13,43 @@ signature(ir)   -> the normalized projection used for comparison (works on full 
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from lark import Lark, Transformer, v_args
+
+# --------------------------------------------------------------------------- #
+# Metric ontology resolution (the canonicalization layer).
+# The ontology is the canonical layer; instances keep the raw metric string
+# immutable. Consumers resolve metric_family/metric_specific at read time, so
+# canonicalization is non-destructive and reversible (edit the ontology, not the
+# instances). An instance's own metric_family (if ever materialized) wins.
+# --------------------------------------------------------------------------- #
+
+_ONTOLOGY = None
+
+
+def load_ontology() -> dict:
+    global _ONTOLOGY
+    if _ONTOLOGY is None:
+        import yaml
+        p = Path(__file__).resolve().parent.parent / "vocab" / "metric-ontology.yaml"
+        _ONTOLOGY = yaml.safe_load(p.read_text()) if p.exists() else {"aliases": {}, "families": {}}
+    return _ONTOLOGY
+
+
+def resolve_metric(signal: dict) -> tuple:
+    """Return (family, specific) for a scoring signal, resolving from the ontology when the
+    instance doesn't carry them. Known metric_kind enums map to themselves at the family level
+    is NOT assumed — only metric_kind == 'other' leaves are resolved via raw-string aliases."""
+    fam, spec = signal.get("metric_family"), signal.get("metric_specific")
+    if fam:
+        return fam, spec
+    if signal.get("metric_kind") == "other":
+        raw = (signal.get("metric_kind_other") or "").strip().lower()
+        hit = (load_ontology().get("aliases") or {}).get(raw)
+        if hit:
+            return hit.get("family"), hit.get("specific")
+    return fam, spec
 
 # --------------------------------------------------------------------------- #
 # Structural signature
@@ -38,9 +74,9 @@ def signature(ir: dict) -> dict:
     for s in (ir.get("scoring_signals") or []):
         if not isinstance(s, dict):
             continue
+        fam, spec = resolve_metric(s)
         signals.append((
-            s.get("metric_family"),
-            s.get("metric_specific"),
+            fam, spec,
             s.get("metric_kind"),
             bool(s.get("extern", False)),
             s.get("direction"),
@@ -151,11 +187,12 @@ def lift(ir: dict) -> str:
         if not isinstance(s, dict):
             continue
         mk = s.get("metric_kind") or "other"
+        fam, spec = resolve_metric(s)
         parts = [f"metric {mk}"]
-        if s.get("metric_family"):
-            parts.append(f"fam {s['metric_family']}")
-        if s.get("metric_specific"):
-            parts.append(f"spec {s['metric_specific']}")
+        if fam:
+            parts.append(f"fam {fam}")
+        if spec:
+            parts.append(f"spec {spec}")
         if s.get("metric_kind_other"):
             parts.append(f"raw {_esc(s['metric_kind_other'])}")
         if s.get("extern"):

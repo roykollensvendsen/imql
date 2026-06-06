@@ -1,0 +1,108 @@
+# Metric ontology — the 3-level metric vocabulary (raw -> specific -> family).
+# Single source for the IR's scoring_signals[].metric_family enum AND IMQL metric types.
+# Governed: a new family/specific/alias needs >=2x recurrence + CHANGELOG + VERSION bump
+# + re-canonicalize. Authored families-first; the raw level lives in the instances (immutable).
+
+version: "0.1.0"
+
+families:
+  classification_quality:
+    description: "Binary or categorical correctness & validity gates (FPR, pass-rate, integrity checks)."
+    specifics: [batch_integrity, data_integrity, fpr_complement, overfitting_indicator, spot_check_pass_rate, validation_pass_rate, validity_gate, validity_penalty]
+  content_quality:
+    description: "Quality/shape of generated content (compression, length, novelty, format)."
+    specifics: [compression_ratio, length_penalty, novelty]
+  cross_subnet_aggregate:
+    description: "A metric aggregated from other subnets' on-chain state (meta-oracle)."
+    specifics: [cross_subnet_incentive]
+  cryptographic_auth:
+    description: "Cryptographic validity / proof verification (zk-proofs, proof-of-inference)."
+    specifics: [proof_of_inference, proof_verification_rate, zk_proof]
+  data_freshness:
+    description: "Recency/desirability of submitted data."
+    specifics: [data_desirability, freshness]
+  financial_pnl:
+    description: "Trading/DeFi economic performance (PnL, liquidity-position quality, costs, refunds)."
+    specifics: [cash_allocation_penalty, liquidity_position, liquidity_range_width, lock_duration, pool_multiplier, refund_rate, tick_distance, token_cost, voter_weighted_liquidity]
+  generative_reward:
+    description: "RL / policy-optimization rewards (GRPO, environment rewards, generation discipline)."
+    specifics: [alignment_signal, generation_discipline, grpo_reward, rl_environment_reward]
+  hardware_authenticity:
+    description: "Proof the claimed hardware is genuine (remote attestation, device probes)."
+    specifics: [remote_attestation]
+  market_outcome:
+    description: "Correctness against a realized market outcome (directional calls)."
+    specifics: [directional_correctness]
+  model_architecture:
+    description: "Properties of the submitted model (parameter count, rarity, whitelist membership)."
+    specifics: [model_rarity, parameter_count, whitelist_membership]
+  predictive_contribution:
+    description: "A signal's marginal predictive value (e.g. meta-model saliency coefficient)."
+    specifics: [saliency_coefficient]
+  probabilistic_forecast:
+    description: "Proper scoring rules over a predicted distribution (e.g. CRPS)."
+    specifics: [crps]
+  risk_adjusted_ratio:
+    description: "Risk-adjusted return ratios (Sharpe/Sortino/Calmar/Omega) and drawdown/confidence measures."
+    specifics: [calmar_ratio, max_drawdown, omega_ratio, sharpe_ratio, sortino_ratio, statistical_confidence]
+  throughput_latency:
+    description: "Efficiency / speed of service."
+    specifics: [efficiency]
+  volume:
+    description: "Quantity of work/transactions."
+    specifics: [work_volume]
+
+# aliases: exact (lowercased) raw metric string -> {family, specific}. Reversible map;
+# canonicalize.py sets metric_family/metric_specific from here and never touches the raw.
+aliases:
+  "alignment_signal_per_token": { family: generative_reward, specific: alignment_signal }
+  "binary overfitting indicator: +1 if relative improvement on the miner's own data exceeds that on random data, else -1; ema-smoothed into a binary moving average": { family: classification_quality, specific: overfitting_indicator }
+  "binary_close_above_open": { family: market_outcome, specific: directional_correctness }
+  "calmar_ratio": { family: risk_adjusted_ratio, specific: calmar_ratio }
+  "cash_allocation_penalty": { family: financial_pnl, specific: cash_allocation_penalty }
+  "compression_ratio_threshold": { family: content_quality, specific: compression_ratio }
+  "confidential_compute_remote_attestation_pass": { family: hardware_authenticity, specific: remote_attestation }
+  "cryptographic_proof_of_inference": { family: cryptographic_auth, specific: proof_of_inference }
+  "data-integrity failure penalty": { family: classification_quality, specific: data_integrity }
+  "data_desirability_weight": { family: data_freshness, specific: data_desirability }
+  "data_freshness": { family: data_freshness, specific: freshness }
+  "deterministic_validity_gate": { family: classification_quality, specific: validity_gate }
+  "distance_from_pool_current_tick": { family: financial_pnl, specific: tick_distance }
+  "dollar_cost_of_tokens": { family: financial_pnl, specific: token_cost }
+  "efficiency": { family: throughput_latency, specific: efficiency }
+  "false_positive_rate_complement": { family: classification_quality, specific: fpr_complement }
+  "freshness_decay": { family: data_freshness, specific: freshness }
+  "generation_discipline": { family: generative_reward, specific: generation_discipline }
+  "grpo_reward": { family: generative_reward, specific: grpo_reward }
+  "length_penalty": { family: content_quality, specific: length_penalty }
+  "liquidity_range_width_penalty": { family: financial_pnl, specific: liquidity_range_width }
+  "liquidity_value_l_in_range": { family: financial_pnl, specific: liquidity_position }
+  "lock_duration_commitment": { family: financial_pnl, specific: lock_duration }
+  "locked_liquidity_amount": { family: financial_pnl, specific: liquidity_position }
+  "max_drawdown_penalty": { family: risk_adjusted_ratio, specific: max_drawdown }
+  "mean of the miner hotkey's on-chain incentive value across all other active subnets (netuid 0 and 73 excluded), scaled by 100000 to form the bmps.": { family: cross_subnet_aggregate, specific: cross_subnet_incentive }
+  "model_rarity_multiplier": { family: model_architecture, specific: model_rarity }
+  "model_whitelist_membership": { family: model_architecture, specific: whitelist_membership }
+  "novelty_uniqueness": { family: content_quality, specific: novelty }
+  "omega_ratio": { family: risk_adjusted_ratio, specific: omega_ratio }
+  "parameter_count": { family: model_architecture, specific: parameter_count }
+  "pool_multiplier": { family: financial_pnl, specific: pool_multiplier }
+  "position_liquidity": { family: financial_pnl, specific: liquidity_position }
+  "predictive contribution (absolute meta-model logistic coefficient |beta_j|) of a miner's signal to forecasting the realized forward price/return outcome": { family: predictive_contribution, specific: saliency_coefficient }
+  "probabilistic_forecast_crps": { family: probabilistic_forecast, specific: crps }
+  "proof_verification_rate": { family: cryptographic_auth, specific: proof_verification_rate }
+  "refund-rate multiplicative penalty": { family: financial_pnl, specific: refund_rate }
+  "response_length_and_greeting_keyword": { family: content_quality, specific: length_penalty }
+  "returned_batch_size_equals_sent": { family: classification_quality, specific: batch_integrity }
+  "rl_environment_reward": { family: generative_reward, specific: rl_environment_reward }
+  "sharpe_ratio": { family: risk_adjusted_ratio, specific: sharpe_ratio }
+  "sortino_ratio": { family: risk_adjusted_ratio, specific: sortino_ratio }
+  "spot_check_pass_rate": { family: classification_quality, specific: spot_check_pass_rate }
+  "statistical_confidence": { family: risk_adjusted_ratio, specific: statistical_confidence }
+  "total emission value across voted external subnets: sum(emission * alpha_price * subnet_weight).": { family: cross_subnet_aggregate, specific: cross_subnet_incentive }
+  "validation_pass_rate_multiplier": { family: classification_quality, specific: validation_pass_rate }
+  "validity_gate": { family: classification_quality, specific: validity_gate }
+  "validity_penalty_multiplier": { family: classification_quality, specific: validity_penalty }
+  "voter-weighted liquidity contribution (server-side; formula not in repo)": { family: financial_pnl, specific: voter_weighted_liquidity }
+  "work_volume_confidence_ramp": { family: volume, specific: work_volume }
+  "zk_proof_cryptographic_validity": { family: cryptographic_auth, specific: zk_proof }
