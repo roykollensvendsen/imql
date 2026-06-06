@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: active
@@ -307,3 +307,8 @@ provenance:
     - "netuid not declared in source (config-driven)."
     - "Whether emissions are effectively burned: no burn UID in code, but only top-10 receive weight so the long tail gets zero emission — not a formal burn_allocation."
     - "finetune_test_size (number of tasks actually evaluated) is a runtime config value, not a literal in source."
+
+composition:
+  shape: gated
+  overlays: [guards, state]
+  extern_count: 1   # provisional; coverage.py recomputes

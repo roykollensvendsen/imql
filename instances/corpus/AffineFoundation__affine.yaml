@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: mixed
@@ -339,3 +339,8 @@ provenance:
     treated as authoritative over that doc. The named constants (warmup 2, dethrone CP 10, losses 4/3,
     margins 0.02/0.03, PARETO_MARGIN 0.04, multiplier 1.5, anti-copy thresholds) are literals in
     affine/src/scorer/config.py and affine/src/anticopy/detector.py.
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: full_burn
@@ -305,3 +305,8 @@ provenance:
   unresolved:
     - "Exact COMPETITION_VERSION integer at runtime (derived as major*100+minor from __version__)."
     - "Adaptive-threshold update_adaptive_threshold math lives in storage/database.py; not fully read."
+
+composition:
+  shape: gated
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

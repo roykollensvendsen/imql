@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 subnet:
@@ -307,3 +307,8 @@ provenance:
     config/ constants file was found by locate.py; numeric constants come from
     call sites and function-default parameters, which conflict with the docs in
     several places (EMA alpha, reserved shares, 20- vs 40-minute interval).
+
+composition:
+  shape: pipeline
+  overlays: [burn, guards, state]
+  extern_count: 3   # provisional; coverage.py recomputes

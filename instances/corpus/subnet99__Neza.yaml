@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: active
@@ -332,3 +332,8 @@ provenance:
     Live mechanism is the modular neurons/validator path (score_manager + verify), not the
     template neza/validator/reward.py. Numeric constants taken verbatim from
     neza/configs/default_config.py and neurons/validator/core/config.py.
+
+composition:
+  shape: multiplex
+  overlays: [guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 # No scoring/reward code, no weight-setting call site, no constants/config exist in
@@ -97,3 +97,8 @@ provenance:
     - "No anti-gaming mechanisms specified despite TEE/Proof-of-Entanglement framing."
     - "No sub-competition structure or per-miner state described."
     - "netuid unknown; no concrete scoring metric, direction, or weights given."
+
+composition:
+  shape: pipeline
+  overlays: []
+  extern_count: 1   # provisional; coverage.py recomputes

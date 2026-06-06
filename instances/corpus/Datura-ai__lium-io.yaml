@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: mixed
@@ -283,3 +283,8 @@ provenance:
     PORTION_FOR_SYSBOX=0.2 are present in config but SKIP_COLLATERAL_PENALTY defaults True so
     uptime_multiplier is often 1. SCORE_PORTION_FOR_OLD_CONTRACT=0 and
     MACHINE_MAX_PRICE_RATE=2.0 verified literally.
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

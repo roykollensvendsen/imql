@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: active
@@ -241,3 +241,8 @@ provenance:
   unresolved:
     - "Exact total miner emission and per-competition reward-pool absolute value (README says total emission / number of competitions, but no literal constant)."
     - "Whether competition_weights.yml weights sum to one or are arbitrary (file is remote on HuggingFace, not in repo)."
+
+composition:
+  shape: multiplex
+  overlays: [guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

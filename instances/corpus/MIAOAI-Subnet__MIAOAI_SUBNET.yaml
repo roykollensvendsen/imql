@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: active
@@ -280,3 +280,8 @@ provenance:
     - "VERSION_KEY=2208 is a fixed version_key constant, not a tempo/cadence; no field for it."
     - "eval_interval (25), tempo, and the exact block tempo value are runtime/chain-derived; weights_interval is tempo*(1/3) but tempo is not a literal in source."
     - "calculate_reward (base_reward = blocks_completed/(720*2), quality_bonus_ratio 0.7, history_bonus_ratio 0.1) exists in scoring.py but is not called from the on-chain weight path; left out to avoid implying it drives emissions."
+
+composition:
+  shape: multiplex
+  overlays: [guards, state]
+  extern_count: 1   # provisional; coverage.py recomputes

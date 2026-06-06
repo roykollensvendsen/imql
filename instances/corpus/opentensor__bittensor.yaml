@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 # This repository is the Bittensor SDK / core library itself, NOT a subnet. It provides the
@@ -167,3 +167,8 @@ provenance:
     sources, or reward aggregation of its own. Fields that would describe a subnet mechanism are
     intentionally empty/null and listed in unresolved. confidence_overall is high because the absence
     of a mechanism here is itself well-evidenced by the README and the extrinsic code.
+
+composition:
+  shape: opaque
+  overlays: [guards]
+  extern_count: 0   # provisional; coverage.py recomputes

@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 # This corpus repo (condenses/neural-condense-subnet) contains only a thin README that
@@ -125,3 +125,8 @@ provenance:
     and a Grafana dashboard. The incentive mechanism (reward function, aggregation, and
     on-chain weight setting) is entirely outside this archive. All code-derived fields are
     left empty and listed under unresolved; confidence_overall is low.
+
+composition:
+  shape: opaque
+  overlays: []
+  extern_count: 0   # provisional; coverage.py recomputes

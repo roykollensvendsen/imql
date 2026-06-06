@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 subnet:
@@ -185,3 +185,8 @@ extensions:
     This is the Polaris *distributions* repo (installer binaries + download READMEs), separate
     from any validator/subnet source. The incentive mechanism itself is not present here; the
     extraction reflects only what the distribution docs assert about reward eligibility.
+
+composition:
+  shape: pipeline
+  overlays: [guards, state]
+  extern_count: 1   # provisional; coverage.py recomputes

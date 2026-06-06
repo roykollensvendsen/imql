@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: active
@@ -254,3 +254,8 @@ provenance:
     - "/subnet/netuid: netuid default is 1 in config (placeholder); the real mainnet
       netuid is not asserted in source. wandb project default 'SN66_Validator' hints at
       66 but is not authoritative."
+
+composition:
+  shape: pipeline
+  overlays: [guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

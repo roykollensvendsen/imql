@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: unknown
@@ -240,3 +240,8 @@ provenance:
     cartha-validator repo, which is not part of this corpus entry. Documented mechanism facts that
     ARE in this repo: 100,000 USDC minimum portfolio threshold (score=0 below), weekly epochs frozen
     Friday 00:00 UTC, multi-pool portfolios, and a per-miner pair status enum.
+
+composition:
+  shape: opaque
+  overlays: [guards, state]
+  extern_count: 1   # provisional; coverage.py recomputes

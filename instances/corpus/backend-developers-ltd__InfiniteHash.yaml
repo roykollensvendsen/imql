@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: partial_burn
@@ -254,3 +254,8 @@ provenance:
     - "subnet.netuid: read from env (BITTENSOR_NETUID = env.int(\"BITTENSOR_NETUID\")); no literal in repo (a 'dtao_netuid': 89 appears only in a simulator fixture)."
     - "Ban duration / expiry: BannedMiner records banned_at but no explicit expiry constant was found in the read files; docs say 'until the ban expires or is manually cleared' without a numeric TTL."
     - "BASE_MINER_SHARE (0.41) and AUCTION_MECHANISM_SHARE_FRACTION (1.0) are budget inputs, not aggregation constants; no schema home for emission-split fractions, so not placed in aggregation."
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

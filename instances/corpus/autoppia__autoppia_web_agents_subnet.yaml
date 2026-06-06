@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: mixed
@@ -384,3 +384,8 @@ provenance:
     - "Exact composition of eval_score from the autoppia_iwa AsyncStatefulEvaluator (HTML/backend/visual/LLM weighting) lives in the external autoppia_iwa dependency, not in this repo; only the binary >=1.0 gate is visible here."
     - "TASKS_PER_SEASON=50 is set in config but the live N-tasks-per-season value and whether all N run each round is governed by IPFS/consensus flow not fully traced."
     - "Whether BURN_AMOUNT_PERCENTAGE is overridden in production deployment (env) is unknown; default in source is 0.0 (no burn)."
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards, state]
+  extern_count: 1   # provisional; coverage.py recomputes

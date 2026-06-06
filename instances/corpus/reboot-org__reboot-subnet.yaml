@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: full_burn
@@ -189,3 +189,8 @@ provenance:
   unresolved:
     - "Whether validators run forward.py (owner-burn) or the dead reward.py path cannot be confirmed from source alone, but forward.py is the only forward implementation wired into the run loop."
     - "Exact tournament/sample query behavior is moot because forward.py never queries miners before zeroing rewards."
+
+composition:
+  shape: pipeline
+  overlays: [burn, state]
+  extern_count: 0   # provisional; coverage.py recomputes

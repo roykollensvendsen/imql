@@ -5,6 +5,29 @@ corresponding entry here citing the schema-stress observation (from `reports/sch
 that motivated it. Version is mirrored in `schema/VERSION` and in the `$id` of
 `incentive-mechanism.schema.json`.
 
+## 1.2.0 — IR evolution for IMQL
+
+The schema becomes the **Intermediate Representation** for IMQL (the declarative incentive-mechanism
+language). Three additive blocks; every existing instance stays valid (additive only ⇒ a `schema_version`
+bump to 1.2.0 and nothing else required).
+
+- **`composition` (new top-level object)** — the IMQL combinator structure of a mechanism:
+  `shape` (pipeline | multiplex | gated | multiplicative | overlay_only | opaque), `overlays`
+  (⊆ {burn, guards, state}), `extern_count`. Mostly derivable from existing fields
+  (`aggregation.composition`, `sub_competitions.structure`, `mechanism_status`, presence of
+  burn/guards/state); backfilled across the 189 instances by `tooling/derive-composition.py`.
+- **Metric triple on `scoring_signals[]`** — added `metric_family` (governed enum, ~19 abstract families
+  + other, single-sourced from `vocab/metric-ontology.yaml`) and `metric_specific` (nullable canonical
+  id). The raw level (`metric_kind` / `metric_kind_other`) is **untouched and immutable**, so
+  canonicalization (`tooling/canonicalize.py`) is non-destructive and reversible.
+- **`scoring_signals[].extern`** — boolean marking a scorer whose metric is an opaque, non-structural
+  hole (the irreducible long tail). Counted by `tooling/coverage.py`; the residual `extern` set IS the
+  measured long tail.
+
+Rationale: the census showed incentive mechanisms decompose into 4 combinators over ~50 reusable
+primitives, with the per-subnet judgment isolated to a single leaf (the metric). These fields make that
+structure first-class so IMQL can round-trip every instance and the long tail can be measured, not hidden.
+
 ## 1.1.0 — corpus refinement
 
 Driven by `reports/schema-stress-corpus.md` + `reports/corpus-extraction-summary.md` after extracting

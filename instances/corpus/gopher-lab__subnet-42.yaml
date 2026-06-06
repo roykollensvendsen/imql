@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: active
@@ -323,3 +323,8 @@ provenance:
     - "apply_kurtosis_custom default params (top_percentile=95, steepness=1.1, etc.) shape the final curve but are passed with defaults at the call site (weights.py:526); not captured as schema signal params."
     - "Exact min_interval_to_set_weights / blocks_since_last_update values come from the chain (fiber) at runtime, not from this repo."
     - "No mechanism_status confirmation of live burn vs scoring on-chain; inferred active from code with no burn allocation."
+
+composition:
+  shape: multiplex
+  overlays: [guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

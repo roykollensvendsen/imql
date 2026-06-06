@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: mixed
@@ -274,3 +274,8 @@ provenance:
     - "TopMiner.weight values and fetch_top_screener_ss58_for_competition selection logic (which miners become winners and their exact weights) are in the platform DB/query layer (app.db.interfaces) not included in this source tree."
     - "max_miners_for_weights default=1 (config) suggests a single winner takes the competition allocation, but the exact mapping from reported BatchChallengeScores to TopMiner.weight is not in this repo."
     - "Compression levels actually used at runtime: docs cite 20/40/60%; per-challenge compression_ratio is read from batch_challenge.compression_ratio (DB), not a literal in this source."
+
+composition:
+  shape: opaque
+  overlays: [burn, guards, state]
+  extern_count: 1   # provisional; coverage.py recomputes

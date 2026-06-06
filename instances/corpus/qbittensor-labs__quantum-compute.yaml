@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: partial_burn
@@ -258,3 +258,8 @@ provenance:
     - "Burn target address/UID: DISTRIBUTION_KEY_UID = 220 and get_burn_uid() exist but are not used in the live weight vector, so the actual burn recipient is not resolvable from the weight code."
     - "Whether the 90% burn is enforced on-chain (owner take / emission split) vs. via the weight vector — code path shown applies no burn fraction to weights."
     - "REG_MAINTAINENCE_INCENTIVE = 0.001 is defined but unused in _get_weights; only TOTAL_MAINTENANCE_INCENTIVE = 0.01 is applied."
+
+composition:
+  shape: pipeline
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

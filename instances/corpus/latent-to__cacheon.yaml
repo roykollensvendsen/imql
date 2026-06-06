@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: active
@@ -312,3 +312,8 @@ provenance:
     - "/scoring_signals/0/notes: max_gap=0.5 and top_k=5 are defaults in check_logprob_sanity; the live call site values were not traced."
     - "/aggregation/normalization: one-hot vector sums to 1.0 (sum_to_one) only because a single weight is 1.0; no explicit normalization call exists in source."
     - "Live mainnet emission behavior (actual king vs burn on chain) was not verified — assessed from source only."
+
+composition:
+  shape: gated
+  overlays: [guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

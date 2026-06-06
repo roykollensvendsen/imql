@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: partial_burn
@@ -302,3 +302,8 @@ provenance:
     - "Exact BittensorCallSubmission interval value (offchain worker cadence) not located in read sources."
     - "Marketplace alpha/era token payout splits (75/25) are a separate on-chain reward flow, not part of the subnet-75 weight vector; not modeled here."
     - "S3/GPU/compute per-type offline buffers (300 blocks) and 80% new-miner reduction documented in readme_weights.md but those ranking instances are disabled."
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards, state]
+  extern_count: 2   # provisional; coverage.py recomputes

@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: active
@@ -273,3 +273,8 @@ provenance:
     - "get_stake_score (max_stake=2000,min_stake=500) is defined but not observed combined into the returned reward; effect on emissions unconfirmed."
     - "process_weights_for_netuid min/max weight limits not inspected; any min_weight_floor from subtensor limits is unknown."
     - "Flat-payout branch 100/len(responses) when trustScore==0 — interaction with top-90% trimming and EMA not fully traced for emission share."
+
+composition:
+  shape: pipeline
+  overlays: [guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

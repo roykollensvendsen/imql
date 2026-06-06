@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: partial_burn
@@ -247,3 +247,8 @@ provenance:
   unresolved:
     - "Scoring/min_accuracy_floor (0.20) and top_miners_count (5) are config-driven defaults, not a fixed schema field; captured in aggregation notes."
     - "efficiency / partial_correctness / grid_similarity metrics are computed but unused by the validator's weight calc; not modeled as active scoring_signals."
+
+composition:
+  shape: pipeline
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

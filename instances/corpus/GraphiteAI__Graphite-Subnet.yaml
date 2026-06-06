@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: full_burn
@@ -299,3 +299,8 @@ provenance:
     a hardcoded one-hot weight vector on UID 20 in set_weights — classified full_burn. Numeric
     constants (0.2 floor, 0.6/0.4 portfolio split, channel weights, yield field weights, alpha
     0.01, epoch 300) all taken verbatim from source.
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards, state]
+  extern_count: 1   # provisional; coverage.py recomputes

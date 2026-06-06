@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 subnet:
@@ -372,3 +372,8 @@ provenance:
     sysbox_multiplier * uptime_multiplier, then incentive = mining_share * mining_score /
     total_mining_score. decay_rate 0.3 is the VerifyX network EMA alpha (a per-executor reputation
     signal), not a temporal decay on weights. Burn is a large fixed 0.91 emission share to burner UIDs.
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: active
@@ -258,3 +258,8 @@ provenance:
     - "epoch_length value (weight-setting tempo) is config.neuron.epoch_length from the bittensor base config; no literal default found in repo constants."
     - "Exact relationship between SCORING_WINDOW_BLOCKS=1200 (~4h) scoring cadence and epoch_length weight-set cadence not reconciled to one numeric tempo in source."
     - "min_allowed_weights / max_weight_limit are read from subtensor at runtime; no literal floor/cap in repo."
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

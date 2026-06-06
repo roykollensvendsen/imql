@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: unknown
@@ -326,3 +326,8 @@ provenance:
     Docs-only (whitepaper) extraction. All evidence quotes are from the 12-page PDF
     whitepaper (page/section refs in line_ref since the PDF has no line numbers) and
     the README. No code-derived fields could be filled.
+
+composition:
+  shape: multiplex
+  overlays: [guards]
+  extern_count: 2   # provisional; coverage.py recomputes

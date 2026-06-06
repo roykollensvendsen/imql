@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 subnet:
@@ -373,3 +373,8 @@ provenance:
     - "Exact live combination of synthetic-job scores with organic allowance scores: scoring README describes combining both per executor class, but the active engine.py path scores only allowance-paid (organic) jobs; the synthetic-vs-organic blend in production is not pinned to one code site."
     - "scoring_signals[1].weight: no literal numeric weight for the fixed-per-job organic score relative to allowance-seconds; left null."
     - "per_miner_state.status_values: no closed status enum literal extracted for miner lifecycle states."
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards, state]
+  extern_count: 1   # provisional; coverage.py recomputes

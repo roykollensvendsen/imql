@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: active
@@ -278,3 +278,8 @@ provenance:
     - "Whether the response-time decay/recovery ScoreManager score is ever consumed for on-chain weights (the committed path uses compute_throughput_weights only); relationship between the two score maps is not explicit in source."
     - "WEIGHTS_VERSION/version_key 11003 is set but its semantic meaning (version gating) is not documented in-repo."
     - "Exact Tempo value on mainnet (queried from chain at runtime, default fallback 360); not a fixed source constant for this subnet."
+
+composition:
+  shape: multiplex
+  overlays: [guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

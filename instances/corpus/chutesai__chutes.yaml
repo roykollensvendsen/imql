@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 # This repository (chutesai/chutes) is the client SDK + CLI for the chutes.ai platform.
@@ -185,3 +185,8 @@ provenance:
     incentive mechanism (validator scoring, aggregation, weight setting, emissions, any burn) is
     out of tree — per README it resides in rayonlabs/chutes-api. Code-derived incentive fields are
     therefore left empty/undocumented and listed in unresolved.
+
+composition:
+  shape: opaque
+  overlays: [guards]
+  extern_count: 0   # provisional; coverage.py recomputes

@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 # Live validators compute a USD-pegged points->weight allocation and redirect ALL
@@ -297,3 +297,8 @@ provenance:
     BURN_UID=189 inside calculate_weights -> partial_burn. The legacy fixed burn_modifier=0.9 in
     set_weights is commented out. No EMA smoothing (scores overwritten each cycle). Weights computed
     on a delayed E-2 epoch window and combined with validator-to-validator broadcasts.
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards, state]
+  extern_count: 1   # provisional; coverage.py recomputes

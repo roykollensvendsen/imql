@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 # Documented mechanism is winner-take-all (100% to seated winner). The live
@@ -369,3 +369,8 @@ provenance:
       validator.py reflect v6.0 server-coordinated derivation; scoring/__init__.py
       confirms the v5.x scorer was removed. The config dataclass is partly stale
       relative to the live daemon.
+
+composition:
+  shape: gated
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

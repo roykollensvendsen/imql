@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 # The documented mechanism is a sophisticated risk-adjusted trading-strategy ranking
@@ -286,3 +286,8 @@ provenance:
     - "Total Daily Reward Pool size and exact Top-50 cutoff are documented narratively only, not present as code constants."
     - "Risk Factor exact curve is an image (RankingRulesEN.md 253), not a literal in the read code."
     - "Whether owner_uid burn is permanent or a temporary measure — code unconditionally burns; docs (README roadmap) suggest centralized calc is temporary, but no toggle found."
+
+composition:
+  shape: gated
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

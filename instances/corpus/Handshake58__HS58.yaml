@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 # This repo (HS58) is the provider-template + docs + DRAIN-protocol hub for Bittensor
@@ -292,3 +292,8 @@ provenance:
     source, and both are documentation, not executable scoring code. README arrows
     (mojibake '?' chars are corrupted '->' separators in the original UTF-8).
     Confidence overall is low because the operative mechanism is not implemented here.
+
+composition:
+  shape: pipeline
+  overlays: [guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

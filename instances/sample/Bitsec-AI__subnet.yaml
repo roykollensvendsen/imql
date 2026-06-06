@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 subnet:
@@ -237,3 +237,8 @@ provenance:
     - "scoring_signal weights: reward() returns the raw Jaccard score directly; there is no explicit per-signal weighting constant to cite."
     - "source_version: no version tag found (__version__ = '0.0.0' is a template placeholder)."
     - "Severity and line_range matching are present in the protocol but marked TODO/unused in the live reward path."
+
+composition:
+  shape: pipeline
+  overlays: [guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: active
@@ -259,3 +259,8 @@ provenance:
   unresolved:
     - "Exact value of job.priority for synthetic jobs (store.py defaults priority to 1 via event.get('priority', 1); the live per-job priority assigned by the GJP is not in this repo)."
     - "EMA alpha/window not fixed constants: weight-setting alphas are CLI-configurable (positive_alpha 0.10 / negative_alpha 0.03 defaults), so no single canonical value."
+
+composition:
+  shape: multiplex
+  overlays: [guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

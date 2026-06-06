@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 # The documented scoring pipeline (color + price accuracy, decay-weighted EMA) is fully
@@ -291,3 +291,8 @@ provenance:
     Implementation is code-authoritative and the scoring pipeline is fully implemented. The dominant
     operative fact is the unconditional 80%-to-UID-147 weight override applied on every set_weights
     call, which makes the live mechanism partial_burn regardless of the documented merit scoring.
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

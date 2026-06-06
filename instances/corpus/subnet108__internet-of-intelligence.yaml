@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: active
@@ -260,3 +260,8 @@ provenance:
     - "Whether the README's TAOPump / agent-token / creator-user incentives are paid via any off-chain mechanism — no code implements them; only hardware/uptime scoring exists."
     - "Actual chain tempo for weight setting (epoch_length default 100 blocks is a CLI default, not confirmed against the netuid's on-chain tempo)."
     - "Whether process_weights_for_netuid max_weight_limit / min_allowed_weights impose a concrete numeric floor/cap (values read from chain at runtime, not literal in repo)."
+
+composition:
+  shape: multiplicative
+  overlays: [guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

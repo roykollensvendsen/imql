@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: partial_burn
@@ -273,3 +273,8 @@ provenance:
     - "/weight_setting/smoothing/alpha: no EMA/SMA of final reward in this repo (off-chain platform may smooth scores; not in source)."
     - "Screener gate values (SCREENER_1_THRESHOLD, SCREENER_2_THRESHOLD, PRUNE_THRESHOLD): env-configured, no literal in source."
     - "/scoring_signals/0/weight: per-env scores are not additively weighted (consumed by Pareto + WTA subset logic), so no numeric weight exists."
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

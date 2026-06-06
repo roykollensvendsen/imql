@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 subnet:
@@ -343,3 +343,8 @@ provenance:
     - "sub_competitions.count: number of concurrent briefs is dynamic (fetched from briefs server), no literal count in source."
     - "scoring_signals weights: the three signals are not combined by fixed numeric weights; revenue/minutes are alternatives by account type and brief-match is a gate, so per-signal 'weight' is not a literal constant."
     - "per-brief 'boost', 'cap', 'max_count', 'unique_identifier', 'start_date'/'end_date' are supplied per-brief by the off-repo briefs server, not as in-repo constants."
+
+composition:
+  shape: pipeline
+  overlays: [burn, guards]
+  extern_count: 0   # provisional; coverage.py recomputes

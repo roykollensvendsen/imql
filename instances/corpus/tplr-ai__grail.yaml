@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: partial_burn
@@ -308,3 +308,8 @@ provenance:
     - >-
       STOCHASTIC_CHECK_FAILURE_THRESHOLD=0.51 cited in docs/constants reference but
       its constant definition site was not opened; treated as documentation value.
+
+composition:
+  shape: gated
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: partial_burn
@@ -268,3 +268,8 @@ provenance:
     - "Whether the external scoring API actually implements the documented 100-point breakdown (technical/structure/content/narrative); server-side and not in repo."
     - "Live netuid: README and code default both say 92; whether deployed on mainnet 92 is unverified from repo."
     - "Violation/blacklist enforcement thresholds: blacklist and violations dicts are tracked but no add/penalty logic is present in the live run_step path."
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

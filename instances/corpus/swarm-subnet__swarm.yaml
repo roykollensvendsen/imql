@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: partial_burn
@@ -284,3 +284,8 @@ provenance:
   unresolved:
     - "Exact backend (swarm124.com) algorithm that selects the winner UID and produces per-UID weights is server-side and not in this repo; WINNER_TAKE_ALL constant is defined but its application happens in the backend, not in repo code."
     - "Whether HOVER_SEC=0 and GOAL_TOL precision-landing details affect scoring beyond the success/time terms shown."
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

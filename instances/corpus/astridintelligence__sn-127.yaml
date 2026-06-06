@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: partial_burn
@@ -276,3 +276,8 @@ provenance:
     - "arenaEmissionsPercent literal value (docs say 'currently at 25%') is configured server-side in the Arena API, not present as a code constant in this repo."
     - "Vault burn fraction (e.g. 75% to UID 0) comes from the external Vault API feed string (e.g. '0:75,164:25'); no literal in this repo."
     - "Active on-chain values for tempo / weightsSetRateLimit / commitRevealWeightsEnabled are queried live from chain at runtime; not statically known."
+
+composition:
+  shape: gated
+  overlays: [burn, guards]
+  extern_count: 0   # provisional; coverage.py recomputes

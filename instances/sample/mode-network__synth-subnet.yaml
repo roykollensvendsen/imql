@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 subnet:
@@ -318,3 +318,8 @@ provenance:
       line_ref: "16"
       quote: "Synth%20Whitepaper%20v1.pdf"
       confidence: high
+
+composition:
+  shape: multiplex
+  overlays: [guards, state]
+  extern_count: 1   # provisional; coverage.py recomputes

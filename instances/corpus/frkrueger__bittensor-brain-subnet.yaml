@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 # Reference/prototype implementation: statements DB and ground truth are hardcoded
@@ -301,3 +301,8 @@ provenance:
     branches (with/without ground truth) and an optional cross-validation reward all feed
     a single per-miner rewards_history that is averaged (last 10) and L1-normalized at
     weight-setting time.
+
+composition:
+  shape: multiplex
+  overlays: [guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

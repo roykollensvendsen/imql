@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 subnet:
@@ -307,3 +307,8 @@ provenance:
     Aggregation is fundamentally rank_based per task, then a fixed-weight linear combine
     across the 6 asset-task vectors, then EMA smoothing — so it is a hybrid the schema
     cannot fully express in a single 'method' enum.
+
+composition:
+  shape: multiplex
+  overlays: [guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

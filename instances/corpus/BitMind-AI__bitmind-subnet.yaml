@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: partial_burn
@@ -340,3 +340,8 @@ provenance:
     - "get_discriminator_rewards exists in rewards.py but is not invoked in validator update_scores; whether/where it is used on-chain is unresolved from this repo."
     - "Per-modality escrow distribution (video_escrow/image_escrow/audio_escrow) maps modality emission to fixed hotkeys; the downstream split among discriminator miners is not in this repo."
     - "scoring.moving-average-alpha default 0.05 in config is unused in the generator EMA path (which hardcodes 0.5); its intended use is unresolved."
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

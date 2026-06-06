@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: full_burn
@@ -375,3 +375,8 @@ provenance:
   extractor_notes: >-
     Documented multi-multiplier scoring is fully coded and active, but emission control burns
     100% to UID 0 at the captured constants, so mechanism_status is full_burn.
+
+composition:
+  shape: multiplicative
+  overlays: [burn, guards, state]
+  extern_count: 3   # provisional; coverage.py recomputes

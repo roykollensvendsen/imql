@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: partial_burn
@@ -316,3 +316,8 @@ provenance:
     Active mechanism with a large fixed burn (0.722). Two parallel winner-take-all
     competitions. burn_rate, nanobody_weight, override_uid, and all validity
     thresholds are literals in source/config and cited verbatim.
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards]
+  extern_count: 0   # provisional; coverage.py recomputes

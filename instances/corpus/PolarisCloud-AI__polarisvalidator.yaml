@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 # The documented reward mechanism (PoW-gated compute scoring) is fully implemented in
@@ -243,3 +243,8 @@ provenance:
     - "aggregation.temperature/decay_rate/min_weight_floor have no literal source values (no softmax temperature or geometric decay in code)."
     - "Per-signal additive weights are null because signals combine multiplicatively, not via an additive weighted sum."
     - "alpha penalty duration scaling factors beyond base_durations (moderate=12h) not fully transcribed."
+
+composition:
+  shape: multiplicative
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

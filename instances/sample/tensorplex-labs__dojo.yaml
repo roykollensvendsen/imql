@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 subnet:
@@ -313,3 +313,8 @@ provenance:
     - "Exact PvP discriminator scoring (1/totalDiscriminators regardless of vote) vs the doc-comment claim of -1 for trap: trap doc-comment says -1 but TrapPenalty constant is -0.4; code uses the -0.4 constant, so the -0.4 value is authoritative."
     - "VALIDATOR/PvV reference output trust model: classified as crowd, but the validator-provided output in PvV acts as a quasi-oracle reference; schema trust_model lacks a precise fit."
     - "Tempo / commit-reveal period are read from on-chain subnet hyperparams at runtime, not constants in repo — actual numeric tempo unknowable from source."
+
+composition:
+  shape: pipeline
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

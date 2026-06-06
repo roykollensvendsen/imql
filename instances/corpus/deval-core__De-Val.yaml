@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: active
@@ -379,3 +379,8 @@ provenance:
     and ranked into a fixed 5-tier incentive schedule with within-tier exponential decay by submit
     block. No burn allocation present. Numeric constants (alpha 0.8, alpha_decay 0.02, threshold 1.08,
     tier pools, exact_match_threshold 0.85, per-task reward/penalty weights) all taken verbatim.
+
+composition:
+  shape: multiplex
+  overlays: [guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

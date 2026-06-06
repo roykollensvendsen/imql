@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 # The on-chain weights are NOT computed from the local scoring code. The SetWeights task
@@ -301,3 +301,8 @@ provenance:
     - "PNL and Reasoning scoring implementations are documented only; no implementing code is present in this repo."
     - "The off-chain aggregation that produces api aggregated_weight (the actual on-chain weight source) is not in this repo."
     - "Whether emissions are ever burned is indeterminable from this repo (no burn code present)."
+
+composition:
+  shape: multiplex
+  overlays: [guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

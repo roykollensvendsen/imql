@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 # The live _set_weights path fetches a pre-computed weight snapshot from the
@@ -390,3 +390,8 @@ provenance:
     live _set_weights path uses a BeamCore-provided weight snapshot, so the documented
     in-repo exposure/SLA formulas are dormant. No emission burn exists; SLA penalties
     are redirected to subnet-owned Orchestrator UID #1 (SUBNET_ORCHESTRATOR_UID=1).
+
+composition:
+  shape: pipeline
+  overlays: [guards, state]
+  extern_count: 4   # provisional; coverage.py recomputes

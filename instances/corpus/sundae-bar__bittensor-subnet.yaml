@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: unknown
@@ -242,3 +242,8 @@ provenance:
     - "Live mechanism_status (active/burn/dormant) cannot be confirmed without validator code."
     - "Rubric metric weights (35/25/20/20) are explicitly an illustrative sample, not a fixed network constant."
     - "Emission cap '70% of revenue' is a worked dollar example, not a confirmed protocol constant, so not encoded as a numeric field."
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards]
+  extern_count: 0   # provisional; coverage.py recomputes

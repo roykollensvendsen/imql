@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: partial_burn
@@ -224,3 +224,8 @@ provenance:
   unresolved:
     - "README claims scoring is based on fees received in the past 24 hours, but the code (taofi_subgraph.calculate_reward_score) scores by current in-range liquidity L at a single block, not 24h accumulated fees; the documented and implemented metrics diverge."
     - "Whitelisted LP miner (WHITELISTED_LP_MINER hotkey) is awarded the sum of all unclaimed position scores; the rationale/governance of this special-casing is not documented."
+
+composition:
+  shape: pipeline
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

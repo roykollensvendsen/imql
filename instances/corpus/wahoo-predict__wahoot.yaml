@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: partial_burn
@@ -234,3 +234,8 @@ provenance:
     - "subnet.netuid not stated in source (NETUID read from env, default 0)."
     - "EMA alpha and tempo are computed at runtime from constants, not stored as literals; left null."
     - "Exact API field semantics for win_rate / total_volume_usd not defined in repo (provided by external Wahoo API)."
+
+composition:
+  shape: gated
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

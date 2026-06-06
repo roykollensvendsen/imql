@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 # Two mechanisms (mechid 0 = liquidation auctions, mechid 1 = price oracle), both with
@@ -286,3 +286,8 @@ provenance:
     - "README mech1 reward tiers (1.0/0.85/0.0 by accuracy band) do not match the code formula (2.0 - diff_percent/0.05); code treated as authoritative."
     - "Auction reward header docstring claims up to 2x bonus, but BONUS_THRESHOLD=0.20 caps the bonus at +0.2 (max 1.2); code value used."
     - "burn_weight_percent is hardcoded to 0 at both call sites with a TODO to source it from an API; whether burn is active in production is unknown from the repo."
+
+composition:
+  shape: multiplex
+  overlays: [guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

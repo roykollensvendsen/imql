@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: partial_burn
@@ -278,3 +278,8 @@ provenance:
     - "Auction parameters (target_cards, target_price, max_price, min_cluster_size, burn_distribution, tao_price, emission pool fractions) are served dynamically by the off-chain tower API and are not literal constants in this repo; only example values appear in docs/miner/miner.md."
     - "The exact fraction of emission burned vs. paid is data-dependent (residual U16MAX - sumScores) and not a fixed constant; cannot be pinned without live auction data."
     - "Number of concurrent sub-competition auctions is dynamic (keys of c.Auctions from the tower API); not fixed in source."
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards]
+  extern_count: 2   # provisional; coverage.py recomputes

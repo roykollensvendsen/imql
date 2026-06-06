@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: partial_burn
@@ -230,3 +230,8 @@ provenance:
     - "Whether the live subnet currently registers >200 LP miners (so the rank-200 cutoff actually fires) is not determinable from source."
     - "The README states scoring is by 'fees received in the past 24 hours' but the code scores by in-range liquidity value L, not realized fees; the realized-fees variant is not present in the read code (BLOCK_ONE_DAY_AGO is defined but unused)."
     - "Exact set_weights cadence in wall-clock blocks vs the 300s loops is governed by epoch_length default 25 (12s blocks) but the loop also gates on MAIN_LOOP_FREQUENCY; the effective on-chain tempo is not pinned to a single constant."
+
+composition:
+  shape: pipeline
+  overlays: [burn, guards, state]
+  extern_count: 1   # provisional; coverage.py recomputes

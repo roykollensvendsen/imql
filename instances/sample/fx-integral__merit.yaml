@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 subnet:
@@ -295,3 +295,8 @@ provenance:
     simplified proportional normalization (score/total) that does NOT match the
     validator's actual S-curve + burn logic; the validator code was treated as
     authoritative.
+
+composition:
+  shape: pipeline
+  overlays: [burn, guards, state]
+  extern_count: 1   # provisional; coverage.py recomputes

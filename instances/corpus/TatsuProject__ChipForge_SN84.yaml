@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: mixed
@@ -282,3 +282,8 @@ provenance:
     - "winner_baseline_score numeric value is server-provided at runtime, not a source constant."
     - "BURN_AFTER_WINNER_DAYS default 0; its operative effect not fully traced in scoring."
     - "docs/Technical_Guide.md appears copied from another subnet (references Document_Understanding_Subnet, netuid 54/236) and is unreliable for this subnet's netuid/params."
+
+composition:
+  shape: gated
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

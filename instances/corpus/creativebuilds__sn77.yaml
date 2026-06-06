@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 # The repo's validator does NOT compute miner scores locally. It fetches pre-computed
@@ -220,3 +220,8 @@ provenance:
     - >-
       /per_miner_state: vote-cooldown and any per-miner reputation/ledger state are maintained
       off-repo on the central server; not citable from this source tree.
+
+composition:
+  shape: multiplex
+  overlays: [guards]
+  extern_count: 1   # provisional; coverage.py recomputes

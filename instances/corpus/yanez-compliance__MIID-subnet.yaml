@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: partial_burn
@@ -350,3 +350,8 @@ provenance:
     - "Exact on-chain weight-setting cadence/tempo (tempo_or_interval) not specified in repo constants; set_weights call uses wait_for_finalization=False."
     - "Whether UAV_grading default is True (config.py) or False (forward.py getattr fallback) at runtime is ambiguous between config default=True and the getattr default in forward.py."
     - "Trust model and integrity of the off-chain Flask reputation source (rep_data) cannot be established from this repo."
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

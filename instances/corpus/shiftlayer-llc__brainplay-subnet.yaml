@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: partial_burn
@@ -292,3 +292,8 @@ provenance:
   unresolved:
     - "netuid: README shows multiple example netuids (117 mainnet, 335 testnet); no canonical netuid constant in code."
     - "minimum_stake_requirement default is 0, so stake-weighting is effectively off unless configured at runtime."
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

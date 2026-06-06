@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: partial_burn
@@ -233,3 +233,8 @@ provenance:
   unresolved:
     - "Live mechanism_status (whether validators actually run this code or fully burn) is not verifiable from the repo; inferred partial_burn from the hardcoded burner_weight=0.9."
     - "subnets_to_check fallback when the API fails resolves to empty dict (no hardcoded list present in source despite a comment referencing one)."
+
+composition:
+  shape: pipeline
+  overlays: [burn, guards, state]
+  extern_count: 1   # provisional; coverage.py recomputes

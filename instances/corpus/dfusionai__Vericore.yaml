@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: partial_burn
@@ -299,3 +299,8 @@ provenance:
     - "/aggregation/burn_allocation/fraction: docs (scoring_mechanics_subnet_70.md line 159) state 50% emission control, but code constant EMISSION_CONTROL_PERC = 0.80 — code value used; discrepancy unresolved."
     - "scoring_signals weights are null (multiplicative/composite pipeline, no additive per-signal weights in code)."
     - "Statement-context assessment signals (sentiment, conviction, source_credibility, etc.) are extracted and stored but not observed entering final_score formula."
+
+composition:
+  shape: pipeline
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

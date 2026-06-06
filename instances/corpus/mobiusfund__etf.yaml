@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: mixed
@@ -317,3 +317,8 @@ provenance:
     - "Live burn fraction (ratio[0]) and ETF/IMM split: fetched at runtime from IMM_RATIO API; README states ETF=0.75/IMM=0.25 but no literal burn constant exists in source."
     - "IMM rolling-window length: README says 'currently 5 days' but the value is fetched from IMM_WINDOW API (json), not a source constant."
     - "Whitepaper/IMM PDF internals not parsed (binary PDFs in Docs/); FAQ and README text used instead."
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards]
+  extern_count: 1   # provisional; coverage.py recomputes

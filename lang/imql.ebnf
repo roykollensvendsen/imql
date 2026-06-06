@@ -1,0 +1,109 @@
+(* IMQL — Incentive-Mechanism Query/composition Language
+   Grammar v0.1 (targets IR schema 1.2.0). EBNF; implementable with lark.
+
+   Design: no control flow. The four empirical combinators (pipeline, multiplex,
+   gate/product, and the overlay prefix) are the ONLY composition operators. Every
+   primitive node name is a closed enum drawn from the IR schema. The leaf `metric`
+   is the only per-subnet hole: a family(specific) pair, or an `extern "raw"` hatch. *)
+
+mechanism   = "mechanism" , ident , "{" ,
+                 header_field* ,
+                 overlay* ,
+                 combinator ,
+              "}" ;
+
+(* ---- header (maps to subnet/task/mechanism_status) ---- *)
+header_field = netuid | task | submission | status | doc ;
+netuid       = "netuid"     , ":" , int ;
+task         = "task"       , ":" , string ;
+submission   = "submission" , ":" , "[" , [ ident { "," ident } ] , "]" ;
+status       = "status"     , ":" , status_val ;   (* active|partial_burn|full_burn|dormant|mixed|unknown *)
+doc          = "doc"        , ":" , doc_val ;       (* code_authoritative|docs_only|... *)
+
+(* ---- overlays: three orthogonal decorators (composition.overlays) ---- *)
+overlay      = burn_overlay | guards_overlay | state_overlay ;
+burn_overlay = "@burn"   , "{" , burn_arg { "," burn_arg } "}" ;
+burn_arg     = ( "uid" , ":" , ( int | string ) )
+             | ( "fraction" , ":" , ( number | "dynamic" ) ) ;
+guards_overlay = "@guards" , "{" , guard+ , "}" ;
+guard        = guard_kind , [ "{" , guard_prop { "," guard_prop } "}" ] ;
+guard_prop   = "enforcement" , ":" , enforce_val ;  (* elimination|penalty|rejection|barrier|other *)
+state_overlay = "@state" , "{" , state_kind { "," state_kind } "}" ;
+
+(* ---- combinators (composition.shape) ---- *)
+combinator   = pipeline | multiplex | gate | product | leaf ;
+
+pipeline     = "pipeline" , "{" ,
+                 "score"     , ":" , scorer ,
+                 "aggregate" , ":" , aggregator ,
+                 [ "smooth"  , ":" , smoother ] ,
+                 "emit"      , ":" , weight_setter ,
+              "}" ;
+
+multiplex    = "multiplex" , "<" , mux_structure , ">" , "{" ,
+                 track+ ,
+                 [ "combine" , ":" , aggregator ] ,
+              "}" ;
+track        = "track" , string , [ "weight" , number ] , ":" , combinator ;
+
+gate         = "gate" , "{" ,
+                 "when" , ":" , ( guard | predicate )+ ,
+                 "then" , ":" , combinator ,
+              "}" ;
+product      = "product" , "(" , combinator { "," , combinator } , ")" ;  (* multiplicative; any 0 kills *)
+
+leaf         = scorer ;   (* degenerate: a bare metric is a mechanism *)
+
+(* ---- scorer = metric (the typed hole) + optional ground-truth ---- *)
+scorer       = metric_expr , [ "from" , groundtruth ] , [ scorer_props ] ;
+scorer_props = "{" , scorer_prop { "," scorer_prop } "}" ;
+scorer_prop  = ( "direction"     , ":" , direction_val )
+             | ( "weight"        , ":" , ( number | "null" ) )
+             | ( "normalization" , ":" , norm_val ) ;
+
+metric_expr  = "metric" , family , "(" , ( specific | extern_hole ) ")"
+             | extern_hole ;                              (* fully opaque leaf *)
+extern_hole  = "extern" , string ;                        (* the irreducible long tail *)
+family       = ident ;   (* a metric_family enum value (vocab/metric-ontology.yaml) *)
+specific     = ident ;   (* a canonical metric_specific id *)
+
+groundtruth  = "groundtruth" , gt_kind , [ "{" , gt_prop { "," gt_prop } "}" ] ;
+gt_prop      = ( "trust_model" , ":" , trust_val )
+             | ( "source"      , ":" , string ) ;
+
+(* ---- primitive operators (closed enums from the IR) ---- *)
+aggregator   = "aggregator" , agg_method , [ "{" , agg_prop { "," agg_prop } "}" ] ;
+agg_prop     = ( "normalization"    , ":" , agg_norm_val )
+             | ( "temperature"      , ":" , number )
+             | ( "decay_rate"       , ":" , number )
+             | ( "min_weight_floor" , ":" , number ) ;
+
+smoother     = "smoother" , ( "none"
+                            | "ema" , "(" , "alpha" , ":" , number , ")"
+                            | "sma" , "(" , "window" , ":" , int , ")"
+                            | "other" ) ;
+
+weight_setter = "set_weights" , [ "{" , ws_prop { "," ws_prop } "}" ]
+              | "commit_reveal" , [ "{" , ws_prop { "," ws_prop } "}" ] ;
+ws_prop      = ( "cadence" , ":" , cadence_val )
+             | ( "tempo"   , ":" , ( string | int ) ) ;
+
+predicate    = string ;   (* free-text gate condition; opaque *)
+
+(* ---- terminals / closed vocabularies (validated against the IR enums) ---- *)
+guard_kind    = ident ;  (* anti_gaming.kind *)
+state_kind    = ident ;  (* per_miner_state.state_kinds *)
+gt_kind       = ident ;  (* ground_truth_sources.kind *)
+agg_method    = ident ;  (* aggregation.method *)
+mux_structure = ident ;  (* sub_competitions.structure *)
+status_val    = ident ;  doc_val = ident ;  enforce_val = ident ;
+direction_val = ident ;  norm_val = ident ;  agg_norm_val = ident ;
+trust_val     = ident ;  cadence_val = ident ;
+
+ident        = letter , { letter | digit | "_" } ;
+string       = '"' , { ? any char except unescaped quote ? } , '"' ;
+int          = [ "-" ] , digit+ ;
+number       = [ "-" ] , digit+ , [ "." , digit+ ] ;
+letter       = "a".."z" | "A".."Z" ;
+digit        = "0".."9" ;
+(* comments: '#' to end of line. whitespace insignificant. *)

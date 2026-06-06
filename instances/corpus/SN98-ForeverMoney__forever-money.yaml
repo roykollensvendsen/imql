@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: mixed
@@ -280,3 +280,8 @@ provenance:
     - "Exact production PROFIT_RATIO value (env-configurable; code default 1.0)."
     - "Whether revenue is consistently positive on mainnet (determines partial vs full burn in practice)."
     - "smooth_beta parameter is accepted but explicitly ignored in score_pol_strategy; no additive scoring_signals weight from it."
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

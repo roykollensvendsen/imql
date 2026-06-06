@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: active
@@ -240,3 +240,8 @@ provenance:
     - "Exact container scoring logic (signal stubbed, not implemented)."
     - "min_weight_stake (1000.0) role in weight setting not traced to a use site."
     - "Whether the hardcoded fallback uid 207 corresponds to a sustained burn in practice."
+
+composition:
+  shape: pipeline
+  overlays: [guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

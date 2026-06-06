@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: mixed
@@ -273,3 +273,8 @@ provenance:
   unresolved:
     - "subnet.netuid: not hardcoded in repo; read from env NETUID (common/settings.py:88)."
     - "Live burn_ratio / multi_coldkey_penalty / suspicious_uids values come from a remote meta-config not present in the repo; cannot determine current operative burn state."
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

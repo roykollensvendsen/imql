@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 # The validator runs no scoring code. It hardcodes weight 1.0 to a single UID (251)
@@ -162,3 +162,8 @@ provenance:
     Two-file repo (validator.py + README.md). No reward module, config, or scoring code.
     The validator is a hardcoded winner-take-all to a single uid. Code comment says 'uid 0'
     but the literal mask targets uid 251. Treated as dormant: no documented scoring drives weights.
+
+composition:
+  shape: pipeline
+  overlays: []
+  extern_count: 0   # provisional; coverage.py recomputes

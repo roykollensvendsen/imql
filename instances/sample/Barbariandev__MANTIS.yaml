@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 subnet:
@@ -279,3 +279,8 @@ provenance:
     - "source_version: no git tag / version string present in the repo."
     - "BURN_PCT documentation conflict: README Key Parameters table lists 0.30 for UID 0 while config.py defines BURN_PCT = 0.45; code value used."
     - "TLOCK lock duration (TLOCK_DEFAULT_LOCK_SECONDS=30 / suggested 3600) defines the embargo/maturation window but exact enforced Drand-round lag per payload is set by miners, not a single fixed constant."
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards, state]
+  extern_count: 1   # provisional; coverage.py recomputes

@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: partial_burn
@@ -276,3 +276,8 @@ provenance:
   unresolved:
     - "Constitution topic weights and verified-user influence weights are hosted in the external NuanceNetwork/constitution repo (not in this tree); their literal numeric values are not extractable here."
     - "Quality assessment and sentiment prompts are fetched from the external constitution store at runtime; exact prompt text/thresholds beyond the inline sentiment prompt are not in-repo."
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards]
+  extern_count: 0   # provisional; coverage.py recomputes

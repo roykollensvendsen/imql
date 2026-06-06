@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: active
@@ -215,3 +215,8 @@ provenance:
       quote: "- [Mechanism](docs/mechanism.md) – Detailed explanation of our mechanism."
   unresolved:
     - "Exact miner-selection probability constants are documented (r_ref=1.5) only in docs/mechanism.md; MinerSelector source not read to confirm literal values."
+
+composition:
+  shape: multiplex
+  overlays: [guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

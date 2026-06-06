@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 subnet:
@@ -323,3 +323,8 @@ provenance:
     - "burn_allocation: no burn / owner-take mechanism appears in the weight-setting code."
     - "aggregation.decay_rate and min_weight_floor: not expressed as literal constants (EMA uses alpha 0.2/0.3, not a decay_rate; no explicit weight floor)."
     - "out_of_domain_alpha=0.2 is hardcoded in neurons/validator.py (self.out_of_domain_alpha = 0.2) but the schema has no dedicated field for this secondary EMA rate."
+
+composition:
+  shape: pipeline
+  overlays: [guards, state]
+  extern_count: 2   # provisional; coverage.py recomputes

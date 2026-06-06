@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://academia.bittensor/incentive-mechanism/1.1.0",
+  "$id": "https://academia.bittensor/incentive-mechanism/1.2.0",
   "title": "Bittensor Incentive Mechanism",
   "description": "A formal, machine-checkable description of a Bittensor subnet's incentive mechanism. Used both descriptively (reverse-engineered from an existing subnet into an 'extracted' instance) and prescriptively (authored from a blank template into an 'authored' instance to design a new mechanism). See spec/ for the field reference.",
   "type": "object",
@@ -33,7 +33,14 @@
           "type": "string",
           "enum": ["loss", "accuracy", "regression_error", "pnl", "win_rate", "similarity", "engagement", "uptime", "hardware_spec", "llm_judgment", "vlm_judgment", "human_judgment", "throughput", "latency", "risk_adjusted_ratio", "probabilistic_forecast", "predictive_contribution", "reward", "composite", "volume", "other"]
         },
-        "metric_kind_other": { "type": "string", "description": "Required when metric_kind == 'other'." },
+        "metric_kind_other": { "type": "string", "description": "Required when metric_kind == 'other'. The RAW level of the 3-level metric vocabulary; immutable, set by extraction, never overwritten by canonicalization." },
+        "metric_family": {
+          "type": "string",
+          "description": "Abstract metric FAMILY (the IMQL metric type). Governed enum, single-sourced from vocab/metric-ontology.yaml. Set by tooling/canonicalize.py, not by extraction.",
+          "enum": ["loss_eval", "classification_quality", "similarity_match", "risk_adjusted_ratio", "financial_pnl", "market_outcome", "probabilistic_forecast", "predictive_contribution", "generative_reward", "content_quality", "engagement", "throughput_latency", "uptime_availability", "hardware_authenticity", "cryptographic_auth", "model_architecture", "data_freshness", "cross_subnet_aggregate", "volume", "other"]
+        },
+        "metric_specific": { "type": ["string", "null"], "description": "Canonical SPECIFIC metric id (e.g. 'sharpe_ratio', 'f1_score', 'crps'), null if unresolved. The middle level; canonicalized from metric_kind_other via the ontology." },
+        "extern": { "type": "boolean", "description": "True when this scorer's metric is an opaque, non-structural hole (the irreducible long tail). Counted by tooling/coverage.py. The judgment is hand-written, not generable." },
         "direction": {
           "type": "string",
           "enum": ["higher_is_better", "lower_is_better", "target_band"],
@@ -295,6 +302,27 @@
       },
       "required": ["confidence_overall", "evidence"],
       "additionalProperties": false
+    },
+    "composition": {
+      "type": "object",
+      "description": "The IMQL combinator structure of the mechanism — how it is built from primitives. Mostly derivable from aggregation.composition, sub_competitions.structure, mechanism_status, and the presence of burn/guards/state. This block is the bridge between the descriptive schema and the IMQL language.",
+      "properties": {
+        "shape": {
+          "type": "string",
+          "enum": ["pipeline", "multiplex", "gated", "multiplicative", "overlay_only", "opaque"],
+          "description": "Top-level combinator. 'pipeline' = smoother(aggregator(scorer)); 'multiplex' = N parallel tracks (sub_competitions); 'gated'/'multiplicative' = conditional/product composition; 'overlay_only' = burn/guards/state with no live scorer; 'opaque' = undocumented, the whole mechanism is one extern."
+        },
+        "overlays": {
+          "type": "array",
+          "description": "Orthogonal decorators present: burn envelope, anti-gaming guard bundle, per-miner state machine.",
+          "items": { "type": "string", "enum": ["burn", "guards", "state"] }
+        },
+        "extern_count": { "type": ["integer", "null"], "description": "Number of opaque (extern) leaves in this mechanism. 0 = fully structural. Mirrors the count of scoring_signals with extern:true." },
+        "notes": { "type": "string" },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      },
+      "required": ["shape"],
+      "additionalProperties": false
     }
   },
   "properties": {
@@ -365,6 +393,7 @@
     "sub_competitions": { "$ref": "#/$defs/subCompetitions" },
     "per_miner_state": { "$ref": "#/$defs/perMinerState" },
     "documentation": { "$ref": "#/$defs/documentation" },
+    "composition": { "$ref": "#/$defs/composition" },
     "provenance": { "$ref": "#/$defs/provenance" },
     "extensions": { "$ref": "#/$defs/extensions" }
   },

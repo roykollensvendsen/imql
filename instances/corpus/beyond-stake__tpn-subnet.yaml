@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: partial_burn
@@ -349,3 +349,8 @@ provenance:
       netuid 65 in production cannot be confirmed from source alone; the constant
       BURN_WEIGHT=0.8 is the only evidence. mechanism_status set to partial_burn
       on that basis.
+
+composition:
+  shape: multiplicative
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

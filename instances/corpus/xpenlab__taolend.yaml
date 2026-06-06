@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 # The validator does not compute scores locally. It GETs a precomputed weight vector
@@ -268,3 +268,8 @@ provenance:
     constants from the README table were intentionally NOT placed in structured numeric fields since
     they describe an off-chain process not present in this repo; only the 20/80 documented split was
     recorded as signal weights.
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

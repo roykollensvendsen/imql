@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: partial_burn
@@ -382,3 +382,8 @@ provenance:
     - "Exact live emission_burn value on-chain (default 50%, but read from SubnetConfig at runtime; may differ)."
     - "Live netuid at runtime (config default 0; README states Subnet 96 — assumed authoritative)."
     - "generation_quality input source for the utility signal (passed in by caller; default 1.0)."
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

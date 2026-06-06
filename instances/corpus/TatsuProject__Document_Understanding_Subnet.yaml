@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: mixed
@@ -293,3 +293,8 @@ provenance:
   unresolved:
     - "doc-parse parsing_score weighting 0.3/0.7 vs single-task accuracy-only: time_score is fully dead code (final_score_calculation commented out everywhere), so the time signal weight is effectively 0 but not removed."
     - "Whether validators on mainnet run a patched set_weights that gives non-zero remaining_weight; the in-repo code hard-codes subnet_weight=1.0 making remaining_weight=0.0 (full burn to UID 0). README documents 50/50 subnet split, contradicting the code."
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

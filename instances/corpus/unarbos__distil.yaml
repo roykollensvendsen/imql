@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: active
@@ -413,3 +413,8 @@ provenance:
     - "Exact live value of K (worst-K) and dethrone margin: README states K=5 / 5% as env-overridden live values, but code defaults are K=3 / 0.03. The .env file is not present in the repo, so the actual running values cannot be confirmed from source."
     - "Whether MULTI_KING_PAYOUT_ENABLED is set to 1 (split) or 0 (strict WTA) in the live deployment — default is 1 (split) but driven by env."
     - "Full per-axis AXIS_WEIGHTS table not exhaustively transcribed; only headline weights (on_policy_rkl 0.30, judge_probe 0.20, kl threshold 2.0) cited."
+
+composition:
+  shape: multiplex
+  overlays: [guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

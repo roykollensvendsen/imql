@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: mixed
@@ -218,3 +218,8 @@ provenance:
     - "subnet.netuid: not pinned in repo (config default --netuid 1 is the Yuma-template placeholder, not an asserted live netuid)."
     - "Substance of the external service scoring (/sapi/node/task/validate): logic lives in an off-repo backend; cannot cite its scoring formula."
     - "min_weight_floor / decay_rate / temperature: no such constants present in code."
+
+composition:
+  shape: pipeline
+  overlays: [guards, state]
+  extern_count: 2   # provisional; coverage.py recomputes

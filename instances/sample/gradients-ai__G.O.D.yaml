@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 subnet:
@@ -382,3 +382,8 @@ provenance:
     - "/aggregation/min_weight_floor: no global per-miner weight floor found; only progressive championship threshold floor (0.03) which governs boss-round dethroning, not weights."
     - "/scoring_signals/*/weight: individual signal numeric weights are not assigned; ranking is positional within each task type."
     - "Exact per-task-type GPU-size thresholds (4.0/12.0/40.0B) influence compute allocation, not score, so omitted from scoring_signals."
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards, state]
+  extern_count: 2   # provisional; coverage.py recomputes

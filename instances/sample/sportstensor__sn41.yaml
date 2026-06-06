@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 subnet:
@@ -314,3 +314,8 @@ provenance:
       line_ref: "89-94"
       quote: "### Scoring and Weights\n\n- Scoring runs **hourly** in the background, always computing rewards for the **previous epoch** while updating weights for the current one."
       confidence: high
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

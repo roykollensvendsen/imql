@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 subnet:
@@ -388,3 +388,8 @@ provenance:
     the TASK differs: fine-tuning models scored on multiple-choice/IFEval/reference-loss eval
     tasks combined into a weighted composite, across multiple block-scheduled competitions with
     reward_percentage splits. No burn UID routing is present in this version.
+
+composition:
+  shape: multiplex
+  overlays: [guards, state]
+  extern_count: 1   # provisional; coverage.py recomputes

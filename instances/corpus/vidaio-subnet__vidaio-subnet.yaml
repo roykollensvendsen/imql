@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: partial_burn
@@ -312,3 +312,8 @@ provenance:
     - "Length score formula S_L = log(1+content_length)/log(1+320) appears only in docs; not located in the scoring service source read."
     - "vmaf_threshold default in config is 0.5 (fraction) but docs/compression use 85/89/93; the live threshold value used for upscaling gating is ambiguous between config default and runtime override."
     - "weight_setting smoothing alpha is inferred as (1-decay_factor)=0.25 from the EMA, not a literally named alpha constant."
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

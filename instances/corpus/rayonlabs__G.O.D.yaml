@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: partial_burn
@@ -297,3 +297,8 @@ provenance:
     - "subnet.netuid: not stated in source tree (no netuid literal found in README/constants); G.O.D is publicly SN56/Gradients but not citable from repo."
     - "weight_setting.tempo_or_interval: exact WeightsSetRateLimit value is chain-defined, not a literal in source."
     - "Base burn fraction (~0.65) is derived from 1 - (0.15+0.10+0.10) in docs, not a single named constant."
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: mixed
@@ -366,3 +366,8 @@ provenance:
     - "weight_setting.tempo_or_interval: cadence gated by neuron.epoch_length (sync_metagraph.py) but no literal default value found in source."
     - "aggregation.decay_rate / smoothing.alpha: time decay uses half_life_days=10 (w_i = exp(ln(0.5)*age/half_life)), not expressed as a single decay_rate/alpha constant."
     - "Operative burn fraction: depends on live code path/config (0.0 in scoring_params default vs 0.9 in compute_weights/auditor defaults); cannot pin a single value."
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

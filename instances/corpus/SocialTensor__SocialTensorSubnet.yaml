@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: partial_burn
@@ -363,3 +363,8 @@ provenance:
     - "Exact live netuid not in code (config default --netuid is 1, a placeholder); inferred as 23 from README docs link 'SN23-SocialTensor-Docs'."
     - "README states time_penalty exponent **3 (0.4*(t/timeout)**3) but code add_time_penalty uses **1.5; the operative value is the code's 1.5 exponent. Both recorded in notes; no single canonical constant."
     - "Whether validators run offline_reward (Redis) path vs inline reward_url affects which scoring code executes; both paths feed update_scores."
+
+composition:
+  shape: multiplex
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

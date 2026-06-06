@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: partial_burn
@@ -285,3 +285,8 @@ provenance:
     - "ground_truth_sources[0].kind: no exact enum fit (sandbox invariant checker is an oracle-style deterministic verifier of machine-checkable invariants). Used kind=other with kind_other=sandbox_invariant_checker; trust_model=oracle. Schema stress."
     - "Two unused/placeholder reward paths exist: subnet/validator/rewards.py::compute_rewards returns all-zero rewards, and subnet/validator/finalization/weights.py::set_validator_weights plus settlement/rewards.py::wta_rewards/apply_burn_mechanism are not wired into the live _maybe_emit_weights emission path. The active path is neurons/validator.py _emit_top_k_weights / _emit_burn_only_weights."
     - "k for top-k weight split: hard-coded default k=1 in _emit_top_k_weights signature; not a config constant."
+
+composition:
+  shape: gated
+  overlays: [burn, guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes

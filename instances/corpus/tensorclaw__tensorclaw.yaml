@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: active
@@ -241,3 +241,8 @@ provenance:
   unresolved:
     - "Business API contribution_score formula (README mentions Max 20 model-tier pts + Max 70 token pts at 1pt/10k tokens over a 24h window, but the computation is off-repo)."
     - "Exact mainnet burn/emission behavior on-chain is not observable from source; code itself contains no burn allocation."
+
+composition:
+  shape: pipeline
+  overlays: [guards, state]
+  extern_count: 2   # provisional; coverage.py recomputes

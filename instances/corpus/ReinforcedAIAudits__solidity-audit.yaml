@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 instance_kind: extracted
 
 mechanism_status: active
@@ -281,3 +281,8 @@ provenance:
     - "Whether a separate 'vulnerable' TaskType exists: TaskType enum in protocol.py shows hybrid_task/random_task/valid_contract; random.choices uses 4 weights [65,20,5,10] implying a 4th type not fully confirmed."
     - "sub_competitions count: inferred as 4 from the 4 selection weights, exact TaskType membership not fully enumerated here."
     - "Yuma consensus normalization of the U16 weight vector is on-chain and not in this repo."
+
+composition:
+  shape: multiplex
+  overlays: [guards, state]
+  extern_count: 0   # provisional; coverage.py recomputes
