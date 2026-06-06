@@ -1,4 +1,4 @@
-schema_version: "1.0.0"
+schema_version: "1.1.0"
 instance_kind: extracted
 
 # This repo is a MASTER/ORCHESTRATION platform, not a single scored task. The master collects

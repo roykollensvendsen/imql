@@ -1,4 +1,4 @@
-schema_version: "1.0.0"
+schema_version: "1.1.0"
 instance_kind: extracted
 mechanism_status: partial_burn
 mechanism_status_notes: >-

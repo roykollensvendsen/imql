@@ -7,7 +7,7 @@ companion. Enum values are listed; `other` + the sibling `*_other` field covers 
 
 | field | req | type | meaning |
 |---|---|---|---|
-| `schema_version` | ✓ | semver string | must equal `schema/VERSION` (currently `1.0.0`) |
+| `schema_version` | ✓ | semver string | must equal `schema/VERSION` (currently `1.1.0`) |
 | `instance_kind` | ✓ | `extracted` \| `authored` | extracted ⇒ `provenance` + `subnet.owner_repo` required |
 | `mechanism_status` | – | enum | `active`\|`partial_burn`\|`full_burn`\|`dormant`\|`mixed`\|`unknown` — operative reality vs documented mechanism |
 | `subnet` | ✓ | object | identity |
@@ -29,7 +29,7 @@ companion. Enum values are listed; `other` + the sibling `*_other` field covers 
 
 ## `task`
 `summary` (✓), `submission_format` (✓, array of `model_weights|source_code|signals|content_link|
-commitment_hash|api_response|compute_service|other`).
+commitment_hash|api_response|compute_service|other`), `notes`.
 
 ## `scoring_signals[]`
 `name` (✓), `metric_kind` (✓: `loss|accuracy|regression_error|pnl|win_rate|similarity|engagement|
@@ -49,7 +49,7 @@ binary_threshold|winner_take_all|proportional|convex_optimization|undocumented|o
 `composition` (`weighted_sum|multiplicative|gated|rank|tournament|hybrid|other` — how signals combine),
 `normalization` (`none|sum_to_one|min_max|softmax|l1|other`) + `normalization_other`,
 `temperature` (softmax temperature), `decay_rate` (within-aggregation rank/temporal decay — NOT the EMA),
-`min_weight_floor`, `burn_allocation{enabled✓, address_or_uid, fraction, dynamic, notes}`.
+`min_weight_floor`, `burn_allocation{enabled✓, address_or_uid (string ss58 or integer UID), fraction, dynamic, notes}`.
 
 ## `weight_setting`
 `cadence` (✓: `per_epoch|per_round|continuous|rate_limited|weekly|daily|per_brief|per_tournament|

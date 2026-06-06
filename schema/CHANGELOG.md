@@ -5,6 +5,29 @@ corresponding entry here citing the schema-stress observation (from `reports/sch
 that motivated it. Version is mirrored in `schema/VERSION` and in the `$id` of
 `incentive-mechanism.schema.json`.
 
+## 1.1.0 — corpus refinement
+
+Driven by `reports/schema-stress-corpus.md` + `reports/corpus-extraction-summary.md` after extracting
+all 189 archives. Backward-compatible (additive field + a widened type), so every instance re-validates
+after a `schema_version` bump to `1.1.0`.
+
+Changes (both recurred ≥2× as STRUCTURAL stress):
+- **`aggregation.burn_allocation.address_or_uid` now accepts `integer`** (was `string|null`). On-chain
+  burn targets are integer UIDs (e.g. `0`, `199`); extractors were forced to quote them as strings.
+  Cited by 404-Repo__404-gen-subnet, 404-Repo__three-gen-subnet, and the corpus summary.
+- **`task.notes` added** (free-text), the gap parallel to the `ground_truth_sources[].notes` added in
+  1.0.0. Cited by sportstensor__sn41 and corpus instances that had to reroute submission-format
+  clarifications into `extensions`.
+
+Deliberately NOT changed — the headline corpus finding: the `other` value-tail is long and **flat**.
+Across 189 instances, `metric_kind_other` had 75 distinct values in 75 uses (zero repeats),
+`kind_other` 83/84, `normalization_other` 46/47, `submission_format_other` 21/21 — only one value
+recurs corpus-wide. Promoting any to an enum member would over-fit a single instance and violate the
+≥2× governance bar. The enum + escape-hatch design is absorbing genuine domain diversity as intended;
+adding enum values would not measurably reduce `other` usage. This is a finding about the domain, not a
+schema gap. (Likewise the recurring-but-diverse "rank→weight mapping function" and "per-round leader
+decay" stay in `notes`/`extensions`; dead-vs-live scoring is already covered by `mechanism_status`.)
+
 ## 1.0.0 — first refinement (v1)
 
 Driven by the schema-stress report (`reports/schema-stress-v0.md`) aggregated over the 18-subnet

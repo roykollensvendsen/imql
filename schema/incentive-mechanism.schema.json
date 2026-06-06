@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://academia.bittensor/incentive-mechanism/1.0.0",
+  "$id": "https://academia.bittensor/incentive-mechanism/1.1.0",
   "title": "Bittensor Incentive Mechanism",
   "description": "A formal, machine-checkable description of a Bittensor subnet's incentive mechanism. Used both descriptively (reverse-engineered from an existing subnet into an 'extracted' instance) and prescriptively (authored from a blank template into an 'authored' instance to design a new mechanism). See spec/ for the field reference.",
   "type": "object",
@@ -112,7 +112,7 @@
           "description": "Emission deliberately routed to a burn / null UID.",
           "properties": {
             "enabled": { "type": "boolean" },
-            "address_or_uid": { "type": ["string", "null"] },
+            "address_or_uid": { "type": ["string", "integer", "null"], "description": "Burn target: an integer UID (e.g. 0, 199) or an ss58 address string." },
             "fraction": { "type": ["number", "null"], "description": "Fixed burn fraction; null when dynamic (see 'dynamic')." },
             "dynamic": { "type": "boolean", "description": "True when the burn fraction is a computed residual (e.g. 1.0 - sum_of_distributed_weights) rather than a fixed literal." },
             "notes": { "type": "string" }
@@ -341,6 +341,7 @@
           }
         },
         "submission_format_other": { "type": "string", "description": "Required when submission_format contains 'other'." },
+        "notes": { "type": "string" },
         "extensions": { "$ref": "#/$defs/extensions" }
       },
       "required": ["summary", "submission_format"],

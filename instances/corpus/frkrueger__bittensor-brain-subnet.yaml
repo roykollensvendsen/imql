@@ -1,4 +1,4 @@
-schema_version: "1.0.0"
+schema_version: "1.1.0"
 instance_kind: extracted
 
 # Reference/prototype implementation: statements DB and ground truth are hardcoded

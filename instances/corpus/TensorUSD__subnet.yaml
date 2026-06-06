@@ -1,4 +1,4 @@
-schema_version: "1.0.0"
+schema_version: "1.1.0"
 instance_kind: extracted
 
 # Two mechanisms (mechid 0 = liquidation auctions, mechid 1 = price oracle), both with

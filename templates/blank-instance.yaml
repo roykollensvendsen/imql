@@ -11,7 +11,7 @@
 # Required top-level keys: schema_version, instance_kind, subnet, task, scoring_signals, documentation.
 # (provenance is required only when instance_kind is "extracted".)
 
-schema_version: "1.0.0"
+schema_version: "1.1.0"
 instance_kind: authored            # extracted | authored
 
 # mechanism_status: operative reality vs the documented mechanism. Optional but recommended,

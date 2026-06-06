@@ -1,4 +1,4 @@
-schema_version: "1.0.0"
+schema_version: "1.1.0"
 instance_kind: extracted
 
 # The on-chain weights are NOT computed from the local scoring code. The SetWeights task
