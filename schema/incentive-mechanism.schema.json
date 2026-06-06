@@ -1,0 +1,387 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://academia.bittensor/incentive-mechanism/1.0.0",
+  "title": "Bittensor Incentive Mechanism",
+  "description": "A formal, machine-checkable description of a Bittensor subnet's incentive mechanism. Used both descriptively (reverse-engineered from an existing subnet into an 'extracted' instance) and prescriptively (authored from a blank template into an 'authored' instance to design a new mechanism). See spec/ for the field reference.",
+  "type": "object",
+  "$defs": {
+    "kindOther": {
+      "description": "A closed vocabulary with an escape hatch. When kind == 'other', detail is required.",
+      "type": "object",
+      "properties": {
+        "kind": { "type": "string" },
+        "detail": { "type": "string" }
+      },
+      "required": ["kind"],
+      "additionalProperties": false
+    },
+    "extensions": {
+      "description": "Sanctioned escape hatch for genuinely novel data that no structured field captures. Prefer a structured field or an enum 'other' value first.",
+      "type": "object",
+      "additionalProperties": true
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["high", "medium", "low"]
+    },
+    "scoringSignal": {
+      "type": "object",
+      "description": "One measured quantity that contributes to a miner's score.",
+      "properties": {
+        "name": { "type": "string", "description": "Short identifier, e.g. 'validation_loss', 'interval_inclusion', 'sharpe'." },
+        "metric_kind": {
+          "type": "string",
+          "enum": ["loss", "accuracy", "regression_error", "pnl", "win_rate", "similarity", "engagement", "uptime", "hardware_spec", "llm_judgment", "vlm_judgment", "human_judgment", "throughput", "latency", "risk_adjusted_ratio", "probabilistic_forecast", "predictive_contribution", "reward", "composite", "volume", "other"]
+        },
+        "metric_kind_other": { "type": "string", "description": "Required when metric_kind == 'other'." },
+        "direction": {
+          "type": "string",
+          "enum": ["higher_is_better", "lower_is_better", "target_band"],
+          "description": "Whether larger, smaller, or band-proximate raw values score better."
+        },
+        "weight": { "type": ["number", "null"], "description": "Relative contribution to the composite score; null if not numerically weighted (e.g. gated/multiplicative signals)." },
+        "normalization": {
+          "type": "string",
+          "enum": ["none", "min_max", "zscore", "rank", "softmax", "ema", "other"]
+        },
+        "normalization_other": { "type": "string", "description": "Free-text when normalization == 'other' (the schema does not force it, but record what the normalization actually is here rather than in notes)." },
+        "notes": { "type": "string" },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      },
+      "required": ["name", "metric_kind", "direction"],
+      "allOf": [
+        {
+          "if": { "properties": { "metric_kind": { "const": "other" } }, "required": ["metric_kind"] },
+          "then": { "required": ["metric_kind_other"] }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "groundTruthSource": {
+      "type": "object",
+      "description": "Where the 'correct answer' a miner is scored against comes from.",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["deterministic_dataset", "reference_model", "market_data", "llm_judgment", "hardware_probe", "real_engagement", "commit_reveal", "organic_traffic", "other"]
+        },
+        "kind_other": { "type": "string", "description": "Required when kind == 'other'." },
+        "description": { "type": "string" },
+        "source_identifier": { "type": "string", "description": "Concrete source, e.g. 'falcon_refined_web', 'coinmetrics_api', 'youtube_analytics', 'polygon'." },
+        "trust_model": {
+          "type": "string",
+          "enum": ["trusted", "adversarial", "oracle", "crowd", "unknown"]
+        },
+        "notes": { "type": "string" },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      },
+      "required": ["kind"],
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "other" } }, "required": ["kind"] },
+          "then": { "required": ["kind_other"] }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "aggregation": {
+      "type": "object",
+      "description": "How raw per-miner scores become the weights set on chain.",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": ["rank_based", "softmax", "exponential_decay_ema", "weighted_average", "tournament_bracket", "binary_threshold", "winner_take_all", "proportional", "convex_optimization", "undocumented", "other"]
+        },
+        "method_other": { "type": "string", "description": "Required when method == 'other'." },
+        "composition": {
+          "type": "string",
+          "enum": ["weighted_sum", "multiplicative", "gated", "rank", "tournament", "hybrid", "other"],
+          "description": "How multiple scoring signals/penalties combine into one score. 'multiplicative' = product (a zero zeroes the miner); 'gated' = a pass/fail gate multiplies a magnitude; 'weighted_sum' = additive."
+        },
+        "composition_other": { "type": "string", "description": "Free-text when composition == 'other'." },
+        "normalization": {
+          "type": "string",
+          "enum": ["none", "sum_to_one", "min_max", "softmax", "l1", "other"]
+        },
+        "normalization_other": { "type": "string", "description": "Free-text when normalization == 'other'." },
+        "temperature": { "type": ["number", "null"], "description": "Softmax temperature, if a softmax is used (e.g. constants.temperature = 0.01)." },
+        "decay_rate": { "type": ["number", "null"], "description": "Temporal/rank decay factor WITHIN aggregation (e.g. geometric rank weight base 0.8). For EMA smoothing of the final reward, use weight_setting.smoothing instead." },
+        "min_weight_floor": { "type": ["number", "null"] },
+        "burn_allocation": {
+          "type": "object",
+          "description": "Emission deliberately routed to a burn / null UID.",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "address_or_uid": { "type": ["string", "null"] },
+            "fraction": { "type": ["number", "null"], "description": "Fixed burn fraction; null when dynamic (see 'dynamic')." },
+            "dynamic": { "type": "boolean", "description": "True when the burn fraction is a computed residual (e.g. 1.0 - sum_of_distributed_weights) rather than a fixed literal." },
+            "notes": { "type": "string" }
+          },
+          "required": ["enabled"],
+          "additionalProperties": false
+        },
+        "notes": { "type": "string" },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      },
+      "required": ["method"],
+      "allOf": [
+        {
+          "if": { "properties": { "method": { "const": "other" } }, "required": ["method"] },
+          "then": { "required": ["method_other"] }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "weightSetting": {
+      "type": "object",
+      "description": "Cadence and on-chain method for committing weights.",
+      "properties": {
+        "cadence": {
+          "type": "string",
+          "enum": ["per_epoch", "per_round", "continuous", "rate_limited", "weekly", "daily", "per_brief", "per_tournament", "undocumented", "other"]
+        },
+        "cadence_other": { "type": "string", "description": "Required when cadence == 'other'. Use 'rate_limited' for an async loop gated by a chain rate limit, 'undocumented' when the source does not say." },
+        "method": { "type": "string", "description": "How the weight vector is computed at cadence (free text)." },
+        "on_chain_call": {
+          "type": "string",
+          "enum": ["set_weights", "commit_reveal", "other", "unknown"]
+        },
+        "tempo_or_interval": { "type": ["string", "integer", "null"], "description": "e.g. '360 blocks', 360, 'weights_rate_limit hyperparam', 'Sunday 00:00 UTC'." },
+        "smoothing": {
+          "type": "object",
+          "description": "Temporal smoothing applied to the final per-miner reward before weights are set. The dominant Bittensor pattern is an EMA (moving average) with an alpha. Distinct from aggregation.decay_rate.",
+          "properties": {
+            "kind": { "type": "string", "enum": ["none", "ema", "sma", "other"] },
+            "kind_other": { "type": "string" },
+            "alpha": { "type": ["number", "null"], "description": "EMA alpha (e.g. moving_average_alpha = 0.05). null if not an EMA." },
+            "window": { "type": ["integer", "null"], "description": "Window length for an SMA / rolling average, in the unit noted." },
+            "notes": { "type": "string", "description": "Record secondary/auxiliary smoothers here (e.g. a separate out-of-domain EMA alpha)." }
+          },
+          "required": ["kind"],
+          "additionalProperties": false
+        },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      },
+      "required": ["cadence"],
+      "allOf": [
+        {
+          "if": { "properties": { "cadence": { "const": "other" } }, "required": ["cadence"] },
+          "then": { "required": ["cadence_other"] }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "antiGamingMechanism": {
+      "type": "object",
+      "description": "A control that resists gaming / sybil / plagiarism / spoofing.",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["proof_of_work", "plagiarism_detection", "deduplication", "collateral", "challenge_period", "hardware_validation", "deterministic_check", "commit_reveal", "stake_weighting", "rate_limit", "code_inspection", "data_augmentation", "risk_limit", "liveness_check", "honeypot", "other"]
+        },
+        "kind_other": { "type": "string", "description": "Required when kind == 'other'." },
+        "enforcement": {
+          "type": "string",
+          "enum": ["elimination", "penalty", "rejection", "barrier", "other"]
+        },
+        "enforcement_other": { "type": "string", "description": "Free-text when enforcement == 'other'." },
+        "description": { "type": "string" },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      },
+      "required": ["kind", "enforcement"],
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "other" } }, "required": ["kind"] },
+          "then": { "required": ["kind_other"] }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "subCompetitionStage": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "role": {
+          "type": "string",
+          "enum": ["challenge", "probation", "main", "qualifier", "group", "knockout", "final", "boss", "other"]
+        },
+        "advancement_rule": { "type": "string", "description": "Condition to advance/remain, e.g. 'top_8_advance', '75th_percentile', 'no_drawdown_breach'." },
+        "multipliers": { "type": "object", "additionalProperties": true, "description": "e.g. {\"DPO\": 3.0, \"GRPO\": 2.0}." }
+      },
+      "required": ["name", "role"],
+      "additionalProperties": false
+    },
+    "subCompetitions": {
+      "type": "object",
+      "description": "Multi-mechanism / ladder / tournament / multi-track structure.",
+      "properties": {
+        "structure": {
+          "type": "string",
+          "enum": ["none", "single", "multi_mechanism", "ladder", "tournament", "multi_asset", "multi_brief", "per_task_type", "tiered", "other"]
+        },
+        "structure_other": { "type": "string", "description": "Required when structure == 'other'." },
+        "stages": { "type": "array", "items": { "$ref": "#/$defs/subCompetitionStage" } },
+        "count": { "type": ["integer", "null"], "description": "Number of tracks/tournaments/assets/briefs, if applicable." },
+        "notes": { "type": "string" },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      },
+      "required": ["structure"],
+      "allOf": [
+        {
+          "if": { "properties": { "structure": { "const": "other" } }, "required": ["structure"] },
+          "then": { "required": ["structure_other"] }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "perMinerState": {
+      "type": "object",
+      "description": "Persistent per-miner state carried across rounds (debt ledgers, status enums, cooldowns).",
+      "properties": {
+        "tracked": { "type": "boolean" },
+        "state_kinds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["debt_ledger", "performance_ledger", "status_enum", "cumulative_score", "cooldown", "reputation", "registration_age", "other"]
+          }
+        },
+        "status_values": { "type": "array", "items": { "type": "string" }, "description": "Observed status enum values, e.g. ['CHALLENGE','PROBATION','MAINCOMP','ELIMINATED']." },
+        "reset_policy": { "type": "string" },
+        "notes": { "type": "string" },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      },
+      "required": ["tracked"],
+      "additionalProperties": false
+    },
+    "documentation": {
+      "type": "object",
+      "description": "Status of the source material the instance was built from.",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["code_authoritative", "docs_authoritative", "docs_and_code", "docs_only", "whitepaper_only", "sparse", "absent"]
+        },
+        "source_version": { "type": ["string", "null"], "description": "Which version was read, e.g. polaris 'v3.0.2'. Null if not versioned." },
+        "primary_docs": { "type": "array", "items": { "type": "string" }, "description": "Repo-relative paths to the main mechanism docs." },
+        "completeness": { "type": "string", "enum": ["high", "medium", "low"] }
+      },
+      "required": ["status"],
+      "additionalProperties": false
+    },
+    "evidenceItem": {
+      "type": "object",
+      "description": "One auditable link between a claimed field and its source in the repo.",
+      "properties": {
+        "claim_field": { "type": "string", "description": "JSON Pointer into this instance, e.g. '/aggregation/decay_rate'." },
+        "source_path": { "type": "string", "description": "Repo-relative file path supporting the claim." },
+        "line_ref": { "type": ["string", "null"], "description": "Line range like '270-271', or null." },
+        "quote": { "type": ["string", "null"], "description": "Short verbatim snippet supporting the claim." },
+        "confidence": { "$ref": "#/$defs/confidence" }
+      },
+      "required": ["claim_field", "source_path"],
+      "additionalProperties": false
+    },
+    "provenance": {
+      "type": "object",
+      "description": "Audit trail for an extracted instance. Required when instance_kind == 'extracted'.",
+      "properties": {
+        "extracted_by": { "type": "string", "description": "Tool + model, e.g. 'im-extract / claude-opus-4-8'." },
+        "extracted_at": { "type": ["string", "null"], "description": "ISO date, or null." },
+        "confidence_overall": { "$ref": "#/$defs/confidence" },
+        "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidenceItem" }, "minItems": 1 },
+        "unresolved": { "type": "array", "items": { "type": "string" }, "description": "Fields/questions the extractor could not determine from the source." },
+        "extractor_notes": { "type": "string" }
+      },
+      "required": ["confidence_overall", "evidence"],
+      "additionalProperties": false
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Must match schema/VERSION (semver). Enables migration detection.",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "instance_kind": {
+      "type": "string",
+      "enum": ["extracted", "authored"],
+      "description": "'extracted' = reverse-engineered from an existing subnet (provenance required). 'authored' = a new mechanism designed from the template."
+    },
+    "mechanism_status": {
+      "type": "string",
+      "enum": ["active", "partial_burn", "full_burn", "dormant", "mixed", "unknown"],
+      "description": "Operative reality vs the documented/designed mechanism. 'active' = the described scoring drives weights. 'full_burn' = scoring is bypassed and ~all emission is burned (the described mechanism is dormant). 'partial_burn' = a fixed/large fraction is burned alongside live scoring. 'dormant' = scoring code exists but the invoked path does not run it. 'mixed' = multiple competitions in different states. Capture the documented mechanism in the structured fields regardless, and the burn in aggregation.burn_allocation."
+    },
+    "mechanism_status_notes": { "type": "string" },
+    "subnet": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "owner_repo": { "type": ["string", "null"], "description": "Corpus dir name 'Owner__repo'. Required for extracted instances." },
+        "netuid": { "type": ["integer", "null"] },
+        "implementation_lang": {
+          "type": "string",
+          "enum": ["python", "go", "typescript", "rust", "mixed", "none_docs_only", "other"]
+        }
+      },
+      "required": ["name"],
+      "additionalProperties": false
+    },
+    "task": {
+      "type": "object",
+      "properties": {
+        "summary": { "type": "string", "description": "One-paragraph plain-language description of what miners produce." },
+        "submission_format": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "enum": ["model_weights", "source_code", "signals", "content_link", "commitment_hash", "api_response", "compute_service", "other"]
+          }
+        },
+        "submission_format_other": { "type": "string", "description": "Required when submission_format contains 'other'." },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      },
+      "required": ["summary", "submission_format"],
+      "allOf": [
+        {
+          "if": { "properties": { "submission_format": { "contains": { "const": "other" } } }, "required": ["submission_format"] },
+          "then": { "required": ["submission_format_other"] }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "scoring_signals": {
+      "type": "array",
+      "description": "May be empty for docs-only repos where signals are undocumented.",
+      "items": { "$ref": "#/$defs/scoringSignal" }
+    },
+    "ground_truth_sources": { "type": "array", "items": { "$ref": "#/$defs/groundTruthSource" } },
+    "aggregation": { "$ref": "#/$defs/aggregation" },
+    "weight_setting": { "$ref": "#/$defs/weightSetting" },
+    "anti_gaming": { "type": "array", "items": { "$ref": "#/$defs/antiGamingMechanism" } },
+    "sub_competitions": { "$ref": "#/$defs/subCompetitions" },
+    "per_miner_state": { "$ref": "#/$defs/perMinerState" },
+    "documentation": { "$ref": "#/$defs/documentation" },
+    "provenance": { "$ref": "#/$defs/provenance" },
+    "extensions": { "$ref": "#/$defs/extensions" }
+  },
+  "required": ["schema_version", "instance_kind", "subnet", "task", "scoring_signals", "documentation"],
+  "allOf": [
+    {
+      "description": "Extracted instances must carry provenance and owner_repo.",
+      "if": {
+        "properties": { "instance_kind": { "const": "extracted" } },
+        "required": ["instance_kind"]
+      },
+      "then": {
+        "required": ["provenance"],
+        "properties": {
+          "subnet": { "required": ["name", "owner_repo"] }
+        }
+      }
+    }
+  ],
+  "additionalProperties": false
+}

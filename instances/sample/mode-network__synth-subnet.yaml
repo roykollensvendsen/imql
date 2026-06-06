@@ -1,0 +1,320 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+subnet:
+  name: "Synth Subnet"
+  owner_repo: "mode-network__synth-subnet"
+  netuid: null
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners produce probabilistic forecasts of an asset's future price movements: for each checking
+    prompt they generate multiple simulated Monte-Carlo price paths (1000 paths) for an asset over a
+    fixed time increment and horizon (e.g. BTC/ETH/XAU/SOL/... at 5-minute steps for 24 hours, or a
+    1-hour high-frequency variant at 1-minute steps). After the horizon elapses, validators score each
+    miner's ensemble against the realized price path using the Continuous Ranked Probability Score
+    (CRPS) computed on price changes (in basis points) over several time intervals; lower CRPS is
+    better. Per-request scores are capped/shifted, rolled into a per-miner moving average over a
+    multi-day window with per-asset weights, and converted to emission weights via softmax.
+  submission_format: [signals]
+
+scoring_signals:
+  - name: crps_total
+    metric_kind: other
+    metric_kind_other: "probabilistic_forecast_crps"
+    direction: lower_is_better
+    weight: 1.0
+    normalization: other
+    notes: >-
+      Normalization (no single enum fits): per-request CRPS sum is percentile-capped (worst 10% to
+      90th pct) and best-score-subtracted, then a rolling per-asset-weighted average is softmaxed into
+      reward weights. CRPS itself is the Continuous Ranked Probability Score computed per scoring
+      interval on price changes in basis points (and absolute-price intervals scaled by
+      1/last_price*10_000), summed over all intervals per prompt, via crps_ensemble from the
+      `properscoring` package. Lower is better; a miner failing format/timeliness is assigned -1
+      internally and later mapped to the 90th-percentile score.
+
+ground_truth_sources:
+  - kind: market_data
+    description: >-
+      Realized close prices fetched after the forecast horizon. Most assets come from the Pyth
+      benchmarks TradingView history API; WTIOIL comes from the Hyperliquid candle snapshot API.
+      Prices are aligned to the prompt's timestamp grid (start_time, time_length, time_increment).
+    source_identifier: "https://benchmarks.pyth.network/v1/shims/tradingview/history ; https://api.hyperliquid.xyz/info"
+    trust_model: oracle
+
+aggregation:
+  method: softmax
+  normalization: softmax
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    notes: ""
+  notes: >-
+    Per request: order miners by CRPS sum, cap the worst 10% to the 90th percentile, subtract the
+    lowest (best) score so the best miner scores 0; invalid/missing miners get the 90th-percentile
+    score. Then a per-miner rolling average over a window (10 days low-frequency / 3 days high-
+    frequency) weighted by per-asset coefficients (BTC=1.0, others fixed constants). Final reward
+    weight = softmax(beta * rolling_avg) with beta = -0.1 (low-freq) / -0.2 (high-freq), each scaled
+    by smoothed_score_coefficient = 0.5; low- and high-frequency reward weights for the same miner are
+    summed (50%/50% emissions split). README states beta = 0.1 in the emission formula e^{-beta L}.
+    decay_rate is null: README describes recent performance "weighted more heavily through an
+    exponential decay function", but the extracted code implements a flat (uniform) rolling average
+    over the window with no explicit per-sample decay constant or numeric decay_rate literal.
+
+weight_setting:
+  cadence: per_round
+  method: >-
+    update_scores() assigns the combined reward weights directly into self.scores (no on-neuron EMA
+    despite the docstring); set_weights() L1-normalizes scores to raw_weights, runs
+    process_weights_for_netuid and convert_weights_and_uids_for_emit, then calls subtensor.set_weights
+    with version_key=self.spec_version. The validator loops "every hour" requesting predictions and
+    scoring matured (>=24h-old) predictions.
+  on_chain_call: set_weights
+  tempo_or_interval: "total_cycle_minutes=60 (low-frequency) / 10 (high-frequency); scoring loop runs every hour"
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      validate_responses_v2 checks the response is a tuple/list, that the start-time timestamp and
+      time_increment match the prompt, that the number of paths equals num_simulations, and that each
+      path has the expected number of time points and well-formed prices (<=8 digits). Failing
+      responses are marked not "CORRECT" and scored -1 (later mapped to the 90th-percentile penalty
+      score). README: "If they fail to return predictions by the start_time or the predictions are in
+      the wrong format, they will be scored 0 for that prompt."
+  - kind: other
+    kind_other: "worst-score penalty for missing/late/invalid responses"
+    enforcement: penalty
+    description: >-
+      Miners that are invalid, late, or in the worst 10% are assigned the 90th-percentile CRPS score;
+      new miners are backfilled with the worst score (percentile90 - lowest_score) for window
+      timestamps before they joined so they are not advantaged by having fewer data points; miners
+      with no valid scores in the window get an infinite rolling average (worst possible).
+
+sub_competitions:
+  structure: multi_mechanism
+  stages:
+    - name: "low (24-hour horizon)"
+      role: main
+      advancement_rule: ""
+      multipliers:
+        emissions_share: 0.5
+        softmax_beta: -0.1
+        window_days: 10
+    - name: "high (1-hour HFT horizon)"
+      role: main
+      advancement_rule: ""
+      multipliers:
+        emissions_share: 0.5
+        softmax_beta: -0.2
+        window_days: 3
+  count: 2
+  notes: >-
+    Two parallel competitions (LOW_FREQUENCY and HIGH_FREQUENCY prompt configs) run simultaneously and
+    each cover several assets; reward weights from both are summed per miner. README: "24-Hour
+    Predictions: 50% of total emissions / 1-Hour HFT Predictions: 50% of total emissions".
+
+per_miner_state:
+  tracked: true
+  state_kinds: [performance_ledger, cumulative_score]
+  status_values: []
+  reset_policy: >-
+    Per-request scores are persisted and retained for data_retention_days (12 low / 4 high); the
+    rolling average only includes requests within window_days (10 low / 3 high) of scored_time. On
+    deregistration / hotkey replacement self.scores[uid] is zeroed in resync_metagraph.
+  notes: >-
+    The validator stores historic per-request CRPS scores per miner in a database
+    (MinerDataHandler / SQL); leaderboard (rolling-average) score is recomputed each cycle from the
+    stored per-request scores.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/validator_guide.md"
+    - "docs/miner_tutorial.md"
+    - "docs/miner_reference.md"
+    - "Synth Whitepaper v1.pdf"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  unresolved:
+    - "subnet.netuid: not stated in code or README; config default --netuid=1 is a placeholder, not the live netuid."
+    - "aggregation.decay_rate: README mentions an exponential decay function, but extracted code uses a flat windowed rolling average with no decay-rate literal."
+    - "aggregation.min_weight_floor: no minimum-weight floor literal found in extracted code."
+    - "burn_allocation: no burn / owner-take found in extracted reward or weight-setting code."
+    - "README emission formula states beta=0.1 while prompt_config sets softmax_beta=-0.1 (low) / -0.2 (high); sign/per-competition values differ between docs and code."
+  evidence:
+    - claim_field: "/subnet/name"
+      source_path: "README.md"
+      line_ref: "8"
+      quote: "Synth Subnet"
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "synth/validator/reward.py"
+      line_ref: "24-26"
+      quote: "import numpy as np\nimport pandas as pd\nimport bittensor as bt"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "104"
+      quote: "Miners are tasked with providing probabilistic forecasts of an asset's future price movements. Specifically, each miner is required to generate multiple simulated price paths for an asset, from the current time over specified time increments and time horizon."
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "synth/protocol.py"
+      line_ref: "54-60"
+      quote: "simulation_output: Annotated[\n        tuple[int | list[int | float], ...] | None,"
+      confidence: high
+    - claim_field: "/scoring_signals/0/metric_kind"
+      source_path: "README.md"
+      line_ref: "168"
+      quote: "The validator evaluates the miners' probabilistic forecasts using the Continuous Ranked Probability Score (CRPS)."
+      confidence: high
+    - claim_field: "/scoring_signals/0/direction"
+      source_path: "README.md"
+      line_ref: "168"
+      quote: "The lower the CRPS, the better the forecasted distribution predicted the observed value."
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "synth/validator/crps_calculation.py"
+      line_ref: "1-2"
+      quote: "import numpy as np\nfrom properscoring import crps_ensemble"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "synth/validator/crps_calculation.py"
+      line_ref: "88-95"
+      quote: "crps_values_block = np.array(\n                [\n                    crps_ensemble(\n                        real_changes_block[t], simulated_changes_block[:, t]\n                    )"
+      confidence: high
+    - claim_field: "/scoring_signals/0/normalization_other"
+      source_path: "README.md"
+      line_ref: "232-235"
+      quote: "Order the miners by their CRPS sum, cap the worst 10% scores to the 90th percentile; Get the best (=lowest) CRPS sum for that prompt; Subtract the best score from all the miners scores"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "synth/validator/price_data_provider.py"
+      line_ref: "26-29"
+      quote: "PYTH_BASE_URL = (\n        \"https://benchmarks.pyth.network/v1/shims/tradingview/history\"\n    )\n    HYPERLIQUID_BASE_URL = \"https://api.hyperliquid.xyz/info\""
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/kind"
+      source_path: "README.md"
+      line_ref: "196"
+      quote: "Observed Price Changes: The real asset prices are used to calculate the observed price changes in basis points over the same intervals."
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "synth/validator/moving_average.py"
+      line_ref: "171-177"
+      quote: "# Softmax: negative beta means lower score = higher reward\n    rolling_avg_list = [\n        r[\"rolling_avg\"] for r in filtered_moving_averages_data\n    ]\n    reward_weight_list = compute_softmax(\n        np.array(rolling_avg_list), prompt_config.softmax_beta\n    )"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "synth/validator/reward.py"
+      line_ref: "380-388"
+      quote: "percentile90 = np.percentile(score_values_valid, 90)\n    capped_scores = np.minimum(score_values, percentile90)\n    capped_scores = np.where(score_values == -1, percentile90, capped_scores)\n    lowest_score = np.min(capped_scores)\n    return capped_scores - lowest_score, percentile90, lowest_score"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "synth/validator/prompt_config.py"
+      line_ref: "49-50"
+      quote: "softmax_beta=-0.1,\n    smoothed_score_coefficient=0.5,"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "synth/validator/prompt_config.py"
+      line_ref: "83-84"
+      quote: "softmax_beta=-0.2,\n    smoothed_score_coefficient=0.5,"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "synth/validator/moving_average.py"
+      line_ref: "188-190"
+      quote: "\"reward_weight\": float(reward_weight)\n                    * prompt_config.smoothed_score_coefficient,"
+      confidence: high
+    - claim_field: "/aggregation/decay_rate"
+      source_path: "README.md"
+      line_ref: "63"
+      quote: "with recent performance weighted more heavily through an exponential decay function."
+      confidence: medium
+    - claim_field: "/aggregation/notes"
+      source_path: "synth/validator/moving_average.py"
+      line_ref: "16-19"
+      quote: "# Per-asset weighting coefficients for score normalization across assets.\n# Higher coefficient = asset scores contribute more to the smoothed score.\nASSET_COEFFICIENTS = {\n    \"BTC\": 1.0,"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "synth/base/validator.py"
+      line_ref: "153-160"
+      quote: "norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True)\n        ...\n        raw_weights = self.scores / norm"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "synth/base/validator.py"
+      line_ref: "189-197"
+      quote: "result, msg = self.subtensor.set_weights(\n            wallet=self.wallet,\n            netuid=self.config.netuid,\n            uids=uint_uids,\n            weights=uint_weights,"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "synth/base/validator.py"
+      line_ref: "271"
+      quote: "self.scores[uids_array] = rewards"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "synth/validator/prompt_config.py"
+      line_ref: "38"
+      quote: "total_cycle_minutes=60,"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "synth/validator/response_validation_v2.py"
+      line_ref: "85-88"
+      quote: "number_of_paths = len(response[2:])\n    # check the number of paths\n    if number_of_paths != simulation_input.num_simulations:\n        return f\"Number of paths is incorrect: expected {simulation_input.num_simulations}, got {number_of_paths}\""
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "README.md"
+      line_ref: "157"
+      quote: "If they fail to return predictions by the start_time or the predictions are in the wrong format, they will be scored 0 for that prompt."
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "synth/validator/moving_average.py"
+      line_ref: "36-42"
+      quote: "For miners that joined after the earliest scored_time in the window,\n    backfills missing earlier timestamps with the worst score (percentile90 - lowest_score)\n    so they are not unfairly advantaged by having fewer data points."
+      confidence: high
+    - claim_field: "/sub_competitions/stages"
+      source_path: "README.md"
+      line_ref: "161-162"
+      quote: "24-Hour Predictions: 50% of total emissions\n1-Hour HFT Predictions: 50% of total emissions"
+      confidence: high
+    - claim_field: "/sub_competitions/notes"
+      source_path: "synth/validator/forward.py"
+      line_ref: "95"
+      quote: "prompts = [prompt_config.LOW_FREQUENCY, prompt_config.HIGH_FREQUENCY]"
+      confidence: high
+    - claim_field: "/sub_competitions/stages/0/multipliers"
+      source_path: "synth/validator/prompt_config.py"
+      line_ref: "48-49"
+      quote: "window_days=10,\n    softmax_beta=-0.1,"
+      confidence: high
+    - claim_field: "/sub_competitions/stages/1/multipliers"
+      source_path: "synth/validator/prompt_config.py"
+      line_ref: "82-83"
+      quote: "window_days=3,\n    softmax_beta=-0.2,"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "synth/validator/prompt_config.py"
+      line_ref: "51"
+      quote: "data_retention_days=12,"
+      confidence: high
+    - claim_field: "/per_miner_state/notes"
+      source_path: "README.md"
+      line_ref: "237-239"
+      quote: "The validator is required to store the historic request scores (as calculated in the previous step) for each miner. After each new request is scored, the validator recalculates the 'leaderboard score' for each miner, using an rolling average over their past per request scores, up to a threshold of 10 days in the past"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "synth/base/validator.py"
+      line_ref: "222-224"
+      quote: "for uid, hotkey in enumerate(self.hotkeys):\n            if hotkey != self.metagraph.hotkeys[uid]:\n                self.scores[uid] = 0  # hotkey has been replaced"
+      confidence: high
+    - claim_field: "/documentation/primary_docs"
+      source_path: "README.md"
+      line_ref: "16"
+      quote: "Synth%20Whitepaper%20v1.pdf"
+      confidence: high

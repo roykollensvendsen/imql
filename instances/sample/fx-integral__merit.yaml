@@ -1,0 +1,297 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+subnet:
+  name: "Merit"
+  owner_repo: "fx-integral__merit"
+  netuid: 73
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners register a hotkey on Merit (netuid 73) and are rewarded for active
+    participation across OTHER Bittensor subnets. A miner produces no artifact for
+    Merit itself; instead it must (a) be registered and earning incentive on as many
+    other subnets as possible under the same hotkey, and (b) keep a public IPv4 axon
+    live that answers TOTP-secured liveness pings. The validator reads the on-chain
+    metagraph of every other active subnet, looks up the miner's hotkey, averages its
+    incentive across all those subnets, and scales it into a Bittensor Miner
+    Participation Score (BMPS). A failed liveness ping zeroes the score.
+  submission_format: [compute_service, other]
+  submission_format_other: >-
+    The scored "submission" is the miner's pre-existing on-chain incentive footprint
+    across other subnets (cross-subnet participation), plus a live axon that answers
+    PingSynapse with a valid TOTP token. Nothing is submitted to Merit directly.
+
+scoring_signals:
+  - name: cross_subnet_avg_incentive
+    metric_kind: other
+    metric_kind_other: >-
+      Mean of the miner hotkey's on-chain incentive value across all other active
+      subnets (netuid 0 and 73 excluded), scaled by 100000 to form the BMPS.
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      avg_incentive = sum(incentives across other subnets) / (num other subnets);
+      bmps = avg_incentive * 100000. Missing hotkey entries count as incentive 0.0.
+  - name: liveness_ping
+    metric_kind: uptime
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Binary gate, not an additive signal. A miner that fails the TOTP-secured ping
+      after retries (or has an invalid public IPv4 / port 0) has its BMPS set to 0.0.
+
+ground_truth_sources:
+  - kind: other
+    kind_other: >-
+      Cross-subnet on-chain reference: the incentive values in the live metagraphs of
+      all OTHER active Bittensor subnets, fetched via
+      subtensor.get_all_metagraphs_info().
+    description: >-
+      For each Merit hotkey, the validator looks up the same hotkey in every other
+      active subnet's metagraph and reads its incentive; these are averaged. The
+      "correct answer" is therefore the chain's own incentive state on other subnets.
+    source_identifier: "subtensor.get_all_metagraphs_info()"
+    trust_model: oracle
+  - kind: hardware_probe
+    description: >-
+      TOTP-secured liveness probe: validator opens a TCP connection to the miner axon
+      and sends PingSynapse; the miner replies with a TOTP token seeded from the
+      sha256 of its hotkey, which the validator verifies (valid_window=1).
+    source_identifier: "PingSynapse / pyotp TOTP"
+    trust_model: adversarial
+
+aggregation:
+  method: rank_based
+  normalization: sum_to_one
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: 0.75
+    notes: >-
+      UID 0 always receives burner_weight (default 0.75 = 75%). Only miners with
+      score > 0.0 share the remaining 25%. burner_weight is a default argument to
+      _calculate_normalized_weights, not a config constant.
+  notes: >-
+    Miners with BMPS > 0 are ranked descending; each rank r gets an S-curve reward
+    (-1.038e-7*r^3 + 6.214e-5*r^2 - 0.0129*r - 0.0118 + 1), clamped at >= 0. Rewards
+    are normalized over their sum and scaled to the 25% non-burner share. BMPS itself
+    is used only to rank and gate (>0), not proportionally; the polynomial S-curve
+    determines the actual weight per rank.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Once blocks_since_last_update >= TEMPO-2, the validator builds (uid, score) pairs
+    from the saved BMPS state, inserts burner UID 0, and calls
+    _calculate_normalized_weights to produce a weight vector summing to ~1.0 (75% to
+    UID 0, 25% S-curve-distributed across ranked positive-score miners), then submits.
+  on_chain_call: set_weights
+  tempo_or_interval: "360 blocks (TEMPO); weights set when blocks_since_last_update >= TEMPO-2"
+
+anti_gaming:
+  - kind: other
+    kind_other: cross_subnet_incentive_averaging
+    enforcement: penalty
+    description: >-
+      Reward is averaged across ALL other active subnets, so registering on a single
+      subnet to maximize one incentive is diluted by the division over total active
+      subnets. Rewards broad multi-subnet participation.
+  - kind: other
+    kind_other: totp_liveness_verification
+    enforcement: rejection
+    description: >-
+      Miners reply to PingSynapse with a TOTP token seeded from sha256(hotkey),
+      verified with pyotp valid_window=1. Invalid/missing token or non-PingSynapse
+      response fails the ping; failure sets BMPS to 0.0. Requires accurate clocks
+      (ntpsec recommended).
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Public IPv4 validation: miners whose axon IP is not a global public IPv4 or
+      whose port is 0 are skipped and assigned BMPS 0.0
+      (ipaddress.IPv4Address(...).is_global).
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, status_enum]
+  status_values: []
+  reset_policy: >-
+    BMPS state (.merit_state.json) is rebuilt each evaluation round and cleared after
+    weights are set (_clear_state). A separate health file (.merit_health.json) and
+    per-epoch result JSONs (capped at MAX_EPOCH_FILES=48) record ping success and
+    last-ping timestamps over time.
+  notes: >-
+    state holds per-hotkey BMPS; latest_ping_success / latest_ping_times track
+    liveness. valid_miners is the set of hotkeys that passed the latest ping round.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "whitepaper.md"
+    - "docs/validator_setup.md"
+    - "merit/neuron/validator.py"
+    - "merit/config/merit_config.py"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8"
+  extracted_at: "2026-06-05"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "whitepaper.md"
+      line_ref: "17"
+      quote: "Miners must register their **hotkey** directly to the Merit subnet (`netuid 73`)."
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "merit/neuron/validator.py"
+      line_ref: "1-11"
+      quote: "import bittensor as bt"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "whitepaper.md"
+      line_ref: "7-9"
+      quote: "**Merit** is a Bittensor subnet designed to reward miners for their **active participation across other Bittensor subnets**."
+      confidence: high
+    - claim_field: "/task/submission_format_other"
+      source_path: "merit/neuron/miner.py"
+      line_ref: "39-49"
+      quote: "async def handle_ping_request(self, synapse: PingSynapse) -> PingSynapse: ... token = totp.now() ... synapse.token = token"
+      confidence: high
+    - claim_field: "/scoring_signals/0/metric_kind_other"
+      source_path: "merit/neuron/validator.py"
+      line_ref: "237-239"
+      quote: "avg_incentive = sum(incentives) / num_expected_subnets if num_expected_subnets > 0 else 0.0\n            bmps = avg_incentive * 100000"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "merit/neuron/validator.py"
+      line_ref: "230-233"
+      quote: "hotkey_to_incentive = dict(zip(info.hotkeys, info.incentives))\n                incentive = hotkey_to_incentive.get(hotkey, 0.0)"
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "merit/neuron/validator.py"
+      line_ref: "224-227"
+      quote: "if hotkey not in self.valid_miners: ... Assigning BMPs=0.0\")\n                self.state[hotkey] = 0.0"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "merit/neuron/validator.py"
+      line_ref: "50-53"
+      quote: "infos = self.subtensor.get_all_metagraphs_info()"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "merit/neuron/validator.py"
+      line_ref: "206-209"
+      quote: "expected_subnets = [\n            info for info in self.all_metagraphs_info\n            if info.netuid not in (0, self.netuid)\n        ]"
+      confidence: high
+    - claim_field: "/ground_truth_sources/1/description"
+      source_path: "merit/neuron/validator.py"
+      line_ref: "139-145"
+      quote: "hashed = hashlib.sha256(neuron.hotkey.encode('utf-8')).digest()\n            base32_secret = base64.b32encode(hashed).decode('utf-8').strip('=')\n            totp = pyotp.TOTP(base32_secret)\n\n            if not totp.verify(response.token, valid_window=1):"
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "merit/neuron/validator.py"
+      line_ref: "269-276"
+      quote: "ranked_miners = sorted(valid_miners, key=lambda x: x[1], reverse=True)\n\n        # Apply S-curve reward formula\n        incentive_rewards = []\n        for rank, (uid, _) in enumerate(ranked_miners, start=1):\n            reward = (-1.038e-7 * (rank ** 3)) + (6.214e-5 * (rank ** 2)) - (0.0129 * rank) - 0.0118 + 1"
+      confidence: high
+    - claim_field: "/aggregation/normalization"
+      source_path: "merit/neuron/validator.py"
+      line_ref: "369-371"
+      quote: "weight_sum = sum(normalized_weights)\n                        if not (0.999 <= weight_sum <= 1.001):"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "merit/neuron/validator.py"
+      line_ref: "255-260"
+      quote: "def _calculate_normalized_weights(self, uids, scores, burner_uid=0, burner_weight=0.75):\n        ...\n        UID 0 always receives `burner_weight` (default 75%).\n        Only miners with score > 0.0 share the remaining 25%."
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "merit/neuron/validator.py"
+      line_ref: "284-287"
+      quote: "miner_weights = {\n                uid: (reward / total_incentive) * (1.0 - burner_weight)\n                for (uid, _), reward in zip(ranked_miners, incentive_rewards)\n            }"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "merit/neuron/validator.py"
+      line_ref: "373-380"
+      quote: "self.subtensor.set_weights(\n                            wallet=self.wallet,\n                            netuid=self.netuid,\n                            uids=uids,\n                            weights=normalized_weights,"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "merit/config/merit_config.py"
+      line_ref: "1-2"
+      quote: "# Subnet Hyperparameters\nTEMPO = 360  # Number of blocks per epoch"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "merit/neuron/validator.py"
+      line_ref: "330-345"
+      quote: "if blocks_since_update >= (merit_config.TEMPO - 2): ... uids.insert(0, burner_uid)\n                        scores.insert(0, 0.0)"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "whitepaper.md"
+      line_ref: "102"
+      quote: "| Registering a single subnet to maximize reward | ✅ Averaging across all subnets |"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "merit/neuron/validator.py"
+      line_ref: "141-145"
+      quote: "totp = pyotp.TOTP(base32_secret)\n\n            if not totp.verify(response.token, valid_window=1):\n                bt.logging.debug(f\"TOTP failed for {neuron.hotkey}\")\n                return False"
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "merit/neuron/validator.py"
+      line_ref: "93-98"
+      quote: "parsed_ip = ipaddress.IPv4Address(ip)\n            return parsed_ip.is_global"
+      confidence: high
+    - claim_field: "/per_miner_state/state_kinds"
+      source_path: "merit/neuron/validator.py"
+      line_ref: "238-239"
+      quote: "bmps = avg_incentive * 100000\n            self.state[hotkey] = bmps"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "merit/neuron/validator.py"
+      line_ref: "423-425"
+      quote: "self._clear_state()\n                    self.state = {}\n                    self._prune_epoch_results()"
+      confidence: high
+    - claim_field: "/documentation/primary_docs"
+      source_path: "README.md"
+      line_ref: "103-108"
+      quote: "- 📄 [Whitepaper](whitepaper.md)\n- 📄 [Validator Setup Guide](docs/validator_setup.md)"
+      confidence: high
+  unresolved:
+    - >-
+      /scoring_signals/*/weight: BMPS has no per-signal numeric weight. The two signals
+      (cross-subnet incentive, liveness) are not additively weighted — liveness is a
+      binary gate that zeroes BMPS, while the incentive average is the sole positive
+      magnitude. Left null.
+    - >-
+      /aggregation/decay_rate and /min_weight_floor: no temporal decay/EMA or weight
+      floor exists in the code. The S-curve polynomial coefficients
+      (-1.038e-7, 6.214e-5, -0.0129, -0.0118) are rank-reward shape constants, not a
+      decay rate or floor, so they are documented in aggregation.notes rather than
+      forced into those numeric fields.
+    - >-
+      Whitepaper "Max Validators 64" and per-signal "weight" balance between ping and
+      incentive ("ping acts as a small fine-tuning adjustment") are descriptive only;
+      in code the ping is a hard zero gate, not a fractional adjustment. No field
+      captures the validator cap.
+  extractor_notes: >-
+    Unusual cross-subnet design: the ground truth is the chain's own incentive state on
+    OTHER subnets, which fits neither dataset nor market and required
+    ground_truth_sources[0].kind = other (cross-subnet reference, trust_model oracle).
+    The reward shape is a fixed cubic S-curve over BMPS ranks plus a fixed 75% burn to
+    UID 0; aggregation.method = rank_based is the closest enum but understates the
+    polynomial weighting (captured in notes). submission_format also needed 'other'
+    since miners submit nothing to Merit. test_bmps_calculation.py contains only a
+    simplified proportional normalization (score/total) that does NOT match the
+    validator's actual S-curve + burn logic; the validator code was treated as
+    authoritative.

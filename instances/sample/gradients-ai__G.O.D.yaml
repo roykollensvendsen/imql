@@ -1,0 +1,384 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+subnet:
+  name: "Gradients on Demand (G.O.D)"
+  owner_repo: "gradients-ai__G.O.D"
+  netuid: 56
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners submit open-source training repositories (Docker container + training scripts).
+    Validators execute these on standardized cloud GPU infrastructure (H100/A100) for text
+    (Instruct/DPO/GRPO), image (SDXL/Flux), and environment (RL) tasks. The subnet is 100%
+    tournament-based: miners compete in weekly tournaments (group stage -> knockout -> boss
+    round) and are scored on the quality of the model their training method produces
+    (test loss for most tasks, GRPO/environment score where higher is better).
+  submission_format: [source_code, compute_service]
+
+scoring_signals:
+  - name: test_loss
+    metric_kind: loss
+    direction: lower_is_better
+    weight: null
+    normalization: rank
+    notes: >-
+      Primary ranking signal for Instruct/DPO and image tasks. calculate_miner_ranking_and_scores
+      sorts by test_loss (lower is better); top result gets FIRST_PLACE_SCORE=3, bottom 25%
+      get SCORE_PENALTY=-1 when pool > MIN_IDEAL_NUM_MINERS_IN_POOL (8).
+  - name: grpo_score
+    metric_kind: other
+    metric_kind_other: grpo_reward
+    direction: higher_is_better
+    weight: null
+    normalization: rank
+    notes: >-
+      For GRPO tasks the test_loss field carries the GRPO reward and is sorted in reverse
+      (higher is better) per is_grpo_task branch.
+  - name: environment_score
+    metric_kind: other
+    metric_kind_other: rl_environment_reward
+    direction: higher_is_better
+    weight: null
+    normalization: rank
+    notes: >-
+      Environment (RL) tasks scored higher-is-better; evaluation runs 250 episodes
+      post-training to determine final scores.
+  - name: image_eval_loss
+    metric_kind: loss
+    direction: lower_is_better
+    weight: null
+    normalization: rank
+    notes: >-
+      Image tasks use a weighted diffusion loss: DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT (0.25) *
+      text_guided_avg + 0.75 * no_text_avg.
+
+ground_truth_sources:
+  - kind: reference_model
+    description: >-
+      Validators evaluate the miner-trained model against a held-out test dataset on
+      standardized hardware; submissions equal to the original base model_id are marked
+      non-finetuned and scored 0.
+    source_identifier: "held-out test_data split per task"
+    trust_model: trusted
+  - kind: deterministic_dataset
+    description: >-
+      Boss round uses proven historical tasks from the database with at least 2 successful
+      quality scores (MIN_SUCCESSFUL_SCORES_FOR_HISTORICAL_TASK=2), comparing tournament
+      miners against best historical scores from general miners.
+    source_identifier: "historical tournament tasks (DB)"
+    trust_model: trusted
+
+aggregation:
+  method: tournament_bracket
+  normalization: sum_to_one
+  decay_rate: 0.3
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "5GU4Xkd3dCGTU3s8VLcHGc5wsD5M8XyxDca5yDQhYm1mVXFu"
+    fraction: null
+    notes: >-
+      Burn weight = 1.0 - text_tournament_weight - image_tournament_weight -
+      environment_tournament_weight; all undistributed tournament weight is also routed to the
+      EMISSION_BURN_HOTKEY. Base burn is 0.65 (1 - 0.15 - 0.10 - 0.10) and rises when champion
+      performance is weak. No fixed fraction; computed dynamically.
+  notes: >-
+    decay_rate 0.3 is TOURNAMENT_SIMPLE_DECAY_BASE: within-tournament rank weights follow
+    weight[rank]=0.3^(rank-1), normalized to sum to 1 via exponential_decline_mapping. Champion
+    tournament-type weight = base (0.15 text / 0.10 image / 0.10 env) + emission boost, capped at
+    MAX (0.48 text / 0.32 image / 0.20 env). Text/image/environment tournaments scored separately.
+
+weight_setting:
+  cadence: continuous
+  method: >-
+    get_node_weights_from_tournament_audit_data builds per-tournament-type weights with
+    performance boost ((perf_diff-0.05)*2.0 above 0.05 threshold) minus time-based decay
+    (0.0033/day since EMISSION_TIME_DECAY_START_DATE), capped at MAX weights; applies dual
+    weight pools (champions vs non-champions) ranked by exponential decay; remainder to burn;
+    0.0001 participation weight per active participant.
+  on_chain_call: set_weights
+  tempo_or_interval: "WeightsSetRateLimit hyperparam (loop sleeps until updated >= rate limit)"
+
+anti_gaming:
+  - kind: hardware_validation
+    enforcement: barrier
+    description: >-
+      Validators execute miners' training in Docker containers on standardized infrastructure
+      with --network none isolation, fixed memory (24g) and CPU (8 nano_cpus) limits, and
+      dynamic GPU allocation via get_tournament_gpu_requirement (H100 1X/2X/4X/8X by model size).
+  - kind: other
+    kind_other: code_obfuscation_detection
+    enforcement: rejection
+    description: >-
+      Training repositories are checked for obfuscation during tournament registration; the
+      validator runs anti_obfuscation detection (OBFUSCATION_DETECTION_PATH). Obfuscated code is
+      disallowed.
+  - kind: collateral
+    enforcement: barrier
+    description: >-
+      Participation requires sufficient tournament fee balance: text/env 0.20 TAO
+      (200,000,000 RAO), image 0.15 TAO (150,000,000 RAO) per tournament.
+  - kind: deduplication
+    enforcement: rejection
+    description: >-
+      Duplicate submission repos are deduplicated before evaluation; repos matching the original
+      base model_id are marked non-finetuned and scored 0.
+  - kind: rate_limit
+    enforcement: barrier
+    description: >-
+      Tournaments require minimums to proceed: MIN_MINERS_FOR_TOURN=8 (text/image),
+      MIN_MINERS_FOR_ENV_TOURN=5 (environment). Failed training retried up to
+      MAX_TRAINING_ATTEMPTS=2.
+
+sub_competitions:
+  structure: tournament
+  count: 3
+  stages:
+    - name: "Text/Image group stage"
+      role: group
+      advancement_rule: "top_8_advance"
+      multipliers:
+        DPO_gpu: 3
+        GRPO_gpu: 2
+    - name: "Text/Image knockout stage"
+      role: knockout
+      advancement_rule: "single_elimination_top_8 (1 task per pair; Instruct/DPO/GRPO or SDXL/Flux)"
+      multipliers:
+        DPO_gpu: 3
+        GRPO_gpu: 2
+    - name: "Final / boss round"
+      role: boss
+      advancement_rule: >-
+        challenger must win majority (4+ of 6 tasks) vs defending champion's best historical
+        scores; champion retains title otherwise
+      multipliers:
+        DPO_gpu: 3
+        GRPO_gpu: 2
+    - name: "Environment group rounds (R1-R4)"
+      role: group
+      advancement_rule: >-
+        R1 top8 -> R2 top2 -> R3 boss+2 -> R4 boss vs 1 contender; contender must win 4/6 tasks
+        at progressive threshold to dethrone boss
+      multipliers:
+        env_gpu: 2
+  notes: >-
+    Three separate tournaments scored independently: Text (Thursday 14:00 UTC),
+    Image (Thursday 14:00 UTC), Environment (Monday 14:00 UTC). Text/Image use group ->
+    knockout -> boss; Environment uses 4 group rounds (no knockout). GPU multipliers
+    (DPO 3x, GRPO 2x, env 2x) scale model-size-based GPU allocation, not score. Progressive
+    championship threshold: base 0.10 (text/image) / 0.05 (env), exponential decay 0.8 per win,
+    floor 0.03.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [status_enum, cumulative_score, reputation]
+  status_values:
+    - "PENDING"
+    - "ACTIVE"
+    - "COMPLETED"
+    - "SUCCESS"
+    - "FAILURE"
+    - "ELIMINATED"
+  reset_policy: >-
+    Tournament participants are eliminated when they lose a round; defending champion carried
+    as base contestant into next tournament. Champion reign accrues time-based emission decay
+    (0.0033/day) from first_championship_time.
+  notes: >-
+    Per-tournament round/training statuses (TaskStatus, TrainingStatus). Defending champion
+    tracked across tournaments via first_championship_time and consecutive_wins for decay and
+    progressive threshold.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "docs/scoring_system.md"
+    - "docs/tournament_overview.md"
+    - "validator/core/constants.py"
+    - "validator/core/weight_setting.py"
+    - "validator/evaluation/scoring.py"
+    - "validator/evaluation/tournament_scoring.py"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8[1m]"
+  extracted_at: "2026-06-05"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "docs/tourn_miner.md"
+      line_ref: "13"
+      quote: "You must be registered on the G.O.D subnet (netuid 56 on mainnet, 241 on testnet)"
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "validator/core/constants.py"
+      line_ref: "1"
+      quote: "Python validator codebase (validator/core/constants.py, weight_setting.py, scoring.py)"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "docs/tournament_overview.md"
+      line_ref: "5"
+      quote: "miners submit their open-source training repositories and validators execute them on standardized infrastructure"
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "docs/tournament_overview.md"
+      line_ref: "5,210-211"
+      quote: "Training executed using miner's Docker containers and scripts ... Output models to exact paths: /app/checkpoints/{task_id}/{expected_repo_name}"
+      confidence: high
+    - claim_field: "/scoring_signals/0"
+      source_path: "validator/evaluation/scoring.py"
+      line_ref: "108-110,115,143"
+      quote: "For other tasks, sort normally (lower loss is better) ... ranking_type = \"test_loss\" ... top_result.score = cts.FIRST_PLACE_SCORE ... result.score = cts.SCORE_PENALTY"
+      confidence: high
+    - claim_field: "/scoring_signals/1"
+      source_path: "validator/evaluation/scoring.py"
+      line_ref: "99-102"
+      quote: "For GRPO, sort in reverse order (higher value is better) ... ranking_type = \"GRPO score (bigger is better)\""
+      confidence: high
+    - claim_field: "/scoring_signals/2"
+      source_path: "docs/tournament_overview.md"
+      line_ref: "175,194"
+      quote: "Uses GRPO (Group Relative Policy Optimization) scoring where higher scores are better ... Evaluation: 250 episodes post-training to determine final scores"
+      confidence: high
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "validator/evaluation/scoring.py"
+      line_ref: "256-258"
+      quote: "weighted_loss = cts.DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT * text_guided_avg + (1 - cts.DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT) * no_text_avg"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0"
+      source_path: "validator/evaluation/scoring.py"
+      line_ref: "279-281"
+      quote: "if repo == task.model_id: ... marking as non-finetuned ... EvaluationResultText(is_finetune=False, eval_loss=0.0)"
+      confidence: high
+    - claim_field: "/ground_truth_sources/1"
+      source_path: "docs/tournament_overview.md"
+      line_ref: "154,158"
+      quote: "Boss round uses proven historical tasks from the database with at least 2 successful quality scores ... compared against the best historical scores from general miners"
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "docs/scoring_system.md"
+      line_ref: "5"
+      quote: "The Gradient subnet is 100% tournament-based."
+      confidence: high
+    - claim_field: "/aggregation/decay_rate"
+      source_path: "validator/core/constants.py"
+      line_ref: "110"
+      quote: "TOURNAMENT_SIMPLE_DECAY_BASE = 0.3  # Base for simple exponential decay (1st=1.0, 2nd=0.2, 3rd=0.04, etc.)"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "validator/evaluation/tournament_scoring.py"
+      line_ref: "97-102"
+      quote: "all_weights = [cts.TOURNAMENT_SIMPLE_DECAY_BASE ** (r - 1) ...] ... raw_weight = cts.TOURNAMENT_SIMPLE_DECAY_BASE ** (rank - 1) ... return raw_weight / total_sum"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "validator/core/constants.py"
+      line_ref: "94"
+      quote: "EMISSION_BURN_HOTKEY = \"5GU4Xkd3dCGTU3s8VLcHGc5wsD5M8XyxDca5yDQhYm1mVXFu\""
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "validator/core/weight_setting.py"
+      line_ref: "378,595-597"
+      quote: "burn_weight = 1.0 - text_tournament_weight - image_tournament_weight - environment_tournament_weight ... all_node_weights[burn_node_id] = scaled_burn_weight + undistributed_weight"
+      confidence: high
+    - claim_field: "/aggregation/notes/base_weights"
+      source_path: "validator/core/constants.py"
+      line_ref: "218-223"
+      quote: "MAX_TEXT_TOURNAMENT_WEIGHT = 0.48 ... TOURNAMENT_TEXT_WEIGHT = 0.15 ... TOURNAMENT_IMAGE_WEIGHT = 0.10 ... TOURNAMENT_ENVIRONMENT_WEIGHT = 0.10"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "validator/core/weight_setting.py"
+      line_ref: "81-85"
+      quote: "if performance_diff <= cts.EMISSION_MULTIPLIER_THRESHOLD ... excess_performance = performance_diff - cts.EMISSION_MULTIPLIER_THRESHOLD; emission_increase = excess_performance * cts.EMISSION_MULTIPLIER_RATE"
+      confidence: high
+    - claim_field: "/weight_setting/method/decay"
+      source_path: "validator/core/constants.py"
+      line_ref: "244-249"
+      quote: "EMISSION_MULTIPLIER_THRESHOLD = 0.05 ... EMISSION_MULTIPLIER_RATE = 2.0 ... EMISSION_DAILY_TIME_DECAY_RATE = 0.0033  # 0.33%/day ... EMISSION_TIME_DECAY_START_DATE = date(2025, 11, 26)"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "validator/core/weight_setting.py"
+      line_ref: "685-686"
+      quote: "success = await asyncio.to_thread(weights.set_node_weights, substrate=config.substrate, ...)"
+      confidence: high
+    - claim_field: "/weight_setting/cadence"
+      source_path: "validator/core/weight_setting.py"
+      line_ref: "780-782"
+      quote: "if updated < weights_set_rate_limit: ... await asyncio.sleep((weights_set_rate_limit - updated + 1) * 12)"
+      confidence: high
+    - claim_field: "/weight_setting/method/participation"
+      source_path: "validator/core/weight_setting.py"
+      line_ref: "585"
+      quote: "all_node_weights[node_id] += cts.TOURNAMENT_PARTICIPATION_WEIGHT"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "docs/tournament_overview.md"
+      line_ref: "124-126"
+      quote: "Memory limit: DEFAULT_TRAINING_CONTAINER_MEM_LIMIT = \"24g\" ... CPU limit: DEFAULT_TRAINING_CONTAINER_NANO_CPUS = 8 ... Network isolation: --network none for security"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "docs/tourn_miner.md"
+      line_ref: "41,44"
+      quote: "No Code Obfuscation: Your training repository must not contain obfuscated code ... The validator automatically checks repositories for obfuscation during tournament registration"
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "validator/tournament/constants.py"
+      line_ref: "92-94"
+      quote: "TOURNAMENT_TEXT_PARTICIPATION_FEE_RAO = 200_000_000  # 0.2 TAO ... TOURNAMENT_IMAGE_PARTICIPATION_FEE_RAO = 150_000_000  # 0.15 TAO"
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "validator/evaluation/scoring.py"
+      line_ref: "271-273"
+      quote: "unique_repos = list(set(submission_repos)) ... Found duplicate repos. Deduplicating ... unique repos"
+      confidence: high
+    - claim_field: "/anti_gaming/4/description"
+      source_path: "validator/core/constants.py"
+      line_ref: "103-104"
+      quote: "MIN_MINERS_FOR_ENV_TOURN = 5 ... MIN_MINERS_FOR_TOURN = 8"
+      confidence: high
+    - claim_field: "/sub_competitions/structure"
+      source_path: "docs/tournament_overview.md"
+      line_ref: "52-59"
+      quote: "Group Stage: All miners compete in groups ... Top 8 advance ... Knockout Stage: Single elimination format for the top 8 ... Environment Tournaments: Single Group Stage ... No Knockout Rounds: Environment tournaments use 4 group rounds"
+      confidence: high
+    - claim_field: "/sub_competitions/stages/2/advancement_rule"
+      source_path: "docs/tournament_overview.md"
+      line_ref: "159-160"
+      quote: "Challenger wins by majority rule (4+ out of 6 tasks) for both text and image tournaments ... Previous winner retains title unless challenger wins the majority"
+      confidence: high
+    - claim_field: "/sub_competitions/stages/0/multipliers"
+      source_path: "validator/core/constants.py"
+      line_ref: "131-132"
+      quote: "TOURNAMENT_DPO_GPU_MULTIPLIER = 3 ... TOURNAMENT_GRPO_GPU_MULTIPLIER = 2"
+      confidence: high
+    - claim_field: "/sub_competitions/notes"
+      source_path: "docs/tournament_overview.md"
+      line_ref: "26-28"
+      quote: "TournamentType.ENVIRONMENT - Starts every Monday at 14:00 UTC ... TournamentType.TEXT - Starts every Thursday at 14:00 UTC ... TournamentType.IMAGE - Starts every Thursday at 14:00 UTC"
+      confidence: high
+    - claim_field: "/sub_competitions/notes/threshold"
+      source_path: "validator/tournament/constants.py"
+      line_ref: "80-83"
+      quote: "EXPONENTIAL_BASE_THRESHOLD = 0.10 ... EXPONENTIAL_BASE_THRESHOLD_ENVIRONMENT = 0.05 ... EXPONENTIAL_DECAY_RATE = 0.8 ... EXPONENTIAL_MIN_THRESHOLD = 0.03"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "docs/tournament_overview.md"
+      line_ref: "37,146-148"
+      quote: "Adds base contestant (defending champion) if available ... Losers eliminated ... Next round created with winners, or tournament completes"
+      confidence: high
+    - claim_field: "/per_miner_state/notes"
+      source_path: "validator/core/weight_setting.py"
+      line_ref: "131-132"
+      quote: "def calculate_hybrid_decays(first_championship_time: datetime, consecutive_wins: int, ...)"
+      confidence: high
+    - claim_field: "/documentation/primary_docs"
+      source_path: "docs/scoring_system.md"
+      line_ref: "146-153"
+      quote: "Main entry point: get_node_weights_from_tournament_audit_data ... apply_tournament_weights ... tournament_scores_to_weights"
+      confidence: high
+  unresolved:
+    - "/aggregation/burn_allocation/fraction: burn fraction is computed dynamically (1 - sum of tournament weights + undistributed); no fixed literal."
+    - "/aggregation/min_weight_floor: no global per-miner weight floor found; only progressive championship threshold floor (0.03) which governs boss-round dethroning, not weights."
+    - "/scoring_signals/*/weight: individual signal numeric weights are not assigned; ranking is positional within each task type."
+    - "Exact per-task-type GPU-size thresholds (4.0/12.0/40.0B) influence compute allocation, not score, so omitted from scoring_signals."

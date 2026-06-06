@@ -1,0 +1,325 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+subnet:
+  name: "It's AI - Decentralized AI Detection"
+  owner_repo: "It-s-AI__llm-detection"
+  netuid: 32
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners receive a list of texts and return, per word, a predicted probability that
+    the word is AI/LLM-generated (List[List[float]] of probabilities in [0,1]). Validators
+    build a balanced mix of human-written texts (sampled from the Pile and Common Crawl)
+    and AI-generated texts (completions/in-the-middle generations from 30+ open-source
+    LLMs run via Ollama), apply augmentations/adversarial attacks, and score each miner's
+    predictions against the per-word human/AI ground-truth labels using F1, a false-positive
+    score, and average-precision. The per-step reward is the average of those three metrics,
+    multiplied by a 0/1 penalty.
+  submission_format: [signals]
+
+scoring_signals:
+  - name: f1_score
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      sklearn f1_score(y_true, round(y_pred)). One of three equally-weighted components
+      averaged into the reward.
+  - name: fp_score
+    metric_kind: other
+    metric_kind_other: false_positive_rate_complement
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      FP_score = 1 - FP / len(samples). Penalizes classifying human-written text as
+      AI-generated; chosen because false positives are considered more costly.
+  - name: ap_score
+    metric_kind: accuracy
+    metric_kind_other: ""
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      average_precision_score(y_true, y_pred) - area summarizing the precision-recall
+      curve, evaluating the ranking quality of the predicted probabilities.
+  - name: penalty
+    metric_kind: other
+    metric_kind_other: validity_penalty_multiplier
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      count_penalty returns 0 if any prediction is <0 or >1, if check-id predictions
+      don't match the full-set predictions, or if the miner answered a probe sent with a
+      random (wrong) version; also forced to 0 if the miner's out-of-domain F1 < 0.9.
+      miner_reward is multiplied by this penalty.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Human-written texts sampled from the Pile (monology/pile-uncopyrighted, streaming)
+      and from Common Crawl 2023 dumps. Sampling is 80:40 Pile:CommonCrawl; Common-Crawl
+      samples are treated as the out-of-domain validation set.
+    source_identifier: "monology/pile-uncopyrighted ; Common Crawl 2023 dumps"
+    trust_model: trusted
+  - kind: reference_model
+    description: >-
+      AI-generated texts produced by 30+ open-source LLMs run through Ollama (llama2/3/3.x,
+      qwen, command-r, gemma2, mistral, internlm2.5, deepseek, phi4, aya, yi, athene, etc.),
+      using both full text-completion and in-the-middle regeneration, with randomized
+      generation parameters. These provide the AI-labeled half of the balanced dataset.
+    source_identifier: "Ollama models in neurons/validator.py / data_generator.py"
+    trust_model: trusted
+
+aggregation:
+  method: exponential_decay_ema
+  normalization: softmax
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    notes: ""
+  notes: >-
+    Two stages. Per forward step, raw rewards are passed through Softmax(rewards*100)
+    over queried miners. Then update_scores applies a per-uid exponential moving average:
+    scores = alpha*reward + (1-alpha)*scores, with alpha=moving_average_alpha (0.2) once a
+    uid has counter>=counter_threshold (10) and alpha_early (0.3) before that. At weight
+    time the EMA scores are L1-normalized (torch.nn.functional.normalize p=1) into raw
+    weights. decay_rate/min_weight_floor not expressed as literal constants.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    set_weights L1-normalizes the EMA scores and emits them via
+    process_weights_for_netuid / convert_weights_and_uids_for_emit. Weights are set when
+    (block - metagraph.last_update[uid]) > neuron.epoch_length (default 100 blocks of ~12s).
+  on_chain_call: set_weights
+  tempo_or_interval: "100"
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      count_penalty: a random subset of challenges (check_ids, 1-10 items) is re-queried
+      separately; if the miner's predictions for those ids differ (rounded to 2 dp) from
+      the full-set predictions, or any prediction is outside [0,1], penalty=0 (reward
+      zeroed for that step).
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      Version probe: with probability 0.2 a synapse is sent with a random (in-range but
+      wrong) version string; an honest miner running the real code returns empty
+      predictions, so any non-empty version_response sets penalty=0.
+  - kind: other
+    kind_other: data_augmentation_adversarial
+    enforcement: penalty
+    description: >-
+      Texts are augmented before being sent (random consecutive-sentence subsampling,
+      char-level misspellings, adjective removal) to prevent miners precomputing hashes
+      over the Pile and memorizing membership.
+  - kind: other
+    kind_other: out_of_domain_quality_gate
+    enforcement: penalty
+    description: >-
+      Common-Crawl (out-of-domain) samples are scored separately; an EMA of each miner's
+      out-of-domain F1 is kept (out_of_domain_alpha=0.2) and if it falls below
+      neuron.out_of_domain_min_f1_score (default 0.9) the miner's penalty is set to 0.
+  - kind: stake_weighting
+    enforcement: rejection
+    description: >-
+      has_enough_stake gate: a miner whose coldkey alpha stake minus min_alpha_amount is
+      negative gets reward 0 for the step (default min_alpha_amount=0).
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: >-
+    Single classification task. Out-of-domain (Common Crawl) vs in-domain (Pile) scoring
+    is a quality gate within the one mechanism, not a separate competition.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, performance_ledger]
+  status_values: []
+  reset_policy: >-
+    On metagraph resync, if a uid's hotkey changed the score is reset to default_score_value
+    (0) and its counter reset to 0; otherwise the counter is incremented each resync.
+  notes: >-
+    Persistent per-uid EMA scores (self.scores) and a counter (self.counter) controlling
+    early vs steady alpha, plus a per-uid out-of-domain F1 EMA (self.out_of_domain_f1_scores).
+    scores/counter/hotkeys are saved to state.pt and reloaded on restart.
+
+documentation:
+  status: docs_and_code
+  source_version: "3.14.0"
+  primary_docs:
+    - "docs/incentive.md"
+    - "README.md"
+    - "docs/validating.md"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "detection/utils/config.py"
+      line_ref: "63"
+      quote: 'parser.add_argument("--netuid", type=int, help="Subnet netuid", default=32)'
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "detection/validator/reward.py"
+      line_ref: "19-23"
+      quote: "import torch / import numpy as np / from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, average_precision_score"
+      confidence: high
+    - claim_field: "/documentation/source_version"
+      source_path: "detection/__init__.py"
+      line_ref: "19"
+      quote: '__version__ = "3.14.0"'
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "detection/protocol.py"
+      line_ref: "43-47"
+      quote: "predictions: List[List[float]] = pydantic.Field(..., title=\"Predictions\", description=\"List of predicted probabilities. This attribute is mutable and can be updated.\")"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "docs/incentive.md"
+      line_ref: "3"
+      quote: "For validating we use two types of data, which is balanced in proportion 1:1."
+      confidence: high
+    - claim_field: "/scoring_signals/0/name"
+      source_path: "detection/validator/reward.py"
+      line_ref: "42-47"
+      quote: "f1 = f1_score(y_true, preds) ... res = {'fp_score': 1 - fp / len(y_pred), 'f1_score': f1, 'ap_score': ap_score}"
+      confidence: high
+    - claim_field: "/scoring_signals/1/name"
+      source_path: "docs/incentive.md"
+      line_ref: "33"
+      quote: "FP_score = 1 - FP / len(samples)."
+      confidence: high
+    - claim_field: "/scoring_signals/2/name"
+      source_path: "detection/validator/reward.py"
+      line_ref: "43"
+      quote: "ap_score = average_precision_score(y_true, y_pred)"
+      confidence: high
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "detection/validator/reward.py"
+      line_ref: "49"
+      quote: "reward = sum([v for v in res.values()]) / len(res)"
+      confidence: high
+    - claim_field: "/scoring_signals/3/name"
+      source_path: "detection/validator/reward.py"
+      line_ref: "59-67"
+      quote: "bad = np.any((y_pred < 0) | (y_pred > 1)) ... if version_predictions_array: bad = 1 ... return 0 if bad else 1"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "docs/incentive.md"
+      line_ref: "6-8"
+      quote: "To gather human-written validation data we use the Pile dataset."
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "detection/validator/my_datasets.py"
+      line_ref: "80"
+      quote: 'load_dataset("monology/pile-uncopyrighted", streaming=True)'
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "detection/validator/my_datasets.py"
+      line_ref: "16-18"
+      quote: "PILE_COUNT = 80 / CC_COUNT = 40 / PILE_PROB = PILE_COUNT / (PILE_COUNT + CC_COUNT)"
+      confidence: high
+    - claim_field: "/ground_truth_sources/1/description"
+      source_path: "docs/incentive.md"
+      line_ref: "15"
+      quote: "We use the Ollama GitHub repository to run Large Language Models and generate completions for these prompts. As LLMs we use 30+ SOTA models from the top of LLM-Arena."
+      confidence: high
+    - claim_field: "/aggregation/normalization"
+      source_path: "detection/validator/forward.py"
+      line_ref: "209-210"
+      quote: "m = torch.nn.Softmax() / rewards_tensor = m(rewards_tensor * 100)"
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "detection/base/validator.py"
+      line_ref: "379-381"
+      quote: "self.scores: torch.FloatTensor = real_alpha * scattered_rewards + (1 - real_alpha) * self.scores"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "detection/utils/config.py"
+      line_ref: "134-152"
+      quote: '--neuron.moving_average_alpha ... default=0.2 ... --neuron.moving_average_alpha_early ... default=0.3 ... --neuron.counter_threshold ... default=10'
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "detection/base/validator.py"
+      line_ref: "257"
+      quote: "raw_weights = torch.nn.functional.normalize(self.scores, p=1, dim=0)"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "detection/base/validator.py"
+      line_ref: "286-294"
+      quote: "result, msg = self.subtensor.set_weights(wallet=self.wallet, netuid=self.config.netuid, uids=uint_uids, weights=uint_weights, ... version_key=self.spec_version,)"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "detection/base/neuron.py"
+      line_ref: "187-190"
+      quote: "(self.block - self.metagraph.last_update[self.uid]) > self.config.neuron.epoch_length"
+      confidence: high
+    - claim_field: "/weight_setting/cadence"
+      source_path: "detection/utils/config.py"
+      line_ref: "83-88"
+      quote: '--neuron.epoch_length ... help="The default epoch length (how often we set weights, measured in 12 second blocks)." ... default=100'
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "detection/validator/reward.py"
+      line_ref: "61-62"
+      quote: "if (check_predictions.round(2) != y_pred[check_ids].round(2)).any(): bad = 1"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "detection/validator/forward.py"
+      line_ref: "120-138"
+      quote: "if random.random() < 0.2: ... random_version = generate_random_version(self.version, self.least_acceptable_version) ... TextSynapse(texts=auged_texts, predictions=[], version=random_version)"
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "docs/incentive.md"
+      line_ref: "20"
+      quote: "we select a random sequence of consecutive sentences from a given text. Then we add in a random place (or two) misspelling (about 10 different char-based augs) or remove a random adjective."
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "detection/validator/reward.py"
+      line_ref: "134-135"
+      quote: "if self.out_of_domain_f1_scores[uid] < self.config.neuron.out_of_domain_min_f1_score: penalty = 0"
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "detection/utils/config.py"
+      line_ref: "171-176"
+      quote: '--neuron.out_of_domain_min_f1_score ... help="The minimum f1 score that miners must have on out of domain validation" ... default=0.9'
+      confidence: high
+    - claim_field: "/anti_gaming/4/description"
+      source_path: "detection/base/validator.py"
+      line_ref: "311-312"
+      quote: "self.has_enough_stake[i] = coldkey_stake[coldkey] - self.config.neuron.min_alpha_amount >= 0"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "detection/base/validator.py"
+      line_ref: "333-338"
+      quote: "if hotkey != self.metagraph.hotkeys[uid]: self.scores[uid] = self.default_score_value ... self.counter[uid] = 0 / else: self.counter[uid] += 1"
+      confidence: high
+    - claim_field: "/per_miner_state/notes"
+      source_path: "detection/base/validator.py"
+      line_ref: "389-396"
+      quote: 'torch.save({"step": self.step, "scores": self.scores, "hotkeys": self.hotkeys,}, self.config.neuron.full_path + "/state.pt",)'
+      confidence: high
+    - claim_field: "/documentation/status"
+      source_path: "docs/incentive.md"
+      line_ref: "24-43"
+      quote: "## Reward counting ... The final reward is the average of these three values."
+      confidence: high
+  unresolved:
+    - "burn_allocation: no burn / owner-take mechanism appears in the weight-setting code."
+    - "aggregation.decay_rate and min_weight_floor: not expressed as literal constants (EMA uses alpha 0.2/0.3, not a decay_rate; no explicit weight floor)."
+    - "out_of_domain_alpha=0.2 is hardcoded in neurons/validator.py (self.out_of_domain_alpha = 0.2) but the schema has no dedicated field for this secondary EMA rate."

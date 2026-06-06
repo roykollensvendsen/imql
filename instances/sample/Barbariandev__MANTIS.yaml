@@ -1,0 +1,281 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+subnet:
+  name: "MANTIS"
+  owner_repo: "Barbariandev__MANTIS"
+  netuid: 123
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners submit encrypted feature embeddings ("signals") for a set of market-prediction
+    challenges (e.g. ETH/BTC/FX binary direction, barrier-hit, LBFGS volatility/quantile paths,
+    multi-asset range breakout, cross-sectional return and funding-rate ranking). Validators
+    sample each miner's committed payload every few blocks, decrypt it after a timelock
+    maturation window, and store (embedding, price) pairs. Periodically a walk-forward scoring
+    pass computes each hotkey's salience — its measured contribution / predictive value to a
+    fitted logistic meta-model of the realized forward price outcome — for each challenge.
+    Per-challenge salience is aggregated across challenges by weight, EMA-smoothed, and turned
+    into on-chain weights. Reward is the predictive value of a miner's signal.
+  submission_format: [signals, content_link, commitment_hash]
+
+scoring_signals:
+  - name: salience_contribution
+    metric_kind: other
+    metric_kind_other: "predictive contribution (absolute meta-model logistic coefficient |beta_j|) of a miner's signal to forecasting the realized forward price/return outcome"
+    direction: higher_is_better
+    weight: 1.0
+    normalization: other
+    notes: >-
+      Normalization: per-challenge salience is normalized to sum-to-one over hotkeys, then a
+      challenge-weighted average is taken across challenges, then re-normalized to sum-to-one.
+      Computed by model.multi_salience dispatching per challenge loss_func. Binary/xsec use a
+      walk-forward ElasticNet/L2-logistic meta-model on out-of-sample base-model predictions;
+      importance = |beta_j|. LBFGS blends a classifier path (beta_j^2) and a Q-path 75/25.
+      HITFIRST uses |beta_up| + |beta_down|.
+  - name: feature_selection_auc
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Gating signal: per-miner L2-logistic AUC on a held-out half (binary) or univariate AUC
+      (xsec). Only miners with AUC > 0.5 are selected into the meta-model (top_k, default 50/20).
+
+ground_truth_sources:
+  - kind: market_data
+    description: >-
+      Realized spot asset prices (and funding rates) fetched from an external price service and
+      published to a Cloudflare R2 JSON endpoint; forward outcome is the price/return blocks_ahead
+      later. Labels are binary (return > eps), barrier-hit, or cross-sectional rank vs median.
+    source_identifier: "config.PRICE_DATA_URL = https://pub-ba8c1b8edb8046edaccecbd26b5ca7f8.r2.dev/latest_prices.json (price_service.py: Polygon spot + OKX/HL/CoinGlass funding)"
+    trust_model: oracle
+  - kind: commit_reveal
+    description: >-
+      Miner payloads are dual-path encrypted (X25519+ChaCha20-Poly1305 owner path; Drand IBE
+      timelock path). Validators can only decrypt after the specified Drand round, so predictions
+      are hidden until maturation. Payload commit is an on-chain URL pointing to the ciphertext.
+    source_identifier: "config: DRAND_BEACON_ID=quicknet, ALG_LABEL_V2=x25519-hkdf-sha256+chacha20poly1305+drand-tlock"
+    trust_model: trusted
+
+aggregation:
+  method: exponential_decay_ema
+  normalization: sum_to_one
+  decay_rate: 0.15
+  min_weight_floor: 0.0001
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: 0.45
+    notes: >-
+      BURN_PCT applied in validator.py calc_worker: all UID weights scaled by (1-BURN_PCT) and
+      BURN_PCT added to UID 0. config.BURN_PCT = 0.45 (README table inconsistently lists 0.30;
+      code value 0.45 is authoritative).
+  notes: >-
+    decay_rate is the EMA alpha (0.15) applied across weight-setting intervals to the normalized
+    weight vector. min_weight_floor is the fixed 0.0001 weight given to each young UID
+    (hotkey age < 36000 blocks); mature UIDs share the remaining mass proportional to salience.
+    Per-challenge salience is normalized sum-to-one, multiplied by challenge weight, and averaged.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Weight calc runs in a background thread when current_block % WEIGHT_CALC_INTERVAL (1000) == 0
+    and at least LAG*2+1 steps exist; computed/EMA'd weights are saved to disk and then pushed
+    on-chain when current_block % WEIGHT_SET_INTERVAL (360) == 0.
+  on_chain_call: set_weights
+  tempo_or_interval: "360 blocks (WEIGHT_SET_INTERVAL); weight calc every 1000 blocks (WEIGHT_CALC_INTERVAL)"
+
+anti_gaming:
+  - kind: commit_reveal
+    enforcement: barrier
+    description: >-
+      Timelock (Drand IBE) + owner X25519 encryption hides predictions until a maturation round;
+      a SHA-256 binding hash over (hotkey, round, owner_pk, ephemeral_pk) is used as AAD to
+      prevent replay, relay, and substitution. Payloads sampled every SAMPLE_EVERY blocks but only
+      scored after decryption.
+  - kind: deduplication
+    enforcement: penalty
+    description: >-
+      L2 regularization splits coefficient mass among correlated/clone miners (n clones each get
+      ~w/n). LBFGS path applies a uniqueness penalty suppressing miners with >85% argmax overlap
+      with higher-ranked peers; TRADE-MIX uses dedup_cosine_threshold 0.95.
+  - kind: rate_limit
+    enforcement: rejection
+    description: >-
+      Stale-signal filtering: in iter training, when price is unchanged for more than
+      MAX_UNCHANGED_TIMESTEPS (15) consecutive samples those rows are skipped; funding/xsec
+      challenges zero out miner columns whose temporal std < 1e-4 before pooling.
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Commit URL validation in cycle.get_miner_payloads: host must be *.r2.dev or
+      *.r2.cloudflarestorage.com, object key must be exactly the hotkey (single path segment),
+      payload <= 25 MB. Invalid commits are dropped.
+
+sub_competitions:
+  structure: multi_asset
+  stages: []
+  count: 13
+  notes: >-
+    13 challenges in config.CHALLENGES, each with its own ticker, dim, blocks_ahead, loss_func and
+    weight: binary direction (ETH/CADUSD/NZDUSD/CHFUSD/XAGUSD, w=1), ETH-HITFIRST (w=2.5),
+    ETH-LBFGS (w=3.5), BTC-LBFGS-6H (w=2.875), MULTI-BREAKOUT (w=5.0), XSEC-RANK (w=3.0),
+    FUNDING-XSEC (w=4.0), TRADE-MIX (sized to ~15% of emissions). Salience aggregated by weight.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [registration_age]
+  status_values: []
+  reset_policy: ""
+  notes: >-
+    Hotkey "first block" (first non-zero submission) is read from the DB; UIDs younger than
+    young_threshold = 36000 blocks are treated as "young" and assigned a fixed 0.0001 weight
+    instead of salience-proportional weight, until they mature. No persistent debt/score ledger
+    beyond the SQLite (embedding, price) history used for scoring.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs: ["README.md", "MINER_GUIDE.md", "lbfgs_guide.md"]
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "config.py"
+      line_ref: "68"
+      quote: "NETUID = 123"
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "validator.py"
+      line_ref: "22-27"
+      quote: "import bittensor as bt\nimport torch\nimport aiohttp"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "9"
+      quote: "Validators sample miner payloads every SAMPLE_EVERY blocks, decrypt them after a timelock maturation window, and store (embedding, price) pairs in a SQLite database. Periodically, walk-forward scoring computes per-hotkey salience for each challenge, aggregates across challenges by weight, applies EMA smoothing, and sets on-chain weights."
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "173-178"
+      quote: "V2 JSON only. Required fields: v, round, hk, owner_pk, C, W_owner, W_time, binding, alg. Commit constraints: Host: Cloudflare R2 ... Object key: exactly your hotkey"
+      confidence: high
+    - claim_field: "/scoring_signals/0/metric_kind_other"
+      source_path: "model.py"
+      line_ref: "353-361"
+      quote: "coef_vec = np.abs(np.asarray(meta_clf.coef_, dtype=np.float64).ravel()) ... imp_map[hk] = float(coef_vec[local_col]) ... return {hk: (v / total_imp) ...}"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "README.md"
+      line_ref: "73-81"
+      quote: "Binary (binary) — Walk-forward with ElasticNet meta-model. ... Importance = |beta_j|. ... LBFGS (lbfgs) — Two independent scoring paths blended 75/25 ... HITFIRST (hitfirst) — ... Importance = |beta_up| + |beta_down|."
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "model.py"
+      line_ref: "299-301"
+      quote: "top_k = min(TOP_K, H)\n        selected_idx = np.argsort(-sel_auc, kind='stable')[:top_k]\n        selected_idx = selected_idx[sel_auc[selected_idx] > 0.5]"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "config.py"
+      line_ref: "63"
+      quote: "PRICE_DATA_URL = \"https://pub-ba8c1b8edb8046edaccecbd26b5ca7f8.r2.dev/latest_prices.json\""
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "ledger.py"
+      line_ref: "1027-1041"
+      quote: "price_fut = prices_by_sidx.get(sidx + ahead) ... if price_now is None or price_fut is None: continue"
+      confidence: high
+    - claim_field: "/ground_truth_sources/1/source_identifier"
+      source_path: "config.py"
+      line_ref: "252-256"
+      quote: "ALG_LABEL_V2 = \"x25519-hkdf-sha256+chacha20poly1305+drand-tlock\" ... DRAND_BEACON_ID = \"quicknet\""
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "validator.py"
+      line_ref: "427-432"
+      quote: "# Apply EMA to reduce block-to-block variance ... old_weights_data = load_weights() ... alpha = 0.15"
+      confidence: high
+    - claim_field: "/aggregation/decay_rate"
+      source_path: "validator.py"
+      line_ref: "432"
+      quote: "alpha = 0.15"
+      confidence: high
+    - claim_field: "/aggregation/min_weight_floor"
+      source_path: "validator.py"
+      line_ref: "371"
+      quote: "fixed_weight_per_young_uid = 0.0001"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "config.py"
+      line_ref: "229"
+      quote: "BURN_PCT = 0.45"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "validator.py"
+      line_ref: "399-404"
+      quote: "burn_pct = float(getattr(config, \"BURN_PCT\", 0.0)) ... normalized_weights[0] = normalized_weights.get(0, 0.0) + burn_pct\n                            weights_logger.info(f\"Reserved {burn_pct*100:.0f}% for UID 0 (burn)\")"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "model.py"
+      line_ref: "586-592"
+      quote: "avg = {hk: float(sum(s.get(hk, 0.0) * w for _t, s, w in per_challenge)) / total_w for hk in all_hotkeys}"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "validator.py"
+      line_ref: "292-296"
+      quote: "if (\n                    current_block % config.WEIGHT_CALC_INTERVAL == 0\n                    and (weight_thread is None or not weight_thread.is_alive())\n                    and datalog.block_count >= config.LAG * 2 + 1\n                ):"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "validator.py"
+      line_ref: "496-502"
+      quote: "sub.set_weights(\n                                    netuid=args.netuid,\n                                    wallet=wallet,\n                                    uids=mg.uids,\n                                    weights=final_w,\n                                    wait_for_inclusion=False,\n                                )"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "config.py"
+      line_ref: "247"
+      quote: "WEIGHT_SET_INTERVAL = 360"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "README.md"
+      line_ref: "113-118"
+      quote: "Dual-path encryption ensures no party can observe predictions before maturation: 1. Owner path — X25519 ECDH + ChaCha20-Poly1305 AEAD ... 2. Timelock path — Drand IBE (BLS12-381). ... A SHA-256 binding hash over (hotkey, round, owner_pk, ephemeral_pk) is used as AAD, preventing replay, relay, and substitution attacks."
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "README.md"
+      line_ref: "95-97"
+      quote: "L2 regularization splits coefficient mass among correlated miners. If n clones submit identical predictions, each receives ~ w/n weight. L1 (in binary challenges) or the uniqueness penalty (in LBFGS) drives zero-information or duplicate miners to zero."
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "ledger.py"
+      line_ref: "1014-1037"
+      quote: "max_unchanged = int(getattr(config, \"MAX_UNCHANGED_TIMESTEPS\", 0) or 0) ... if max_unchanged > 0 and unchanged_streak > max_unchanged:\n                continue"
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "cycle.py"
+      line_ref: "87-100"
+      quote: "if not _is_valid_r2_url(object_url): ... if len(path_parts) != 1: ... if object_name.lower() != hotkey.lower():"
+      confidence: high
+    - claim_field: "/sub_competitions/notes"
+      source_path: "config.py"
+      line_ref: "72-223"
+      quote: "CHALLENGES = [ {\"name\": \"ETH-1H-BINARY\", ... \"weight\": 1}, ... ] ... CHALLENGES.append(MULTI_BREAKOUT_CHALLENGE) ... CHALLENGES.append(XSEC_RANK_CHALLENGE) ... CHALLENGES.append(FUNDING_XSEC_CHALLENGE) ... CHALLENGES.append(TRADE_MIX_CHALLENGE)"
+      confidence: high
+    - claim_field: "/per_miner_state/notes"
+      source_path: "validator.py"
+      line_ref: "353-386"
+      quote: "young_threshold = 36000 ... if age_blocks < young_threshold: ... young_uids.add(uid) ... for uid in active_young_uids:\n                            final_weights[uid] = fixed_weight_per_young_uid"
+      confidence: high
+    - claim_field: "/documentation/primary_docs"
+      source_path: "README.md"
+      line_ref: "186"
+      quote: "See MINER_GUIDE.md for submission details per challenge type."
+      confidence: high
+  unresolved:
+    - "source_version: no git tag / version string present in the repo."
+    - "BURN_PCT documentation conflict: README Key Parameters table lists 0.30 for UID 0 while config.py defines BURN_PCT = 0.45; code value used."
+    - "TLOCK lock duration (TLOCK_DEFAULT_LOCK_SECONDS=30 / suggested 3600) defines the embargo/maturation window but exact enforced Drand-round lag per payload is set by miners, not a single fixed constant."

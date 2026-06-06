@@ -1,0 +1,239 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+subnet:
+  name: "Bitsec Subnet"
+  owner_repo: "Bitsec-AI__subnet"
+  netuid: 60
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners receive a Solidity smart-contract code sample (a "challenge") and return a
+    PredictionResponse: a boolean indicating whether vulnerabilities were found, plus a list of
+    detected vulnerabilities each carrying a category, severity, line ranges, description, and
+    fix/exploit code. Validators generate challenges that are either secure (clean code) or
+    vulnerable (an LLM injects a labeled vulnerability into clean code). Miners are rewarded for
+    correctly predicting the vulnerable/secure label and for matching the expected vulnerability
+    categories.
+  submission_format: [signals]
+
+scoring_signals:
+  - name: prediction_match
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      reward() returns 0.0 if the miner's boolean `prediction` does not equal the expected
+      prediction; this gates all further scoring.
+  - name: vulnerability_category_jaccard
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Jaccard score (intersection over union) of the SET of vulnerability `category` values between
+      the expected response and the miner response. Exact-equality of the full vulnerability lists
+      returns 1.0; empty category union returns 1.0. Line ranges and descriptions are TODO/unused.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Clean Solidity codebases (samples/clean-codebases/*.sol) and labeled vulnerability
+      descriptions (samples/vulnerabilities/*.md) shipped in the repo. A challenge is built by
+      randomly picking a clean .sol file and, with ~80% probability, using an LLM to inject a
+      randomly chosen labeled vulnerability into it; the injected vulnerability's PredictionResponse
+      is the ground-truth `expected_response`.
+    source_identifier: "samples/clean-codebases/*.sol ; samples/vulnerabilities/*.md"
+    trust_model: trusted
+  - kind: llm_judgment
+    description: >-
+      The vulnerable challenge code and its expected vulnerability labels are produced by an LLM
+      (chat_completion) that injects a vulnerability into clean code, returning NewlyVulnerableCode
+      {code, vulnerability_info}. The LLM-generated vulnerability_info serves as ground truth.
+    source_identifier: "bitsec/utils/data.py:create_challenge_with_inputs"
+    trust_model: oracle
+
+aggregation:
+  method: exponential_decay_ema
+  normalization: sum_to_one
+  decay_rate: 0.1
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    notes: ""
+  notes: >-
+    Per-step rewards (np.array of reward() values) are folded into self.scores via EMA:
+    scores = alpha*rewards + (1-alpha)*scores with alpha = moving_average_alpha (default 0.1).
+    At weight-setting time scores are L1-normalized (raw_weights = scores / ||scores||_1) before
+    process_weights_for_netuid and conversion to uint16.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    L1-normalize EMA scores, run process_weights_for_netuid, convert to uint16 uids/weights, then
+    subtensor.set_weights with version_key=spec_version, wait_for_inclusion on first set.
+  on_chain_call: set_weights
+  tempo_or_interval: "neuron.epoch_length default 100 (12-second blocks); validator main loop sleeps 600s per step"
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: barrier
+    description: >-
+      Boolean prediction gate: reward() returns 0.0 whenever the miner's `prediction` flag does not
+      match the expected vulnerable/secure label, so guessing categories without matching the label
+      yields zero reward.
+  - kind: other
+    kind_other: data_augmentation_noise
+    enforcement: barrier
+    description: >-
+      After LLM injection, challenge code is passed through add_comment_noise_simple, which prepends
+      a misleading "// TODO: Fix security vulnerability" comment as noise to make the challenge
+      harder. forward() docstring also references random data augmentation.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score]
+  status_values: []
+  reset_policy: >-
+    Per-uid EMA score (self.scores) persists across steps and is saved/loaded from state.npz. A
+    uid's score is zeroed when its hotkey is replaced in the metagraph (resync_metagraph).
+  notes: >-
+    Validator also tracks a seen_miners set, but only for logging new-connection notices, not for
+    scoring.
+
+documentation:
+  status: code_authoritative
+  source_version: null
+  primary_docs:
+    - "README.md"
+  completeness: low
+
+provenance:
+  confidence_overall: medium
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  extractor_notes: >-
+    reward.py contains an unreachable second block after the first `return score` (lines 92-132):
+    a 1-5 integer LLM-judge scoring scheme and a more detailed tuple return. It is dead code in the
+    current control flow — the live reward path is the Jaccard category score only. Recorded here
+    because it documents intended (but inactive) LLM-judging plagiarism/similarity controls.
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "bitsec/utils/config.py"
+      line_ref: "71"
+      quote: 'parser.add_argument("--netuid", type=int, help="Subnet netuid", default=60)'
+      confidence: high
+    - claim_field: "/subnet/name"
+      source_path: "README.md"
+      line_ref: "1"
+      quote: "Bitsec Subnet (Bittensor mainnet 60 / testnet 209)"
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "bitsec/validator/reward.py"
+      line_ref: "20-22"
+      quote: "import numpy as np\nfrom typing import List\nimport bittensor as bt"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "bitsec/validator/forward.py"
+      line_ref: "38-47"
+      quote: "Get a code sample. 50/50 chance of: A. SECURE (label = 0): No vulnerability injected. B. VULNERABLE (label = 1): Inject a vulnerability into the code."
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "bitsec/protocol.py"
+      line_ref: "199-209"
+      quote: "class PredictionResponse(pydantic.BaseModel): ... prediction: bool ... vulnerabilities: List[Vulnerability]"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "bitsec/validator/reward.py"
+      line_ref: "57-58"
+      quote: "if response.prediction != expected_response.prediction:\n        return 0.0"
+      confidence: high
+    - claim_field: "/scoring_signals/1/metric_kind"
+      source_path: "bitsec/validator/reward.py"
+      line_ref: "35-36"
+      quote: "# Jaccard score of the vulnerabilities\n    score = jaccard_score(expected_response, response)"
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "bitsec/validator/reward.py"
+      line_ref: "78-85"
+      quote: "category_intersection = category_expected.intersection(category_response)\n    category_union = category_expected.union(category_response) ... score = len(category_intersection) / len(category_union)"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "bitsec/utils/data.py"
+      line_ref: "209-225"
+      quote: 'secure_filename = _get_random_filename(SECURE_CODE_DIR, ".sol") ... vulnerability_filename = _get_random_filename(VULNERABILITIES_DIR, ".md")'
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "bitsec/utils/data.py"
+      line_ref: "13-15"
+      quote: "SAMPLE_DIR = os.path.join(...)\nVULNERABILITIES_DIR = 'vulnerabilities'\nSECURE_CODE_DIR = 'clean-codebases'"
+      confidence: high
+    - claim_field: "/ground_truth_sources/1/description"
+      source_path: "bitsec/utils/data.py"
+      line_ref: "156-176"
+      quote: "class NewlyVulnerableCode(pydantic.BaseModel): code: str; vulnerability_info: PredictionResponse ... response = chat_completion(prompt, ..., response_format=NewlyVulnerableCode)"
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "bitsec/base/validator.py"
+      line_ref: "385-386"
+      quote: "alpha: float = self.config.neuron.moving_average_alpha\n        self.scores: np.ndarray = alpha * scattered_rewards + (1 - alpha) * self.scores"
+      confidence: high
+    - claim_field: "/aggregation/decay_rate"
+      source_path: "bitsec/utils/config.py"
+      line_ref: "215-220"
+      quote: '"--neuron.moving_average_alpha", ... help="Moving average alpha parameter, how much to add of the new observation.", default=0.1'
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "bitsec/base/validator.py"
+      line_ref: "252-259"
+      quote: "norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True) ... raw_weights = self.scores / norm"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "bitsec/base/validator.py"
+      line_ref: "288-296"
+      quote: "result, msg = self.subtensor.set_weights(wallet=self.wallet, netuid=self.config.netuid, uids=uint_uids, weights=uint_weights, ... version_key=self.spec_version,)"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "bitsec/utils/config.py"
+      line_ref: "82-87"
+      quote: '"--neuron.epoch_length", ... help="The default epoch length (how often we set weights, measured in 12 second blocks).", default=100'
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "bitsec/validator/reward.py"
+      line_ref: "57-58"
+      quote: "if response.prediction != expected_response.prediction:\n        return 0.0"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "bitsec/utils/data.py"
+      line_ref: "189-190"
+      quote: "## add layers of noise to make challenge harder\n        modified_code = add_comment_noise_simple(modified_code)"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "bitsec/base/validator.py"
+      line_ref: "328-330"
+      quote: "for uid, hotkey in enumerate(self.hotkeys):\n            if hotkey != self.metagraph.hotkeys[uid]:\n                self.scores[uid] = 0  # hotkey has been replaced"
+      confidence: high
+    - claim_field: "/documentation/status"
+      source_path: "README.md"
+      line_ref: "37"
+      quote: "The subnet incentivizes miners to develop models and workflows to find and fix code vulnerabilities."
+      confidence: medium
+    - claim_field: "/provenance/extractor_notes"
+      source_path: "bitsec/validator/reward.py"
+      line_ref: "90-132"
+      quote: "return score\n\n    if response.prediction != expected_response.prediction: ... score = chat_completion(prompt, response_format=Score)"
+      confidence: high
+  unresolved:
+    - "min_weight_floor / burn allocation: no floor or burn fraction present in code."
+    - "scoring_signal weights: reward() returns the raw Jaccard score directly; there is no explicit per-signal weighting constant to cite."
+    - "source_version: no version tag found (__version__ = '0.0.0' is a template placeholder)."
+    - "Severity and line_range matching are present in the protocol but marked TODO/unused in the live reward path."

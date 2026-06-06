@@ -1,0 +1,345 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+subnet:
+  name: "Bitcast — The Decentralized Creator Economy"
+  owner_repo: "bitcast-network__bitcast"
+  netuid: null
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners are YouTube content creators (or agencies running up to 5 accounts) who publish
+    videos satisfying brand-defined "briefs". Validators obtain temporary OAuth tokens to read
+    each account's YouTube Analytics. A video is eligible only if its transcript and description
+    are LLM-judged to satisfy an active brief (plus a unique-identifier and publish-date check).
+    Each eligible video's score is the curve-difference of its 7-day moving-average YouTube
+    Premium revenue (estimatedRedPartnerRevenue; for non-YPP accounts, estimatedMinutesWatched
+    converted to revenue via a fixed multiplier), capped at the channel's historical median,
+    then multiplied by a per-format scaling factor and a per-brief boost. Per-account video
+    limits apply per brief format (FIFO, oldest videos kept). Brief USD targets are converted
+    to on-chain weights against the subnet's total daily USD miner emissions.
+  submission_format: [content_link]
+
+scoring_signals:
+  - name: youtube_premium_revenue
+    metric_kind: engagement
+    direction: higher_is_better
+    weight: 1.0
+    normalization: other
+    notes: >-
+      Primary signal for YPP accounts: 7-day moving average of estimatedRedPartnerRevenue
+      (YouTube Premium revenue), median-capped, fed through a diminishing-returns curve.
+      normalization is custom (curve difference + median cap), not a listed enum.
+  - name: estimated_minutes_watched
+    metric_kind: engagement
+    direction: higher_is_better
+    weight: 1.0
+    normalization: other
+    notes: >-
+      For non-YPP accounts (and YPP accounts with zero revenue and min_stake), revenue is
+      estimated from estimatedMinutesWatched * YT_NON_YPP_REVENUE_MULTIPLIER (0.00005) before
+      the curve is applied.
+  - name: brief_content_match
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Gating (binary) signal, not a magnitude: an LLM judges whether a video's transcript +
+      description satisfy an active brief. Only matching videos receive a revenue-based score.
+
+ground_truth_sources:
+  - kind: real_engagement
+    description: >-
+      YouTube Analytics API metrics (estimatedRedPartnerRevenue, estimatedMinutesWatched,
+      averageViewPercentage, views) pulled per-video and per-channel via validator-held OAuth
+      tokens. Revenue is the 7-day moving average with a 3-day reward delay.
+    source_identifier: "YouTube Analytics API (estimatedRedPartnerRevenue, estimatedMinutesWatched)"
+    trust_model: oracle
+  - kind: llm_judgment
+    description: >-
+      An LLM (Chutes or OpenRouter provider) evaluates whether the video transcript and
+      description satisfy each active brief's requirements; also screens for prompt injection.
+    source_identifier: "LLM_PROVIDER (chutes|openrouter)"
+    trust_model: oracle
+
+aggregation:
+  method: proportional
+  normalization: sum_to_one
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: null
+    notes: >-
+      Unclaimed emissions accrue to UID 0 (burn). _sum_to_final_rewards sets
+      rewards[uid 0] = max(1.0 - other_sum, 0.0) so any emissions not claimed by miners go to
+      UID 0. A configurable SUBNET_TREASURY_PERCENTAGE (default 0) is then moved from UID 0 to
+      the subnet treasury UID (default 106). No literal burn fraction exists; it is residual.
+  notes: >-
+    Per-video USD targets = adjusted_curve_difference * scaling_factor * boost_factor. Summed
+    per brief across a miner's accounts, divided by total daily USD emissions to get raw
+    weights, each brief capped at its 'cap' (default 1.0), then globally normalized so the total
+    sums to <= 1.0. Final per-miner reward = sum across briefs.
+
+weight_setting:
+  cadence: other
+  cadence_other: "every VALIDATOR_STEPS_INTERVAL (4 hours) forward pass"
+  method: >-
+    forward() runs only when step % VALIDATOR_STEPS_INTERVAL == 0 (240 = 4 hours); scores are
+    L1-normalized (raw_weights = scores / ||scores||_1) then passed through
+    process_weights_for_netuid and convert_weights_and_uids_for_emit before set_weights.
+  on_chain_call: set_weights
+  tempo_or_interval: "VALIDATOR_STEPS_INTERVAL = 240 (interpreted as 4 hours)"
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Channel vetting: channel must be YPP member OR meet min alpha-stake threshold
+      (YT_MIN_ALPHA_STAKE_THRESHOLD=1000); channel age >= YT_MIN_CHANNEL_AGE (21 days);
+      YT_MIN_SUBS (100) <= subs <= YT_MAX_SUBS (500000); averageViewPercentage >=
+      YT_MIN_CHANNEL_RETENTION (10%); total minutes watched >= YT_MIN_MINS_WATCHED (1000) over
+      YT_LOOKBACK (90) days. Failing channels score 0.
+  - kind: rate_limit
+    enforcement: penalty
+    description: >-
+      Per-account video limits per brief: dedicated briefs reward up to 2 videos/account,
+      ad-read up to 5, integration per-brief via max_count. Excess videos zeroed via FIFO
+      (oldest kept). YT_MAX_VIDEOS=75 overall cap. Each brief also has an emissions 'cap'
+      (default 1.0); briefs exceeding cap are scaled down.
+  - kind: other
+    kind_other: "median revenue cap (anti fake-engagement lookback)"
+    enforcement: penalty
+    description: >-
+      Each video's daily revenue/minutes is capped at the channel's median daily value over the
+      T-60 to T-30 window (YT_SCORE_CAP_START_DAYS=60, YT_SCORE_CAP_END_DAYS=30). README: caps
+      the 7-day average at the median daily revenue from the previous month so YouTube's ~1-month
+      fake-engagement audit is factored in. A diminishing-returns curve
+      (sqrt(v)/(1+0.1*sqrt(v))) further dampens linear-scaling exploitation.
+  - kind: other
+    kind_other: "llm-judged brief eligibility + unique-identifier + prompt-injection screen"
+    enforcement: rejection
+    description: >-
+      Brief eligibility is LLM-judged on transcript + description; a unique-identifier string
+      must appear in the description (check_brief_unique_identifier) and the publish date must
+      fall in the brief's date range (with YT_VIDEO_RELEASE_BUFFER=3 day buffer). A separate
+      prompt-injection check (check_prompt_injection) screens description/transcript.
+  - kind: other
+    kind_other: "lifetime deduction threshold"
+    enforcement: penalty
+    description: >-
+      A per-format lifetime deduction (YT_LIFETIME_DEDUCTION=100 USD dedicated, 25 USD ad-read)
+      is subtracted from the lifetime score total by shifting the curve down by
+      (lifetime_deduction / scaling_factor) and clamping at zero before differencing.
+
+sub_competitions:
+  structure: multi_brief
+  stages: []
+  count: null
+  notes: >-
+    Multiple brand briefs run concurrently, each fetched from the briefs server
+    (BITCAST_BRIEFS_ENDPOINT). Each brief has its own format (dedicated|ad-read|integration),
+    scaling factor (YT_SCALING_FACTOR_DEDICATED=1800, YT_SCALING_FACTOR_AD_READ=400; integration
+    uses the ad-read factor), boost multiplier, max_count, and emissions cap. A video matches at
+    most one brief (highest priority selected). Brief count is dynamic from the server, not a
+    literal constant.
+
+per_miner_state:
+  tracked: false
+  state_kinds: []
+  status_values: []
+  reset_policy: ""
+  notes: >-
+    No persistent cross-cycle per-miner ledger is set in the reward path; each forward pass
+    re-queries YouTube Analytics over rolling windows. The validator keeps an EMA-like
+    self.scores via update_scores, but no debt/status/cooldown ledger was found in the
+    scoring code.
+
+documentation:
+  status: docs_and_code
+  source_version: "2.6.1"
+  primary_docs:
+    - "README.md"
+    - "bitcast/validator/README.md"
+    - "bitcast/miner/README.md"
+  completeness: high
+
+provenance:
+  confidence_overall: high
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  extractor_notes: >-
+    Python Bittensor subnet. Reward path: forward.py -> RewardOrchestrator -> YouTube evaluator
+    (main.py) -> curve-based scoring + median capping -> emission/score-aggregation/distribution
+    services -> base/validator.py set_weights. Format multipliers and video limits confirmed in
+    code and README. __version__ 2.6.1 from bitcast/validator/utils/config.py.
+  evidence:
+    - claim_field: "/subnet/name"
+      source_path: "README.md"
+      line_ref: "7"
+      quote: "# Bitcast — The Decentralized Creator Economy"
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "bitcast/validator/platforms/youtube/evaluation/curve_scoring.py"
+      line_ref: "8-12"
+      quote: "import math\n\nimport bittensor as bt\n\nfrom bitcast.validator.utils.config import YT_CURVE_DAMPENING_FACTOR"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "15-18"
+      quote: "Miners: Produce and publish YouTube content for one or more briefs. Validators: Obtain temporary OAuth tokens to securely access YouTube Analytics and validate performance."
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "bitcast/validator/platforms/youtube/main.py"
+      line_ref: "294"
+      quote: "\"url\": f\"https://www.youtube.com/watch?v={video_id}\","
+      confidence: high
+    - claim_field: "/scoring_signals/0/name"
+      source_path: "README.md"
+      line_ref: "87"
+      quote: "Rewards are based on the 7-day moving average of YouTube Premium Revenue (`estimatedRedPartnerRevenue`)."
+      confidence: high
+    - claim_field: "/scoring_signals/1/name"
+      source_path: "bitcast/validator/platforms/youtube/evaluation/curve_based_scoring.py"
+      line_ref: "259-261"
+      quote: "# Convert minutes watched to estimated revenue using hardcoded multiplier\n        day1_revenue_avg = day1_minutes_avg * YT_NON_YPP_REVENUE_MULTIPLIER"
+      confidence: high
+    - claim_field: "/scoring_signals/2/metric_kind"
+      source_path: "bitcast/validator/platforms/youtube/evaluation/video/brief_matching.py"
+      line_ref: "167"
+      quote: "def evaluate_content_against_briefs(briefs, video_data, transcript, decision_details):"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/kind"
+      source_path: "README.md"
+      line_ref: "16-17"
+      quote: "Validators: Obtain temporary OAuth tokens to securely access YouTube Analytics and validate performance."
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "bitcast/validator/platforms/youtube/config.py"
+      line_ref: "67-68"
+      quote: "\"estimatedRedPartnerRevenue\": (\"estimatedRedPartnerRevenue\", \"day\", None, None, \"day\"),\n    \"estimatedMinutesWatched\": (\"estimatedMinutesWatched\", \"day\", None, None, \"day\"),"
+      confidence: high
+    - claim_field: "/ground_truth_sources/1/source_identifier"
+      source_path: "bitcast/validator/utils/config.py"
+      line_ref: "45-46"
+      quote: "# LLM Provider selection: \"chutes\" or \"openrouter\"\nLLM_PROVIDER = os.getenv('LLM_PROVIDER', 'chutes').lower()"
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "bitcast/validator/platforms/youtube/main.py"
+      line_ref: "377"
+      quote: "usd_target = adjusted_score * scaling_factor * boost_factor"
+      confidence: high
+    - claim_field: "/aggregation/normalization"
+      source_path: "bitcast/validator/reward_engine/services/reward_distribution_service.py"
+      line_ref: "144-146"
+      quote: "if total_sum > 1.0:\n            global_scale_factor = 1.0 / total_sum\n            result = result / total_sum"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "bitcast/validator/reward_engine/services/reward_distribution_service.py"
+      line_ref: "165-169"
+      quote: "# Ensure total rewards sum to 1 by adjusting UID 0, but never negative\n        uid_0_idx = next((i for i, uid in enumerate(uids) if uid == 0), None)\n        if uid_0_idx is not None:\n            other_sum = sum(rewards[i] for i in range(len(rewards)) if i != uid_0_idx)\n            rewards[uid_0_idx] = max(1.0 - other_sum, 0.0)"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "bitcast/validator/utils/config.py"
+      line_ref: "106-108"
+      quote: "# subnet treasury\nSUBNET_TREASURY_PERCENTAGE = 0\nSUBNET_TREASURY_UID = int(os.getenv('SUBNET_TREASURY_UID', '106'))"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "bitcast/validator/reward_engine/services/emission_calculation_service.py"
+      line_ref: "89-91"
+      quote: "total_daily_usd = alpha_price_usd * total_daily_alpha\n            conversion_factor = 1.0 / total_daily_usd"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "bitcast/base/validator.py"
+      line_ref: "221-228"
+      quote: "norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True)\n...\n        raw_weights = self.scores / norm"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "bitcast/base/validator.py"
+      line_ref: "257-261"
+      quote: "result, msg = self.subtensor.set_weights(\n            wallet=self.wallet,\n            netuid=self.config.netuid,\n            uids=uint_uids,\n            weights=uint_weights,"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "bitcast/validator/utils/config.py"
+      line_ref: "97-98"
+      quote: "VALIDATOR_WAIT = 60 # 60 seconds\nVALIDATOR_STEPS_INTERVAL = 240 # 4 hours"
+      confidence: medium
+    - claim_field: "/weight_setting/cadence_other"
+      source_path: "bitcast/validator/forward.py"
+      line_ref: "44-45"
+      quote: "if self.step % VALIDATOR_STEPS_INTERVAL != 0:\n        time.sleep(VALIDATOR_WAIT)"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "bitcast/validator/platforms/youtube/evaluation/channel.py"
+      line_ref: "104-125"
+      quote: "if channel_age_days < YT_MIN_CHANNEL_AGE:\n...\n    if int(channel_data[\"subCount\"]) < YT_MIN_SUBS:\n...\n    if float(channel_analytics[\"averageViewPercentage\"]) < YT_MIN_CHANNEL_RETENTION:\n...\n    if total_minutes_watched < YT_MIN_MINS_WATCHED:"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "bitcast/validator/platforms/youtube/main.py"
+      line_ref: "127-130"
+      quote: "Apply video scoring limits for dedicated and ad-read briefs using FIFO selection.\n...\n    Only the oldest N videos (by publish date) keep their scores, the rest are set to 0."
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "README.md"
+      line_ref: "73-77"
+      quote: "Each YouTube account can be rewarded for up to **2 videos per dedicated brief** (oldest 2 by publish date).\n...\n    Each YouTube account can be rewarded for up to **5 videos per ad-read brief** (oldest 5 by publish date)."
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "bitcast/validator/platforms/youtube/evaluation/median_capping.py"
+      line_ref: "173-179"
+      quote: "# For curve-based scoring, we use the standard T-60 to T-30 period\n        median_cap = calculate_median_cap_period(\n            channel_analytics,\n            YT_SCORE_CAP_START_DAYS,  # 60 days\n            YT_SCORE_CAP_END_DAYS,    # 30 days"
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "README.md"
+      line_ref: "94"
+      quote: "the **average premium revenue over the 7-day period is capped at the median daily revenue for the channel from the previous month**."
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "bitcast/validator/platforms/youtube/evaluation/video/brief_matching.py"
+      line_ref: "44-46"
+      quote: "# Check if the unique identifier appears in the video description (case-insensitive)\n    if unique_identifier.lower() in video_description.lower():\n        return True"
+      confidence: high
+    - claim_field: "/anti_gaming/4/description"
+      source_path: "bitcast/validator/platforms/youtube/evaluation/curve_scoring.py"
+      line_ref: "117-125"
+      quote: "threshold = lifetime_deduction / scaling_factor\n...\n    return max(day2_curve - threshold, 0) - max(day1_curve - threshold, 0)"
+      confidence: high
+    - claim_field: "/sub_competitions/structure"
+      source_path: "bitcast/validator/reward_engine/services/emission_calculation_service.py"
+      line_ref: "41-58"
+      quote: "for brief_idx, brief in enumerate(briefs):\n...\n            brief_format = brief.get(\"format\", \"dedicated\")\n            scaling_factors = {\n                \"boost_factor\": brief.get(\"boost\", 1.0)\n            }"
+      confidence: high
+    - claim_field: "/sub_competitions/notes"
+      source_path: "bitcast/validator/platforms/youtube/main.py"
+      line_ref: "322-334"
+      quote: "scaling_factors = {\n        \"dedicated\": YT_SCALING_FACTOR_DEDICATED,\n        \"ad-read\": YT_SCALING_FACTOR_AD_READ,\n        \"integration\": YT_SCALING_FACTOR_AD_READ,\n    }"
+      confidence: high
+    - claim_field: "/sub_competitions/notes"
+      source_path: "bitcast/validator/utils/config.py"
+      line_ref: "66-67"
+      quote: "YT_SCALING_FACTOR_DEDICATED = 1800\nYT_SCALING_FACTOR_AD_READ = 400"
+      confidence: high
+    - claim_field: "/documentation/source_version"
+      source_path: "bitcast/validator/utils/config.py"
+      line_ref: "23"
+      quote: "__version__ = \"2.6.1\""
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "bitcast/validator/utils/config.py"
+      line_ref: "71"
+      quote: "YT_NON_YPP_REVENUE_MULTIPLIER = 0.00005"
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "bitcast/validator/platforms/youtube/evaluation/curve_scoring.py"
+      line_ref: "52"
+      quote: "curve_value = sqrt_value / (1 + YT_CURVE_DAMPENING_FACTOR * sqrt_value)"
+      confidence: high
+  unresolved:
+    - "subnet.netuid: not stated in repo source/config (netuid passed via runtime config self.config.netuid)."
+    - "aggregation.decay_rate / min_weight_floor: no decay-rate or weight-floor constant in scoring; emission floor YT_MIN_EMISSIONS=0 disables the global-minimum scaling path."
+    - "weight_setting.tempo_or_interval: VALIDATOR_STEPS_INTERVAL=240 with inline comment '4 hours'; the 240->4h mapping is the comment's claim, exact unit (steps vs seconds) not independently confirmed."
+    - "sub_competitions.count: number of concurrent briefs is dynamic (fetched from briefs server), no literal count in source."
+    - "scoring_signals weights: the three signals are not combined by fixed numeric weights; revenue/minutes are alternatives by account type and brief-match is a gate, so per-signal 'weight' is not a literal constant."
+    - "per-brief 'boost', 'cap', 'max_count', 'unique_identifier', 'start_date'/'end_date' are supplied per-brief by the off-repo briefs server, not as in-repo constants."

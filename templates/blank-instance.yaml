@@ -1,0 +1,120 @@
+# Blank incentive-mechanism instance — the PRESCRIPTIVE starting point.
+#
+# To design a NEW subnet mechanism: copy this file, keep `instance_kind: authored`,
+# fill the required fields, add scoring_signals/aggregation/etc., then run:
+#     python tooling/validate.py path/to/your-instance.yaml
+#
+# Enum-valued fields list their allowed values in the comment beside them. When no value
+# fits, set the field to `other` and fill the sibling `*_other` free-text field.
+# Every structural block has an optional `extensions: {}` for genuinely novel data.
+#
+# Required top-level keys: schema_version, instance_kind, subnet, task, scoring_signals, documentation.
+# (provenance is required only when instance_kind is "extracted".)
+
+schema_version: "1.0.0"
+instance_kind: authored            # extracted | authored
+
+# mechanism_status: operative reality vs the documented mechanism. Optional but recommended,
+# especially for extracted instances where the live validator may burn instead of score.
+mechanism_status: active           # active | partial_burn | full_burn | dormant | mixed | unknown
+# mechanism_status_notes: ""
+
+subnet:
+  name: "My New Mechanism"
+  owner_repo: null                 # "Owner__repo" for extracted; null for authored
+  netuid: null
+  implementation_lang: none_docs_only   # python | go | typescript | rust | mixed | none_docs_only | other
+
+task:
+  summary: >-
+    One paragraph: what does a miner produce, and what is rewarded?
+  submission_format: [signals]     # model_weights | source_code | signals | content_link |
+                                   # commitment_hash | api_response | compute_service | other
+  # submission_format_other: ""    # required only if 'other' is in the list above
+
+scoring_signals:
+  - name: example_signal
+    metric_kind: accuracy          # loss|accuracy|regression_error|pnl|win_rate|similarity|engagement|
+                                   # uptime|hardware_spec|llm_judgment|vlm_judgment|human_judgment|
+                                   # throughput|latency|risk_adjusted_ratio|probabilistic_forecast|
+                                   # predictive_contribution|reward|composite|volume|other
+    direction: higher_is_better    # higher_is_better | lower_is_better | target_band
+    weight: 1.0                    # null for gated/multiplicative signals (no additive weight)
+    normalization: none            # none | min_max | zscore | rank | softmax | ema | other
+    # normalization_other: ""      # free-text when normalization == other
+    notes: ""
+
+ground_truth_sources:
+  - kind: deterministic_dataset    # deterministic_dataset|reference_model|market_data|llm_judgment|
+                                   # hardware_probe|real_engagement|commit_reveal|organic_traffic|other
+    description: ""
+    source_identifier: ""
+    trust_model: trusted           # trusted | adversarial | oracle | crowd | unknown
+    notes: ""
+
+aggregation:
+  method: softmax                  # rank_based|softmax|exponential_decay_ema|weighted_average|
+                                   # tournament_bracket|binary_threshold|winner_take_all|proportional|
+                                   # convex_optimization|undocumented|other
+  composition: weighted_sum        # weighted_sum|multiplicative|gated|rank|tournament|hybrid|other
+                                   #   how the signals COMBINE (product/gate/additive)
+  normalization: sum_to_one        # none | sum_to_one | min_max | softmax | l1 | other
+  # normalization_other: ""
+  temperature: null                # softmax temperature, if any (e.g. 0.01)
+  decay_rate: null                 # rank/temporal decay WITHIN aggregation (e.g. geometric base 0.8)
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null                 # fixed fraction; null when dynamic
+    dynamic: false                 # true when fraction is a computed residual (1 - sum_distributed)
+    notes: ""
+  notes: ""
+
+weight_setting:
+  cadence: per_epoch               # per_epoch|per_round|continuous|rate_limited|weekly|daily|
+                                   # per_brief|per_tournament|undocumented|other
+  method: ""
+  on_chain_call: set_weights       # set_weights | commit_reveal | other | unknown
+  tempo_or_interval: null          # string or integer, e.g. "360 blocks" or 360
+  smoothing:                       # temporal smoothing of the FINAL reward (the EMA home)
+    kind: none                     # none | ema | sma | other
+    alpha: null                    # EMA alpha, e.g. 0.05
+    window: null                   # SMA / rolling-average window length
+    notes: ""
+
+anti_gaming:
+  - kind: deterministic_check      # proof_of_work|plagiarism_detection|deduplication|collateral|
+                                   # challenge_period|hardware_validation|deterministic_check|
+                                   # commit_reveal|stake_weighting|rate_limit|code_inspection|
+                                   # data_augmentation|risk_limit|liveness_check|honeypot|other
+    enforcement: penalty           # elimination | penalty | rejection | barrier | other
+    # enforcement_other: ""
+    description: ""
+
+sub_competitions:
+  structure: none                  # none|single|multi_mechanism|ladder|tournament|multi_asset|
+                                   # multi_brief|per_task_type|tiered|other
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: false
+  state_kinds: []                  # debt_ledger|performance_ledger|status_enum|cumulative_score|
+                                   # cooldown|reputation|registration_age|other
+  status_values: []
+  reset_policy: ""
+  notes: ""
+
+documentation:
+  status: absent                   # code_authoritative|docs_authoritative|docs_and_code|docs_only|
+                                   # whitepaper_only|sparse|absent
+  source_version: null
+  primary_docs: []
+  completeness: low                # high | medium | low
+
+# provenance:                      # omit for authored instances
+#   extracted_by: ""
+#   confidence_overall: low
+#   evidence: []

@@ -1,0 +1,375 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+subnet:
+  name: "ComputeHorde"
+  owner_repo: "backend-developers-ltd__ComputeHorde"
+  netuid: 12
+  implementation_lang: python
+
+task:
+  summary: >-
+    ComputeHorde is Bittensor's decentralized GPU-compute subnet (netuid 12). Miners run "executors"
+    (dockerized GPU instances of declared hardware classes, e.g. spin_up-4min.gpu-24gb) that perform
+    compute jobs. Validators earn per-block "allowance" (executor-seconds, proportional to executor
+    count and validator stake) and spend allowance blocks to pay miners for ORGANIC jobs forwarded
+    from other subnets' validators via a Facilitator. The current scoring rewards miners by the
+    executor-seconds of finished organic jobs that were properly paid for with valid allowance blocks.
+    SYNTHETIC jobs (validator-generated) test executor availability and hardware authenticity; organic
+    results are cross-validated against a Trusted Miner. Scores per coldkey are split across hotkeys
+    (main hotkey gets the largest share), with a "dancing" bonus for changing the main hotkey between
+    cycles to discourage weight-copying.
+  submission_format: [compute_service]
+
+scoring_signals:
+  - name: allowance_paid_executor_seconds
+    metric_kind: throughput
+    direction: higher_is_better
+    weight: 1.0
+    normalization: other
+    notes: >-
+      Per-executor-class batch normalization: score/total * executor_class_weight.
+      calculate_allowance_paid_job_scores gives each miner score equal to executor_seconds_cost of
+      organic jobs that finished in the cycle and were validated as paid with fresh, unspent,
+      sufficient allowance blocks (scores[executor_class][miner] += job_cost). Invalid spendings
+      (CannotSpend / ErrorWhileSpending) score nothing.
+  - name: organic_job_completion
+    metric_kind: other
+    metric_kind_other: "fixed score per successfully completed, non-cheated organic job"
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Legacy/alternative organic scoring in calculations.py (score_organic_jobs / calculate_organic_scores):
+      each COMPLETED, not-cheated, not-on-trusted-miner organic job contributes DYNAMIC_ORGANIC_JOB_SCORE
+      (default 1.0). The README's allowance-based engine is the active path; this fixed-per-job path is
+      documented in the scoring README as the organic-job contribution.
+
+ground_truth_sources:
+  - kind: organic_traffic
+    description: >-
+      Real user/cross-subnet jobs forwarded into ComputeHorde via the Facilitator gateway; completing
+      these paid organic jobs is the primary scored activity.
+    source_identifier: "Facilitator (organic requests from other subnets' validators)"
+    trust_model: adversarial
+  - kind: reference_model
+    description: >-
+      A separate GPU 'Trusted Miner' (same code as a regular miner, not registered in the metagraph,
+      only accepts the associated validator's tasks) pre-runs part of validation tasks to establish
+      expected results, against which miners' organic results are cross-checked for cheating.
+    source_identifier: "Trusted Miner"
+    trust_model: oracle
+  - kind: hardware_probe
+    description: >-
+      Synthetic validator-generated jobs benchmark/test executors to confirm declared hardware classes
+      and availability; jobs are matched to advertised hardware (e.g. A6000 for A6000-required tasks).
+    source_identifier: "synthetic jobs (SyntheticJobBatch)"
+    trust_model: adversarial
+
+aggregation:
+  method: weighted_average
+  normalization: other
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: null
+    fraction: null
+    notes: >-
+      apply_dancing_burners directs DYNAMIC_BURN_RATE fraction of incentive to
+      DYNAMIC_BURN_TARGET_SS58ADDRESSES (weights *= (1 - burn_rate)), with DYNAMIC_BURN_PARTITION
+      controlling the primary burner's share when multiple are registered. Defaults: DYNAMIC_BURN_RATE
+      = 0.0 and DYNAMIC_BURN_PARTITION = 0.0 (burning disabled by default; activated via dynamic config).
+  notes: >-
+    Normalization (other): per executor class, (miner_score / total_executor_class_score) *
+    executor_class_weight, summed across executor classes per hotkey; final on-chain weights produced
+    by bittensor.utils.weight_utils.process_weights with min_allowed_weights / max_weight_limit.
+    Executor-class weights default DYNAMIC_EXECUTOR_CLASS_WEIGHTS =
+    "spin_up-4min.gpu-24gb=98,always_on.llm.a6000=1,always_on.test=0,always_on.cpu.8c.16gb=1".
+    Dancing bonus multiplier (1 + DYNAMIC_DANCING_BONUS, default 0.1) applied to a coldkey total when
+    its main hotkey changed vs the previous cycle; main hotkey then gets MAIN_HOTKEY_SHARE (default
+    0.8) of the coldkey score, others split the remainder.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Celery task set_scores scores the current cycle (722-block cycles), normalizes per executor class,
+    applies dancing burners, maps hotkeys->uids, and submits weights via the Pylon client
+    (p_client.identity.put_weights). Commit-reveal gating via CommitRevealInterval when enabled.
+  on_chain_call: commit_reveal
+  tempo_or_interval: "722 blocks (DYNAMIC_COMMIT_REVEAL_WEIGHTS_INTERVAL; cycle length)"
+
+anti_gaming:
+  - kind: commit_reveal
+    enforcement: barrier
+    description: >-
+      Commit-Reveal weights: validators post hidden weights and reveal them in the next epoch, making
+      copying of current weights impossible. DYNAMIC_COMMIT_REVEAL_WEIGHTS_ENABLED default True,
+      DYNAMIC_COMMIT_REVEAL_WEIGHTS_INTERVAL default 722 blocks; commit/reveal windows computed by
+      CommitRevealInterval.
+  - kind: other
+    kind_other: "executor dancing (random GPU reallocation across UIDs + dancing bonus)"
+    enforcement: other
+    description: >-
+      Executor Dancing: miners move GPUs across multiple UIDs and change their declared main hotkey
+      between cycles; changing it triggers a 10% (DYNAMIC_DANCING_BONUS) boost, encouraging variance to
+      further reduce effectiveness of copying old weights.
+  - kind: collateral
+    enforcement: penalty
+    description: >-
+      Validators can require miners to deposit collateral (DYNAMIC_MINIMUM_COLLATERAL_AMOUNT_WEI,
+      default 1e16 wei = 0.01 TAO) to be eligible for organic jobs. Cheating miners are slashed
+      (DYNAMIC_COLLATERAL_SLASH_AMOUNT_WEI, default 5e15 wei = 0.005 TAO) via the collateral contract.
+  - kind: hardware_validation
+    enforcement: rejection
+    description: >-
+      Jobs are matched to advertised hardware (executor classes); synthetic jobs test executor
+      availability and hardware authenticity, and unconfigured executor classes are excluded from
+      scoring (weight defaults to 0.0).
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Organic results are cross-validated against a Trusted Miner that pre-runs validation tasks to
+      establish expected results; jobs flagged cheated (job.cheated) are excluded from scoring and
+      trigger temporary blacklisting (DYNAMIC_JOB_CHEATED_BLACKLIST_TIME_SECONDS, default 4 hours).
+  - kind: rate_limit
+    enforcement: barrier
+    description: >-
+      Allowance is minted per miner-validator-executorClass per block and validators must spend valid,
+      fresh, unspent, sufficient allowance blocks to pay for a job; overspending, stale, or
+      double-spent blocks void the incentive (CannotSpend), enforcing fair usage spread across miners.
+
+sub_competitions:
+  structure: multi_mechanism
+  stages:
+    - name: organic_jobs
+      role: main
+      advancement_rule: >-
+        Real cross-subnet jobs paid with valid allowance blocks; scored by executor-seconds (the
+        primary incentivized activity).
+    - name: synthetic_jobs
+      role: qualifier
+      advancement_rule: >-
+        Validator-generated jobs that test executor availability and hardware authenticity; gate
+        miner participation rather than being the primary reward path in the current allowance engine.
+  count: 2
+  notes: >-
+    The scoring README describes scoring across two job types (organic and synthetic) combined per
+    executor class; the README's active "Big Picture" describes scoring driven by paid organic-job
+    runtime. Treated as a multi-mechanism (organic vs synthetic) structure.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [status_enum, cooldown, reputation]
+  status_values: []
+  reset_policy: >-
+    Temporary blacklists expire after DYNAMIC_JOB_FAILURE_BLACKLIST_TIME_SECONDS /
+    DYNAMIC_JOB_CHEATED_BLACKLIST_TIME_SECONDS (each default 4 hours). Main hotkey declarations
+    (MinerMainHotkey) are recorded per cycle_start and compared between cycles for the dancing bonus.
+  notes: >-
+    Per-miner persistent state includes MinerMainHotkey (coldkey -> main hotkey per cycle), collateral
+    deposits (reputation/eligibility for organic jobs), and time-bounded blacklists after failed or
+    cheated organic jobs.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "validator/app/src/compute_horde_validator/validator/scoring/README.md"
+    - "validator/app/src/compute_horde_validator/validator/collateral/README.md"
+    - "docs/synthetic-jobs-flow.md"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: medium
+  extractor_notes: >-
+    Large multi-service Django repo. The active scoring path is the allowance/organic-runtime engine
+    (scoring/engine.py + scoring/calculations.calculate_allowance_paid_job_scores), confirmed by the
+    README "Big Picture". A second documented organic path (fixed DYNAMIC_ORGANIC_JOB_SCORE per job in
+    calculations.py) and synthetic-job scoring are also present; exact combination/weighting of organic
+    vs synthetic in the live engine was not fully pinned to a single code site, hence medium confidence.
+  evidence:
+    - claim_field: "/subnet/name"
+      source_path: "README.md"
+      line_ref: "1"
+      quote: "# ComputeHorde (Subnet 12 of Bittensor)"
+      confidence: high
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "185"
+      quote: "ComputeHorde mainnet netuid: 12"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "84-90"
+      quote: >-
+        Validators earn compute allowance. Each block mints executor-seconds per miner–validator pair
+        ... Runtime converts to points. Paid seconds per miner are summed, folded by coldkey, then
+        split across hotkeys following the dancing rules.
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "26-28"
+      quote: >-
+        Each miner in ComputeHorde can spawn multiple executors, performing individual compute tasks.
+      confidence: high
+    - claim_field: "/scoring_signals/0/name"
+      source_path: "validator/app/src/compute_horde_validator/validator/scoring/calculations.py"
+      line_ref: "28-34"
+      quote: >-
+        def calculate_allowance_paid_job_scores(start_block: int, end_block: int) ... Give scores based
+        on executor seconds of finished jobs that were properly paid for with allowance.
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "validator/app/src/compute_horde_validator/validator/scoring/calculations.py"
+      line_ref: "94-101"
+      quote: "scores[triplet.executor_class][triplet.miner] += job_cost"
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "validator/app/src/compute_horde_validator/validator/scoring/calculations.py"
+      line_ref: "197-211"
+      quote: >-
+        if (job.status == OrganicJob.Status.COMPLETED and not job.cheated and not job.on_trusted_miner)
+        ... executor_class_scores[hotkey] = executor_class_scores.get(hotkey, 0) + organic_job_score
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "README.md"
+      line_ref: "125-127"
+      quote: >-
+        Acts as a gateway for organic requests (from other subnets’ validators) to enter ComputeHorde.
+      confidence: high
+    - claim_field: "/ground_truth_sources/1/description"
+      source_path: "README.md"
+      line_ref: "132-135"
+      quote: >-
+        Uses a separate GPU, called a Trusted Miner, to pre-run part of the validation tasks and
+        establish expected results. ... It is not registered in the metagraph. It only accepts tasks
+        from the associated validator.
+      confidence: high
+    - claim_field: "/ground_truth_sources/2/description"
+      source_path: "README.md"
+      line_ref: "23"
+      quote: >-
+        Match jobs to the advertised hardware (e.g., ensuring A6000 GPUs are used for tasks requiring them).
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "validator/app/src/compute_horde_validator/validator/scoring/engine.py"
+      line_ref: "77-83"
+      quote: >-
+        normalized_executor_scores = { hotkey: (score / total_executor_score) * weight ... }
+        ... normalized_scores[hotkey] = normalized_scores.get(hotkey, 0) + score
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "validator/app/src/compute_horde_validator/settings.py"
+      line_ref: "235-236"
+      quote: >-
+        "DYNAMIC_EXECUTOR_CLASS_WEIGHTS": ("spin_up-4min.gpu-24gb=98,always_on.llm.a6000=1,always_on.test=0,always_on.cpu.8c.16gb=1",
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "validator/app/src/compute_horde_validator/settings.py"
+      line_ref: "344-352"
+      quote: >-
+        "DYNAMIC_DANCING_BONUS": (0.1, "Bonus multiplier for the split distribution in dancing (10% = 0.1)" ...
+        "MAIN_HOTKEY_SHARE": (0.8, "Share of the total score that goes to the main hotkey (80% = 0.8)"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "validator/app/src/compute_horde_validator/validator/scoring/tasks.py"
+      line_ref: "400-456"
+      quote: >-
+        burn_rate = get_config("DYNAMIC_BURN_RATE") ... weights = weights * (1 - burn_rate)
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "validator/app/src/compute_horde_validator/settings.py"
+      line_ref: "316-326"
+      quote: >-
+        "DYNAMIC_BURN_RATE": (0.0, "(0.0 - 1.0) fraction of miner incentives that will be directed to
+        'DYNAMIC_BURN_TARGET_SS58ADDRESSES' " ... "DYNAMIC_BURN_PARTITION": (0.0, ...)
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "validator/app/src/compute_horde_validator/validator/scoring/tasks.py"
+      line_ref: "162-163"
+      quote: "p_client.identity.put_weights(hk_weight_mapping)"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "validator/app/src/compute_horde_validator/validator/scoring/tasks.py"
+      line_ref: "64-71"
+      quote: >-
+        commit_reveal_weights_enabled = get_config("DYNAMIC_COMMIT_REVEAL_WEIGHTS_ENABLED") ...
+        if current_block_number not in interval.commit_window:
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "validator/app/src/compute_horde_validator/settings.py"
+      line_ref: "179-183"
+      quote: >-
+        "DYNAMIC_COMMIT_REVEAL_WEIGHTS_INTERVAL": (722, "In blocks. This should be synced with the hyperparam",
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "README.md"
+      line_ref: "158"
+      quote: >-
+        Commit-Reveal: Validators post hidden weights and reveal them in the next epoch, making the
+        copying of current weights impossible.
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "README.md"
+      line_ref: "98-101"
+      quote: >-
+        Changing the main hotkey from the previous cycle triggers a 10 % boost on the coldkey before
+        splitting the score. This encourages variance, which is essential for preventing weight-copying.
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "validator/app/src/compute_horde_validator/settings.py"
+      line_ref: "334-341"
+      quote: >-
+        "DYNAMIC_MINIMUM_COLLATERAL_AMOUNT_WEI": (10_000_000_000_000_000, ... "DYNAMIC_COLLATERAL_SLASH_AMOUNT_WEI": (5_000_000_000_000_000,
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "validator/app/src/compute_horde_validator/validator/scoring/engine.py"
+      line_ref: "65-66"
+      quote: >-
+        # no weight by default to avoid accidental score assignment to new executor classes
+        weight = executor_class_weights.get(executor_class, 0.0)
+      confidence: high
+    - claim_field: "/anti_gaming/4/description"
+      source_path: "validator/app/src/compute_horde_validator/settings.py"
+      line_ref: "306-309"
+      quote: >-
+        "DYNAMIC_JOB_CHEATED_BLACKLIST_TIME_SECONDS": (int(timedelta(hours=4).total_seconds()),
+        "Amount of time a miner will be temporarily blacklisted for after being reported cheating on an organic job.",
+      confidence: high
+    - claim_field: "/anti_gaming/5/description"
+      source_path: "README.md"
+      line_ref: "94-95"
+      quote: >-
+        When starting a job, the validator spends specific allowance blocks to cover the runtime.
+        During scoring, validators ensure blocks were fresh, unspent, and sufficient; overspending or
+        missing allowance voids incentives.
+      confidence: high
+    - claim_field: "/sub_competitions/structure"
+      source_path: "validator/app/src/compute_horde_validator/validator/scoring/README.md"
+      line_ref: "30-46"
+      quote: >-
+        The scoring system evaluates validator performance across two types of jobs: ### Organic Jobs
+        ... ### Synthetic Jobs
+      confidence: high
+    - claim_field: "/per_miner_state/notes"
+      source_path: "validator/app/src/compute_horde_validator/validator/scoring/engine.py"
+      line_ref: "236-245"
+      quote: >-
+        existing_main_hotkeys = MinerMainHotkey.objects.filter(coldkey__in=coldkeys, cycle_start=cycle_start)
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "validator/app/src/compute_horde_validator/settings.py"
+      line_ref: "301-304"
+      quote: >-
+        "DYNAMIC_JOB_FAILURE_BLACKLIST_TIME_SECONDS": (int(timedelta(hours=4).total_seconds()),
+        "Amount of time a miner will be temporarily blacklisted for after failing an organic job.",
+      confidence: high
+  unresolved:
+    - "aggregation.decay_rate / min_weight_floor: no exponential decay or explicit weight floor found; on-chain min/max bounds come from chain hyperparameters (min_allowed_weights, max_weights_limit), not literals in this repo."
+    - "burn_allocation.address_or_uid / fraction: configured at runtime via DYNAMIC_BURN_TARGET_SS58ADDRESSES and DYNAMIC_BURN_RATE (defaults empty / 0.0); no concrete on-chain target literal in source."
+    - "Exact live combination of synthetic-job scores with organic allowance scores: scoring README describes combining both per executor class, but the active engine.py path scores only allowance-paid (organic) jobs; the synthetic-vs-organic blend in production is not pinned to one code site."
+    - "scoring_signals[1].weight: no literal numeric weight for the fixed-per-job organic score relative to allowance-seconds; left null."
+    - "per_miner_state.status_values: no closed status enum literal extracted for miner lifecycle states."

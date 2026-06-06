@@ -1,0 +1,316 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+subnet:
+  name: "Sportstensor"
+  owner_repo: "sportstensor__sn41"
+  netuid: 41
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners are sports-prediction traders. They place real money trades on Polymarket
+    prediction markets (routed through the Almanac front end / proxy wallet) and their
+    completed trades are scored as predictions against real market outcomes. The validator
+    pulls each miner's 30-day trading history from Almanac's backend API, computes
+    profitability (ROI = PnL / volume) and qualified (winning, after-fee) volume over daily
+    epochs, gates out unprofitable/inactive traders, and runs a two-phase convex optimizer
+    that funds qualified volume within an epoch budget while redistributing payout toward
+    higher-ROI traders. Rewards (Alpha token emissions) flow to consistently profitable,
+    high-volume traders.
+  submission_format: [api_response]
+  submission_format_other: ""
+  extensions:
+    notes: >-
+      Miners do not submit signals directly to the validator; their "submission" is the set of
+      completed Polymarket trades retrieved from the Almanac trading-history API. Identity is
+      bound by committing a (partial) Polymarket profile id to chain metadata.
+
+scoring_signals:
+  - name: roi_trailing
+    metric_kind: pnl
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Trailing ROI = total_profit / total_volume across the rolling 30-day window. Used as an
+      eligibility gate (roi_trailing >= ROI_MIN=0.0) and as the per-miner signal strength that
+      Phase 2 redistributes payout toward. Exact relative weight vs qualified volume is set
+      implicitly by the convex optimizer, not a fixed scalar.
+  - name: qualified_volume
+    metric_kind: throughput
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Qualified volume = volume from winning trades after fee deduction (qualified = volume -
+      actual_fees when is_correct). Phase 1 maximizes routed qualified volume fundable within
+      budget. metric_kind 'throughput' is the closest enum for trading volume; this is a
+      stress point (no 'volume' metric kind).
+
+ground_truth_sources:
+  - kind: market_data
+    description: >-
+      Real Polymarket prediction-market trade outcomes (is_correct, pnl, volume, fees) for each
+      miner's completed trades, retrieved per-epoch from Almanac's trading-history API. The
+      "correct answer" is whether each market resolved in the trader's favor, plus realized PnL.
+    source_identifier: "https://api.almanac.market/api/v1/trading/trading-history"
+    trust_model: trusted
+    extensions:
+      notes: >-
+        Authenticated (HTTPBasicAuth with hotkey signature). Validator trusts the Almanac
+        backend as the authoritative source of trade outcomes and PnL.
+
+aggregation:
+  method: proportional
+  normalization: sum_to_one
+  decay_rate: 0.9
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "210"
+    fraction: null
+    notes: >-
+      General-pool (non-registered-miner) weight is always assigned to BURN_UID=210, and all
+      excess/unallocated weight is also burned to BURN_UID (EXCESS_MINER_TAKE_PERCENTAGE=0 means
+      none is diverted to an excess UID). The burn fraction is not a fixed constant; it is the
+      residual 1.0 - total_allocated_weight plus the general-pool weight, computed per epoch.
+  notes: >-
+    Per-miner token allocations come from a two-phase CVXPY optimization (Phase 1 maximizes
+    fundable qualified volume; Phase 2 redistributes toward higher ROI). Final per-UID weight =
+    miner_tokens / total_epoch_budget, miner-pool weights boosted by MINER_POOL_WEIGHT_BOOST_
+    PERCENTAGE=1 (100%), then the whole vector is normalized to sum to 1.0. VOLUME_DECAY=0.9
+    drives a decaying volume memory (v_memory = 0.9*v_memory + epoch_volume).
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Validator runs scoring + set_weights once per hour (at a random UTC minute), computing the
+    previous 24h epoch. Builds a weight per UID from optimized token allocations divided by the
+    total epoch budget (alpha_price_usd * TOTAL_MINER_ALPHA_PER_DAY=2952), boosts miner-pool
+    weights, assigns general-pool + excess weight to BURN_UID, normalizes to sum to 1.0.
+  on_chain_call: set_weights
+  tempo_or_interval: "hourly (scoring/set_weights at a random minute 10-25 UTC each hour); 24h epoch window"
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      Build-up eligibility gates: a trader must have traded in at least MIN_EPOCHS_FOR_
+      ELIGIBILITY epochs and have at least MIN_PREDICTIONS_FOR_ELIGIBILITY predictions, plus
+      pass roi_trailing >= ROI_MIN and qualified volume >= VOLUME_MIN, to receive any reward.
+      (In this snapshot MIN_EPOCHS_FOR_ELIGIBILITY=0, MIN_PREDICTIONS_FOR_ELIGIBILITY=1,
+      ROI_MIN=0.0, VOLUME_MIN=1.)
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Trade-integrity checks mark a trade as not reward-eligible if actual volume exceeds
+      expected volume by more than a $5 buffer (position added outside Almanac), or if actual
+      fees are less than 90% of expected fees (underpaid fees).
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      Diversity cap: Phase 1 constrains each miner's funded payout to rho_cap*B
+      (RHO_CAP=0.1, i.e. <=10% of budget) to prevent any single trader from dominating.
+  - kind: commit_reveal
+    enforcement: penalty
+    description: >-
+      Identity binding: miners commit a (partial) Polymarket profile id to on-chain metadata
+      (subtensor.get_commitment). The validator zeroes a miner's weight if the Almanac-reported
+      profile id has no/multiple values, has no chain metadata, or the chain-committed
+      polymarket id is not contained in the reported profile id (miners_to_penalize -> weight 0).
+
+sub_competitions:
+  structure: multi_mechanism
+  stages:
+    - name: miner_pool
+      role: main
+      advancement_rule: >-
+        Registered miners (UID + matching hotkey) whose trades are reward-eligible. Scored in
+        their own pool with its own budget; eligible for budget/weight boosts.
+      multipliers:
+        early_stage_min_fee_multiplier: 1.2
+        miner_pool_weight_boost: 1
+    - name: general_pool
+      role: other
+      advancement_rule: >-
+        Non-registered (general-pool) Polymarket profiles, not the 'main' registered-miner pool.
+        Scored separately; their total weight is always assigned to BURN_UID rather than to the
+        traders.
+      multipliers:
+        early_stage_min_fee_multiplier: 1.2
+  count: 2
+  notes: >-
+    Dual-pool system: registered miners vs a general pool of traders. Each pool gets a separate
+    budget (dynamic: from fees collected per pool, since ENABLE_STATIC_WEIGHTING=False) and is
+    scored independently by the same two-phase optimizer.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [performance_ledger, cumulative_score]
+  status_values: []
+  reset_policy: >-
+    Rolling 30-day window (ROLLING_HISTORY_IN_DAYS=30): trades older than 30 days fall out of
+    the per-epoch history matrices, so historical performance continuously ages out.
+  notes: >-
+    Validator builds per-entity epoch matrices (volume/qualified/profit/fees/trade_counts) over
+    the trailing 30 days and a decaying volume memory (VOLUME_DECAY=0.9). Persistent miner->
+    polymarket-profile metadata is also tracked on chain and in local validator state.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs: ["README.md", "scoring.py"]
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: medium
+  unresolved:
+    - "scoring_signals[].weight: no fixed scalar weights exist; ROI vs qualified-volume tradeoff is set by the CVXPY optimizer's objectives/duals, not a constant."
+    - "aggregation.burn_allocation.fraction: burn is a per-epoch residual (1.0 - allocated + general-pool weight), not a literal constant."
+    - "aggregation.min_weight_floor: no per-miner minimum weight floor found; EXCESS_MINER_MIN_WEIGHT=0 applies only to the (disabled) excess-miner UID."
+    - "subnet 'sports prediction' framing: README frames trades as predictions evaluating accuracy/timing/informational value, but the implemented scoring uses realized PnL/ROI and qualified volume, not an explicit accuracy or closing-line-value (CLV) metric."
+    - "task.submission_format: no per-prediction CLV/closing-line scoring is implemented in this snapshot despite the prompt's expectation; scoring is profitability-based."
+  extractor_notes: >-
+    Despite the 'sportstensor / sports prediction' branding, the live mechanism scores
+    Polymarket trading performance (ROI + qualified after-fee volume) via a two-phase CVXPY
+    optimizer, not literal match-outcome prediction accuracy or CLV. metric_kind 'throughput'
+    is used as the closest enum for trading volume (stress). General-pool weight and all excess
+    weight are burned to BURN_UID=210.
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "219-221"
+      quote: "| Network | Netuid |\n| Mainnet     |     41 |"
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "scoring.py"
+      line_ref: "44-48"
+      quote: "import numpy as np\nimport cvxpy as cp"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "scoring.py"
+      line_ref: "4-6"
+      quote: "This module implements a two-phase optimization system that rewards traders (miners) based on \ntheir historical trading performance."
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "validator.py"
+      line_ref: "39"
+      quote: "self.trading_history_endpoint = \"https://api.almanac.market/api/v1/trading/trading-history\""
+      confidence: high
+    - claim_field: "/scoring_signals/0/name"
+      source_path: "scoring.py"
+      line_ref: "504-509"
+      quote: "roi_trailing = np.divide(\n        total_profit,\n        np.maximum(total_volume, 1e-12),"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "scoring.py"
+      line_ref: "522-526"
+      quote: "qual_mask = (\n        (roi_trailing >= roi_min) & \n        (qualified_prev_matrix >= volume_min) &\n        build_up_eligible\n    )"
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "scoring.py"
+      line_ref: "396-398"
+      quote: "# Winning trade: qualified volume (after fee deduction)\n                    qualified = volume - actual_fees"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "validator.py"
+      line_ref: "282"
+      quote: "bt.logging.info(f\"Fetching trading history from {self.trading_history_endpoint} for {self.rolling_history_in_days} days\")"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/trust_model"
+      source_path: "validator.py"
+      line_ref: "305-311"
+      quote: "response = requests.get(\n                        self.trading_history_endpoint,\n                        params=params,\n                        auth=HTTPBasicAuth(hotkey, signature),"
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "scoring.py"
+      line_ref: "648-653"
+      quote: "# emission weight = funded volume × signal strength (ROI)\n    raw_scores = x_star * c_star\n    # normalize so total payout == budget\n    total_score = np.sum(raw_scores)"
+      confidence: high
+    - claim_field: "/aggregation/decay_rate"
+      source_path: "constants.py"
+      line_ref: "15"
+      quote: "VOLUME_DECAY = 0.9"
+      confidence: high
+    - claim_field: "/aggregation/normalization"
+      source_path: "scoring.py"
+      line_ref: "1440-1442"
+      quote: "total_weight = sum(weights)\n    if total_weight > 0:\n        weights = [w / total_weight for w in weights]"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "constants.py"
+      line_ref: "63-64"
+      quote: "# Subnet owner burn UID\nBURN_UID = 210"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "scoring.py"
+      line_ref: "1396-1400"
+      quote: "burn_weight = excess_weight - (excess_weight * EXCESS_MINER_TAKE_PERCENTAGE)\n    #burn_weight = max(burn_weight, general_pool_weight)\n    burn_weight += general_pool_weight\n    # Assign the burn weight to BURN_UID\n    miner_weights[BURN_UID] = burn_weight"
+      confidence: high
+    - claim_field: "/weight_setting/cadence"
+      source_path: "validator.py"
+      line_ref: "435-436"
+      quote: "current_epoch_budget = alpha_price_usd * TOTAL_MINER_ALPHA_PER_DAY"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "validator.py"
+      line_ref: "32"
+      quote: "self.scoring_minute = random.randint(10, 25)  # Run once per hour at this minute (UTC)"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "validator.py"
+      line_ref: "496-502"
+      quote: "result = self.subtensor.set_weights(\n                        netuid=self.config.netuid,\n                        wallet=self.wallet,\n                        uids=self.metagraph.uids,\n                        weights=weights,"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "scoring.py"
+      line_ref: "443-451"
+      quote: "if entity_epochs_with_trades < MIN_EPOCHS_FOR_ELIGIBILITY:\n            eligible[entity_idx] = False\n            continue\n            \n        # Check minimum trades requirement\n        total_trades = np.sum(trade_counts[:, entity_idx])\n        if total_trades < MIN_PREDICTIONS_FOR_ELIGIBILITY:"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "scoring.py"
+      line_ref: "379-381"
+      quote: "if volume > expected_volume and abs(volume - expected_volume) > 5 and is_reward_eligible:\n                is_reward_eligible = False"
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "scoring.py"
+      line_ref: "803"
+      quote: "cons += [kappa * v_eff[i] * x[i] <= rho_cap*B for i in range(n)] # diversity"
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "validator.py"
+      line_ref: "481-484"
+      quote: "if miner_metadata not in miner_profiles[miner_uid]:\n                                bt.logging.warning(f\"❌ Miner {miner_uid} polymarket ids do not match. {miner_metadata} not found in profile id. Setting score to 0.\")\n                                miners_to_penalize.append(miner_uid)"
+      confidence: high
+    - claim_field: "/sub_competitions/structure"
+      source_path: "scoring.py"
+      line_ref: "34"
+      quote: "- Dual Pool System: Separate scoring for registered miners vs. general pool traders"
+      confidence: high
+    - claim_field: "/sub_competitions/stages/1/advancement_rule"
+      source_path: "scoring.py"
+      line_ref: "1355-1356"
+      quote: "# Step 2: Calculate general pool total weight and assign to BURN_UID.\n    total_general_pool_tokens = np.sum(general_pool_tokens_allocated)"
+      confidence: high
+    - claim_field: "/sub_competitions/stages/0/multipliers"
+      source_path: "constants.py"
+      line_ref: "57-59"
+      quote: "# This is used to give more weights (and in turn, more incentives) to the miners by taking the final miner pool weights and boosting them by this percentage.\n# Set to 0 to disable.\nMINER_POOL_WEIGHT_BOOST_PERCENTAGE = 1"
+      confidence: high
+    - claim_field: "/per_miner_state/state_kinds"
+      source_path: "scoring.py"
+      line_ref: "499-501"
+      quote: "# Calculate trailing aggregates (sum across all epochs, axis=0)\n    total_volume = np.sum(volume_prev_matrix, axis=0)\n    total_profit = np.sum(profit_prev_matrix, axis=0)"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "constants.py"
+      line_ref: "1-2"
+      quote: "# Constants for trade history\nROLLING_HISTORY_IN_DAYS = 30"
+      confidence: high
+    - claim_field: "/documentation/status"
+      source_path: "README.md"
+      line_ref: "89-94"
+      quote: "### Scoring and Weights\n\n- Scoring runs **hourly** in the background, always computing rewards for the **previous epoch** while updating weights for the current one."
+      confidence: high

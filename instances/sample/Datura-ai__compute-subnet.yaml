@@ -1,0 +1,374 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+subnet:
+  name: "Compute Subnet (Lium.io)"
+  owner_repo: "Datura-ai__compute-subnet"
+  netuid: 51
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners contribute GPU-equipped executor machines to a decentralized GPU-rental
+    marketplace. Each cycle a validator SSHes into each executor, probes its hardware
+    specs, runs a GraVal-style device-info-seeded matrix-multiplication challenge to
+    prove the GPU is genuine, runs a VerifyX network/storage/memory probe, and checks
+    rental status, price, collateral deposit and uptime. A per-executor mining score is
+    the GPU-type rate weighted by the miner's share of that GPU type, gated by binary
+    pass/fail checks and reduced by multiplicative penalties (sysbox, uptime). 91% of
+    emission is burned; the remaining 9% is distributed proportionally to mining score.
+  submission_format: [compute_service]
+
+scoring_signals:
+  - name: gpu_type_rate
+    metric_kind: hardware_spec
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Per-GPU-model emission rate (gpu_portion) from GPU_MODEL_RATES; higher-tier data-center
+      GPUs (H200, B200, etc.) carry larger rates, many consumer cards are 0.0.
+  - name: gpu_count_share
+    metric_kind: hardware_spec
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      mining_score = score * gpu_portion * gpu_count / total_gpu_count — a miner's share of
+      the total GPUs of that model online this cycle. Capped at MAX_GPU_COUNT=14.
+  - name: graval_matrix_challenge
+    metric_kind: hardware_spec
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Binary GPU-authenticity check: validator encrypts a device-info-seeded matrix challenge
+      (DMCompVerify), executor must decrypt and return the embedded UUID. UUID mismatch => fail.
+  - name: ema_verifyx_download_speed
+    metric_kind: throughput
+    direction: higher_is_better
+    weight: null
+    normalization: other
+    notes: >-
+      Exponential moving average (alpha=0.3) of VerifyX download speed in Mbps. Below
+      MIN_VERIFYX_EMA_DOWNLOAD_SPEED_MBPS=100.0 the executor fails; if EMA is missing for an
+      unrented machine, actual_score=0.
+  - name: gpu_price_within_limit
+    metric_kind: hardware_spec
+    direction: target_band
+    weight: null
+    normalization: none
+    notes: >-
+      Binary gate: price_per_gpu must not exceed MACHINE_PRICES[gpu_model] * MACHINE_MAX_PRICE_RATE
+      (default 2.0). Over the limit => actual_score=0.0.
+  - name: uptime
+    metric_kind: uptime
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      uptime_multiplier = 1 - PORTION_FOR_UPTIME + PORTION_FOR_UPTIME * min(1, uptime/UPTIME_REQUIRED_MINUTES);
+      UPTIME_REQUIRED_MINUTES = 60*24*14 (14 days). Skipped when SKIP_COLLATERAL_PENALTY or collateral deposited.
+
+ground_truth_sources:
+  - kind: hardware_probe
+    description: >-
+      Validator SSHes into the executor and runs device-info-seeded matrix-multiplication
+      (GraVal/DMCompVerify), VerifyX network/storage/memory probes, and GPU spec/utilization
+      reads. The probe results are the ground truth for hardware authenticity and capacity.
+    source_identifier: "matrix_validation_service.py / verifyx_validation_service.py"
+    trust_model: adversarial
+  - kind: market_data
+    description: >-
+      Rental status and price are sourced from the backend (rented executors API) and per-GPU
+      reference prices in MACHINE_PRICES; collateral deposits are read from an on-chain contract.
+    source_identifier: "MACHINE_PRICES / collateral_contract_service.py"
+    trust_model: trusted
+
+aggregation:
+  method: proportional
+  normalization: sum_to_one
+  decay_rate: 0.3
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: null
+    fraction: 0.91
+    notes: >-
+      TOTAL_BURN_EMISSION = 0.91 routed to burner UIDs (settings.NEW_BURNERS, equal split when
+      ENABLE_NEW_BURN_LOGIC). mining_share = 1 - 0.91 = 0.09 distributed across miners proportional
+      to mining_score. address_or_uid null: burner UIDs are runtime config (settings.NEW_BURNERS).
+  notes: >-
+    Per-executor: result.incentive = mining_share * mining_score / total_mining_score. Per-cycle
+    incentives accumulate into miner_scores across cycles, then are normalized via
+    process_weights_for_netuid at set_weights. decay_rate 0.3 is the VerifyX network-speed EMA alpha,
+    not a score-level temporal decay.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Accumulated per-cycle miner_scores (mining incentives + burn shares) are normalized with
+    bittensor process_weights_for_netuid, converted to uint weights, and committed via set_weights.
+    Jobs run every BLOCKS_FOR_JOB blocks; weights are set when last_update >= tempo.
+  on_chain_call: set_weights
+  tempo_or_interval: "tempo (TEMPO=360 blocks per epoch); set when last_update >= tempo"
+
+anti_gaming:
+  - kind: hardware_validation
+    enforcement: rejection
+    description: >-
+      GraVal/DMCompVerify device-info-seeded matrix challenge proves GPU authenticity: the validator
+      encrypts a challenge seeded with gpu uuids/count/model; the executor must decrypt and return the
+      embedded UUID. UUID mismatch fails the job (score 0). Also LIB_NVIDIA_ML_DIGESTS attestation and
+      TDX_WHITELIST hash checks.
+  - kind: collateral
+    enforcement: penalty
+    description: >-
+      Miners must deposit a per-GPU-type collateral (REQUIRED_DEPOSIT_AMOUNT, on-chain contract). If
+      not deposited and collateral enforced: actual_score=job_score=0. With ENABLE_NO_COLLATERAL the
+      deposit becomes a warning; IS_NOT_DEPOSITED_SCORE_MULTIPLIER=0.5 and an uptime ramp apply instead.
+      Outdated contract version multiplies score by SCORE_PORTION_FOR_OLD_CONTRACT=0.
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      GPU utilization gate: an unrented executor reporting gpu_utilization >= GPU_UTILIZATION_LIMIT (5%)
+      or memory utilization > GPU_MEMORY_UTILIZATION_LIMIT (5%) is treated as already-busy/rented and
+      rejected from the unrented scoring pool. MAX_GPU_COUNT=14 caps reported GPUs.
+  - kind: rate_limit
+    enforcement: penalty
+    description: >-
+      Price gate: price_per_gpu above MACHINE_PRICES[gpu_model]*MACHINE_MAX_PRICE_RATE (2.0) sets
+      actual_score to 0.0, preventing miners from advertising overpriced rentals.
+
+sub_competitions:
+  structure: multi_mechanism
+  stages:
+    - name: default_incentive
+      role: main
+      advancement_rule: >-
+        DefaultIncentive: per-GPU mining_score with 0.91 fixed burn and 0.09 mining share.
+      multipliers: {}
+    - name: rental_price_incentive
+      role: main
+      advancement_rule: >-
+        Alternative IncentiveFactory algorithm rewarding actual rentals; uses dynamic burn_share
+        = TOTAL_BURN_EMISSION - rental_share with per-GPU-type unrented caps (MAX_UNRENTED_GPUS_BY_TYPE).
+      multipliers: {}
+  count: 2
+  notes: >-
+    Incentive algorithm is selected at runtime via settings.incentive / IncentiveFactory.create.
+    The active algorithm in default config is DefaultIncentive; rental_price is an alternative.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, status_enum, reputation]
+  status_values: ["rented", "unrented"]
+  reset_policy: >-
+    miner_scores accumulator persisted to Redis each cycle and reset to {} after a successful
+    set_weights. VerifyX download-speed EMA (alpha=0.3) carried across cycles per executor.
+  notes: >-
+    Rented vs unrented (idle) status changes scoring path: rented machines always report job_score=1.0
+    and skip the missing-EMA exclusion; UNRENTED_MULTIPLIER=1. EMA acts as a slow reputation signal that
+    decays toward 0 on repeated probe failures, eventually excluding the executor.
+
+documentation:
+  status: code_authoritative
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "neurons/validators/README.md"
+    - "neurons/miners/README.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8"
+  extracted_at: "2026-06-05"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "7"
+      quote: "Welcome to **Lium.io powered by Bittensor Subnet 51**!"
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "neurons/validators/src/services/task/score_calculator.py"
+      line_ref: "1-7"
+      quote: "\"\"\"Score calculation logic for executor validation."
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "21-21"
+      quote: "The system ensures fair compensation for miners based on the quality and performance of their GPUs."
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "25-25"
+      quote: "Miners: Provide GPU resources to the network, evaluated and scored by validators."
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "neurons/validators/src/services/const.py"
+      line_ref: "3-11"
+      quote: "GPU_MODEL_RATES = { \"NVIDIA B300 SXM6 AC\": .05, \"NVIDIA B200\": .05, \"NVIDIA H200\": .56,"
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "neurons/validators/src/incentive/default.py"
+      line_ref: "124-125"
+      quote: "job_result.mining_score = job_result.score * job_result.gpu_portion * job_result.gpu_count / job_result.total_gpu_count"
+      confidence: high
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "neurons/validators/src/services/matrix_validation_service.py"
+      line_ref: "278-289"
+      quote: "if uuid in uuid_array: ... return ValidationResult(success=True ... else: error_msg = f\"UUID mismatch: expected '{verifier_params.uuid}', got '{uuid}'\""
+      confidence: high
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "neurons/validators/src/services/task/checks/verifyx.py"
+      line_ref: "115-116"
+      quote: "ema_download = updated_specs[\"network\"][\"ema_verifyx_download_speed\"]\n            if ema_download < MIN_VERIFYX_EMA_DOWNLOAD_SPEED_MBPS:"
+      confidence: high
+    - claim_field: "/scoring_signals/4/notes"
+      source_path: "neurons/validators/src/services/task/score_calculator.py"
+      line_ref: "43-48"
+      quote: "base_price = MACHINE_PRICES.get(gpu_model, 0)\n    if price_per_gpu and price_per_gpu > base_price * settings.MACHINE_MAX_PRICE_RATE:\n        actual_score = 0.0"
+      confidence: high
+    - claim_field: "/scoring_signals/5/notes"
+      source_path: "neurons/validators/src/incentive/default.py"
+      line_ref: "145-150"
+      quote: "job_result.uptime_multiplier = ( 1 - settings.PORTION_FOR_UPTIME + settings.PORTION_FOR_UPTIME * min(1, uptime_in_minutes / settings.UPTIME_REQUIRED_MINUTES) )"
+      confidence: high
+    - claim_field: "/scoring_signals/5/notes"
+      source_path: "neurons/validators/src/core/config.py"
+      line_ref: "125-125"
+      quote: "UPTIME_REQUIRED_MINUTES: int = 60 * 24 * 14 # 14 days"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "neurons/validators/src/services/matrix_validation_service.py"
+      line_ref: "196-210"
+      quote: "gpu_info = {\"uuids\": gpu_uuids, \"gpu_count\": gpu_count, \"gpu_model\": gpu_model}\n            machine_info = json.dumps(gpu_info, sort_keys=True)"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/trust_model"
+      source_path: "neurons/validators/src/services/matrix_validation_service.py"
+      line_ref: "289-289"
+      quote: "error_msg = f\"UUID mismatch: expected '{verifier_params.uuid}', got '{uuid}'\""
+      confidence: medium
+    - claim_field: "/ground_truth_sources/1/source_identifier"
+      source_path: "neurons/validators/src/services/task/score_calculator.py"
+      line_ref: "43-43"
+      quote: "base_price = MACHINE_PRICES.get(gpu_model, 0)"
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "neurons/validators/src/incentive/default.py"
+      line_ref: "77-77"
+      quote: "result.incentive = (self.mining_share * result.mining_score / self.total_mining_score) if self.total_mining_score > 0 else 0.0"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "neurons/validators/src/services/const.py"
+      line_ref: "285-285"
+      quote: "TOTAL_BURN_EMISSION = 0.91"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "neurons/validators/src/incentive/default.py"
+      line_ref: "38-38"
+      quote: "self.mining_share = 1 - TOTAL_BURN_EMISSION"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/enabled"
+      source_path: "neurons/validators/src/incentive/burn_service.py"
+      line_ref: "95-96"
+      quote: "burners = settings.NEW_BURNERS\n        burn_score_per_burner = burn_share / len(burners)"
+      confidence: high
+    - claim_field: "/aggregation/decay_rate"
+      source_path: "neurons/validators/src/services/task/checks/network_ema.py"
+      line_ref: "1-1"
+      quote: "NETWORK_EMA_ALPHA = 0.3"
+      confidence: high
+    - claim_field: "/aggregation/normalization"
+      source_path: "neurons/validators/src/clients/subtensor_client.py"
+      line_ref: "408-414"
+      quote: "processed_uids, processed_weights = process_weights_for_netuid( uids=uids, weights=weights, netuid=self.netuid,"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "neurons/validators/src/clients/subtensor_client.py"
+      line_ref: "464-469"
+      quote: "result, msg = self.subtensor.set_weights( wallet=self.wallet, netuid=self.netuid, uids=uint_uids, weights=uint_weights, version_key=self.version_key,"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "neurons/validators/src/clients/subtensor_client.py"
+      line_ref: "533-535"
+      quote: "blocks_till_epoch = tempo - (current_block + self.netuid + 1) % (tempo + 1)\n            ...\n            should_set_weights = last_update >= tempo"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "neurons/validators/src/core/validator.py"
+      line_ref: "442-443"
+      quote: "for miner_hotkey, score in cycle_scores.items():\n                        self.miner_scores[miner_hotkey] = self.miner_scores.get(miner_hotkey, 0) + score"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "neurons/validators/src/services/matrix_validation_service.py"
+      line_ref: "53-60"
+      quote: "def generateChallenge(self, verifier_ptr: POINTER(c_void_p), seed: int, machine_info: str, uuid: str):"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "neurons/validators/src/services/task/score_calculator.py"
+      line_ref: "66-84"
+      quote: "if not collateral_deposited: ... actual_score = 0.0\n            job_score = 0.0 ... actual_score = actual_score * SCORE_PORTION_FOR_OLD_CONTRACT"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "neurons/validators/src/services/const.py"
+      line_ref: "92-92"
+      quote: "REQUIRED_DEPOSIT_AMOUNT = {"
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "neurons/validators/src/services/const.py"
+      line_ref: "275-276"
+      quote: "GPU_UTILIZATION_LIMIT = 5  # percent\nGPU_MEMORY_UTILIZATION_LIMIT = 5  # percent"
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "neurons/validators/src/services/const.py"
+      line_ref: "271-271"
+      quote: "MAX_GPU_COUNT = 14"
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "neurons/validators/src/core/config.py"
+      line_ref: "175-175"
+      quote: "MACHINE_MAX_PRICE_RATE: float = Field(env=\"MACHINE_MAX_PRICE_RATE\", default=2.0)"
+      confidence: high
+    - claim_field: "/sub_competitions/structure"
+      source_path: "neurons/validators/src/core/validator.py"
+      line_ref: "388-394"
+      quote: "incentive = IncentiveFactory.create( config=self.incentive,"
+      confidence: medium
+    - claim_field: "/sub_competitions/stages/1/advancement_rule"
+      source_path: "neurons/validators/src/incentive/config.py"
+      line_ref: "36-37"
+      quote: "MAX_UNRENTED_GPUS_BY_TYPE: dict[str, dict[int, int]] = {"
+      confidence: medium
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "neurons/validators/src/core/validator.py"
+      line_ref: "186-187"
+      quote: "await self.subtensor_client.set_weights(miner_scores=self.miner_scores)\n                        self.miner_scores = {}"
+      confidence: high
+    - claim_field: "/per_miner_state/notes"
+      source_path: "neurons/validators/src/services/task/score_calculator.py"
+      line_ref: "96-97"
+      quote: "# Rented machines always report job_score=1.0\n    final_job_score = 1.0 if rented else job_score"
+      confidence: high
+    - claim_field: "/per_miner_state/notes"
+      source_path: "neurons/validators/src/services/task/checks/verifyx.py"
+      line_ref: "75-76"
+      quote: "# Always compute verifyx network EMA — use 0.0 when network measurement failed\n            # so EMA decays toward 0 on repeated failures, eventually triggering exclusion"
+      confidence: high
+    - claim_field: "/documentation/status"
+      source_path: "neurons/validators/README.md"
+      line_ref: "3-3"
+      quote: "**[Validator Documentation](https://docs.lium.io/bittensor-subnet/validator)**"
+      confidence: medium
+  unresolved:
+    - "/scoring_signals/*/weight — no scalar per-signal weights; checks are binary gates and multiplicative penalties, not a weighted sum."
+    - "/aggregation/min_weight_floor — _convert_weights_with_positive_floor applies a positive floor to nonzero weights but no literal floor constant was located."
+    - "/aggregation/burn_allocation/address_or_uid — burner UIDs come from runtime settings.NEW_BURNERS / settings.BURNERS, not a literal in the read source."
+    - "Exact active incentive algorithm (DefaultIncentive vs rental_price) depends on settings.incentive at deploy time; not pinned in read source."
+    - "Collateral default behavior: ENABLE_NO_COLLATERAL=True and SKIP_COLLATERAL_PENALTY=True in config defaults soften collateral gating; production env may override."
+  extractor_notes: >-
+    Scoring is multiplicative/binary rather than a weighted sum: per-executor mining_score =
+    score(=actual_score gated by binary checks) * gpu_portion * gpu_count/total_gpu_count *
+    sysbox_multiplier * uptime_multiplier, then incentive = mining_share * mining_score /
+    total_mining_score. decay_rate 0.3 is the VerifyX network EMA alpha (a per-executor reputation
+    signal), not a temporal decay on weights. Burn is a large fixed 0.91 emission share to burner UIDs.

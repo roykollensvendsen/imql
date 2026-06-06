@@ -1,0 +1,390 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+subnet:
+  name: "Finetuning (Subnet 37)"
+  owner_repo: "macrocosm-os__finetuning"
+  netuid: 37
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners fine-tune LLMs locally, publish the best model to Hugging Face, and commit
+    that model's metadata to the Bittensor chain (one model per miner at a time).
+    Validators download each miner's model and score it on a competition-specific set
+    of evaluation tasks (synthetic MMLU multiple-choice, word-sorting reference loss,
+    FineWeb text cross-entropy loss, synthetic IFEval rule-following, and reasoning-trace
+    reference loss). Within a competition, models are compared pairwise with an
+    epsilon (earlier-block) advantage, and the model(s) with the highest win rate
+    receive that competition's emission share. The subnet runs several competitions
+    (e.g. B7_MULTI_CHOICE, INSTRUCT_8B, DISTILLED_REASONING_3B) over time, each with its
+    own model-size/architecture constraints and reward percentage.
+  submission_format: [model_weights, commitment_hash]
+  extensions:
+    publication: "Model uploaded to Hugging Face (public repo); model metadata/hash committed to the Bittensor chain."
+
+scoring_signals:
+  - name: synthetic_mmlu_deviation
+    metric_kind: accuracy
+    direction: lower_is_better
+    weight: 0.30
+    normalization: none
+    notes: >-
+      MULTIPLE_CHOICE method: fraction of incorrect answers on a synthetic MMLU-like
+      multiple-choice dataset sourced from Subnet 1 (Prompting). Raw score is the ratio
+      of incorrect answers (0 = correct, 1 = incorrect), so lower is better. Weight shown
+      is for the active INSTRUCT_8B post-B7-sunset schedule (0.75 in the earlier schedule).
+  - name: word_sorting_reference_loss
+    metric_kind: loss
+    direction: lower_is_better
+    weight: 0.05
+    normalization: other
+    notes: >-
+      REFERENCE_LOSS on a word-sorting task; normalized via INVERSE_EXPONENTIAL with
+      ceiling 40.0 (taoverse normalize_score). Cross-entropy on the reference portion.
+  - name: fineweb_text_loss
+    metric_kind: loss
+    direction: lower_is_better
+    weight: 0.35
+    normalization: other
+    notes: >-
+      TEXT_LOSS: average cross-entropy on a FineWeb-edu sample; normalized via
+      INVERSE_EXPONENTIAL with ceiling 20.0. A reasonable-output sanity check returns
+      inf (worst) if outputs overlap/repeat too much.
+  - name: if_eval_v2
+    metric_kind: accuracy
+    direction: lower_is_better
+    weight: 0.30
+    normalization: none
+    notes: >-
+      IF_EVAL: fraction of rules NOT satisfied across two responses; per-response score
+      is 1 - (correct_ratio**2). Models with >10% duplicated responses across prompts
+      are forced to score 1 (worst). Lower is better.
+  - name: composite_weighted_task_score
+    metric_kind: other
+    metric_kind_other: weighted_sum_of_normalized_task_scores
+    direction: lower_is_better
+    weight: null
+    normalization: other
+    notes: >-
+      score_model() returns score = sum over eval tasks of (normalized_score * task_weight),
+      with task weights renormalized to sum to 1. This per-model composite score is then
+      used as the 'loss' input to the pairwise win comparison. Lower composite is better.
+      Task set and weights vary by competition/schedule block.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Synthetic MMLU-like multiple-choice questions sourced from the Prompting subnet
+      (Subnet 1) via WandB; also synthetic IFEval-style rule-following prompts.
+    source_identifier: "SYNTHETIC_MMLU / SYNTHETIC_IF_EVAL (Subnet 1 Prompting, via WandB)"
+    trust_model: trusted
+  - kind: deterministic_dataset
+    description: >-
+      FineWeb-edu text sample for cross-entropy (TEXT_LOSS) and generated word-sorting
+      task for REFERENCE_LOSS.
+    source_identifier: "FINEWEB (HuggingFaceFW/fineweb-edu-score-2) / WORD_SORTING"
+    trust_model: trusted
+  - kind: deterministic_dataset
+    description: >-
+      Reasoning-trace datasets for the DISTILLED_REASONING_3B competition (math/code
+      step-by-step reasoning), scored via REFERENCE_LOSS.
+    source_identifier: "SYNTHETIC_1_SFT (PrimeIntellect/SYNTHETIC-1-SFT-Data) / CODEFORCES_COTS"
+    trust_model: trusted
+
+aggregation:
+  method: winner_take_all
+  normalization: other
+  decay_rate: 0.90
+  min_weight_floor: 0.18
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    notes: >-
+      No deliberate burn/null-UID routing observed in the active validator. Per-competition
+      weight goes entirely to the winning model(s); emission then split across competitions
+      by reward_percentage.
+  notes: >-
+    Per competition, step_weights = 1 for the uid(s) with the highest epsilon-adjusted
+    pairwise win rate and 0 for all others (winner-take-all), NOT the win-ratio/softmax
+    described in the docs (see provenance.extractor_notes). These per-competition weight
+    vectors are fed into a CompetitionTracker that maintains an exponential moving average
+    with alpha=ALPHA=0.90, then merged across active competitions weighted by each
+    competition's reward_percentage. Any merged competition weight below MIN_WEIGHT_THRESHOLD
+    (0.18) is zeroed to aid vtrust. The pairwise win uses an epsilon (LinearDecay, e.g.
+    0.05 -> 0.01) advantage favoring the model committed at the earlier block.
+  extensions:
+    epsilon_func: "LinearDecay(start=0.05, end=0.01, decay_blocks varies per competition, e.g. 7200*1..7200*5)"
+    competition_reward_split: "Each Competition has a reward_percentage; schedule asserts they sum to 1.0."
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    EMA (alpha 0.90) of per-competition winner-take-all weight vectors, merged across
+    active competitions by reward_percentage, with a 0.18 min-weight threshold; committed
+    on chain roughly once per hour by a dedicated set_weights thread.
+  on_chain_call: set_weights
+  tempo_or_interval: "~once per hour (set_weights loop sleeps 60*60s); SYNC_BLOCK_CADENCE=360 blocks; chain_update_cadence=20min"
+
+anti_gaming:
+  - kind: other
+    kind_other: epsilon_earlier_block_advantage
+    enforcement: barrier
+    description: >-
+      _is_win applies an epsilon (LinearDecay) discount to the earlier-committed model's
+      loss, so a copied/newer model must beat the original by epsilon percent to win.
+      This deters copying publicly available models without genuine improvement.
+  - kind: deduplication
+    enforcement: penalty
+    description: >-
+      IF_EVAL penalizes models that produce too-similar responses to different prompts:
+      if >10% of samples have response similarity > 0.6, the task score is forced to 1
+      (worst). TEXT_LOSS also returns inf if generated outputs overlap/repeat excessively.
+  - kind: rate_limit
+    enforcement: barrier
+    description: >-
+      Chain metadata may only be updated every ~20 minutes (chain_update_cadence);
+      models have an eval_block_delay before being scored. One model per miner at a time.
+  - kind: other
+    kind_other: model_size_and_architecture_constraints
+    enforcement: rejection
+    description: >-
+      Each competition enforces max (and sometimes min) parameter size, allowed
+      architectures, sequence length, tokenizer, and a max HF repo byte size
+      (MAX_HUGGING_FACE_BYTES ~15.1GB); non-conforming models are not valid entries.
+
+sub_competitions:
+  structure: multi_mechanism
+  stages:
+    - name: "B7_MULTI_CHOICE"
+      role: other
+      advancement_rule: "highest epsilon-adjusted pairwise win rate wins the competition share"
+      multipliers:
+        reward_percentage_initial: 0.75
+        status: "sunset at block 4675163"
+    - name: "INSTRUCT_8B"
+      role: main
+      advancement_rule: "highest epsilon-adjusted pairwise win rate wins the competition share"
+      multipliers:
+        reward_percentage_initial: 0.25
+        reward_percentage_after_b7_sunset: 1.0
+        status: "scheduled to sunset at block 5158632"
+    - name: "DISTILLED_REASONING_3B"
+      role: main
+      advancement_rule: "highest epsilon-adjusted pairwise win rate wins the competition share"
+      multipliers:
+        reward_percentage: 1.0
+        param_range: "3.2B-3.4B"
+  count: 3
+  notes: >-
+    Competitions are scheduled by block via COMPETITION_SCHEDULE_BY_BLOCK; multiple may
+    be active simultaneously with reward_percentages summing to 1.0. Each competition has
+    its own eval task set/weights and model constraints. Roles 'other'/'main' are
+    approximations; the schema has no 'competition track' role.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, registration_age]
+  status_values: []
+  reset_policy: >-
+    VALIDATOR_STATE_VERSION (currently 13) bump causes validators to start from fresh
+    state. Competition weights carried as an EMA (alpha 0.90) in the CompetitionTracker.
+  notes: >-
+    The CompetitionTracker keeps a moving-average weight per uid per competition across
+    eval loops; uid_to_block records the commit block used for the epsilon earlier-block
+    advantage. No explicit status enum / debt ledger.
+
+documentation:
+  status: docs_and_code
+  source_version: "3.1.0"
+  primary_docs:
+    - "README.md"
+    - "docs/validator.md"
+    - "docs/competitions.md"
+    - "docs/miner.md"
+    - "constants/__init__.py"
+    - "finetune/validation.py"
+    - "finetune/eval/method.py"
+    - "neurons/validator.py"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8"
+  extracted_at: "2026-06-05"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "constants/__init__.py"
+      line_ref: "68"
+      quote: "SUBNET_UID = 37"
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "constants/__init__.py"
+      line_ref: "1-6"
+      quote: "import datetime as dt ... import torch"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "docs/miner.md"
+      line_ref: "3-5"
+      quote: "Miners train locally and periodically publish their best model to Hugging Face and commit the metadata for that model to the Bittensor chain. Miners can only have one model associated with them on the chain for evaluation by validators at a time."
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "docs/miner.md"
+      line_ref: "3"
+      quote: "publish their best model to Hugging Face and commit the metadata for that model to the Bittensor chain"
+      confidence: high
+    - claim_field: "/scoring_signals/0"
+      source_path: "constants/__init__.py"
+      line_ref: "268-273"
+      quote: "name=\"SYNTHETIC_MMLU\", method_id=EvalMethodId.MULTIPLE_CHOICE, dataset_id=DatasetId.SYNTHETIC_MMLU, normalization_id=NormalizationId.NONE, weight=0.30"
+      confidence: high
+    - claim_field: "/scoring_signals/0/direction"
+      source_path: "finetune/eval/method.py"
+      line_ref: "262-277"
+      quote: "if matches and matches[0] == answer: multiple_choice_deviations.append(0) else: multiple_choice_deviations.append(1) ... return sum(...)/len(...)"
+      confidence: high
+    - claim_field: "/scoring_signals/1"
+      source_path: "constants/__init__.py"
+      line_ref: "274-281"
+      quote: "name=\"WORD_SORTING\", method_id=EvalMethodId.REFERENCE_LOSS, ... normalization_id=NormalizationId.INVERSE_EXPONENTIAL, normalization_kwargs={\"ceiling\": 40.0}, weight=0.05"
+      confidence: high
+    - claim_field: "/scoring_signals/2"
+      source_path: "constants/__init__.py"
+      line_ref: "282-289"
+      quote: "name=\"FINEWEB\", method_id=EvalMethodId.TEXT_LOSS, ... normalization_id=NormalizationId.INVERSE_EXPONENTIAL, normalization_kwargs={\"ceiling\": 20.0}, weight=0.35"
+      confidence: high
+    - claim_field: "/scoring_signals/3"
+      source_path: "constants/__init__.py"
+      line_ref: "290-297"
+      quote: "name=\"IF_EVAL_V2\", method_id=EvalMethodId.IF_EVAL, dataset_id=DatasetId.SYNTHETIC_IF_EVAL, normalization_id=NormalizationId.NONE, ... weight=0.30"
+      confidence: high
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "finetune/eval/method.py"
+      line_ref: "329-353"
+      quote: "correct_ratio = correct / (len(sample.rules)) response_score = 1 - (correct_ratio**2) ... if duplicate_count > len(batches) * 0.1: ... return 1 ... Return the % of rules that were not satisfied."
+      confidence: high
+    - claim_field: "/scoring_signals/4/notes"
+      source_path: "finetune/validation.py"
+      line_ref: "231-241"
+      quote: "task_weight = task.weight / total_weight ... weighted_norm_score = normalized_score * task_weight score += weighted_norm_score ... return score, score_details"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0"
+      source_path: "docs/competitions.md"
+      line_ref: "67"
+      quote: "SYNTHENTIC_MMLU: ... a synthetic MMLU-like dataset from the Text Prompting subnet (sn1)."
+      confidence: high
+    - claim_field: "/ground_truth_sources/1"
+      source_path: "docs/competitions.md"
+      line_ref: "69"
+      quote: "FINEWEB: ... the model's cross entropy loss is computed on a small sample of the fineweb dataset"
+      confidence: high
+    - claim_field: "/ground_truth_sources/2"
+      source_path: "constants/__init__.py"
+      line_ref: "313-327"
+      quote: "name=\"SYNTHETIC_1_SFT\", ... dataset_id=DatasetId.SYNTHETIC_1_SFT ... name=\"CODEFORCES_COTS\", ... dataset_id=DatasetId.CODEFORCES_COTS"
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "neurons/validator.py"
+      line_ref: "1262-1266"
+      quote: "step_weights = torch.tensor([1 if win_rate[uid] == best_win_rate else 0 for uid in uids], dtype=torch.float32)"
+      confidence: high
+    - claim_field: "/aggregation/decay_rate"
+      source_path: "constants/__init__.py"
+      line_ref: "55-57"
+      quote: "# Validator weight moving average term. # At 0.85 a model will go from 0 -> 0.278 ... ALPHA = 0.90"
+      confidence: high
+    - claim_field: "/aggregation/min_weight_floor"
+      source_path: "constants/__init__.py"
+      line_ref: "58-62"
+      quote: "# Any miners with a combined competition weight below this threshold will instead receive 0 weight. ... MIN_WEIGHT_THRESHOLD = 0.18"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "1284-1289"
+      quote: "self.weights = self.competition_tracker.get_subnet_weights(competitions=competition_schedule, min_comp_weight_threshold=constants.MIN_WEIGHT_THRESHOLD,)"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/enabled"
+      source_path: "neurons/validator.py"
+      line_ref: "1262-1273"
+      quote: "step_weights = ... [1 if win_rate[uid] == best_win_rate else 0 ...] ... competition_weights[uid_i] = step_weights[i]"
+      confidence: medium
+    - claim_field: "/aggregation/extensions/epsilon_func"
+      source_path: "constants/__init__.py"
+      line_ref: "113"
+      quote: "epsilon_func=LinearDecay(0.05, 0.01, 7200 * 5),  # Decay over ~5 days."
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "neurons/validator.py"
+      line_ref: "851-852"
+      quote: "# Only set weights once every hour time.sleep(60 * 60)"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "neurons/validator.py"
+      line_ref: "867-871"
+      quote: "return self.weights_subtensor.set_weights(netuid=self.config.netuid, wallet=self.wallet, uids=uids, weights=weights_to_set.numpy(), ...)"
+      confidence: high
+    - claim_field: "/anti_gaming/0"
+      source_path: "finetune/validation.py"
+      line_ref: "48-59"
+      quote: "loss_i = (1 - epsilon_func.compute_epsilon(current_block, block_i)) * loss_i if block_i < block_j else loss_i ... return loss_i < loss_j"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "docs/validator.md"
+      line_ref: "61"
+      quote: "This undermines the obvious optimal strategy for miners to copy the publicly available models from other miners."
+      confidence: high
+    - claim_field: "/anti_gaming/1"
+      source_path: "finetune/eval/method.py"
+      line_ref: "345-350"
+      quote: "if duplicate_count > len(batches) * 0.1: ... Setting score to 1. ... return 1"
+      confidence: high
+    - claim_field: "/anti_gaming/2"
+      source_path: "constants/__init__.py"
+      line_ref: "358-359"
+      quote: "# time required between updates to the chain. chain_update_cadence = dt.timedelta(minutes=20)"
+      confidence: high
+    - claim_field: "/anti_gaming/3"
+      source_path: "constants/__init__.py"
+      line_ref: "90-114"
+      quote: "ModelConstraints(max_model_parameter_size=6_900_000_000, sequence_length=4096, allowed_architectures=[...], ... max_bytes=15 * 1024 * 1024 * 1024)"
+      confidence: high
+    - claim_field: "/sub_competitions/structure"
+      source_path: "constants/__init__.py"
+      line_ref: "177-258"
+      quote: "COMPETITION_SCHEDULE_BY_BLOCK: ... Competition(CompetitionId.B7_MULTI_CHOICE, ..., 0.75, ...), Competition(CompetitionId.INSTRUCT_8B, ..., 0.25, ...)"
+      confidence: high
+    - claim_field: "/sub_competitions/notes"
+      source_path: "constants/__init__.py"
+      line_ref: "341-345"
+      quote: "assert math.isclose(sum(competition.reward_percentage for competition in block_and_competitions[1]), 1.0,)"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "constants/__init__.py"
+      line_ref: "45-47"
+      quote: "# The version of the validator state. When incremented, causes validators # to start from a fresh state. VALIDATOR_STATE_VERSION = 13"
+      confidence: high
+    - claim_field: "/per_miner_state/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "1294-1296"
+      quote: "# Use the competition weights from the tracker which also handles moving averages. tracker_competition_weights = self.competition_tracker.get_competition_weights(competition.id)"
+      confidence: high
+    - claim_field: "/documentation/source_version"
+      source_path: "constants/__init__.py"
+      line_ref: "36"
+      quote: "__version__ = \"3.1.0\""
+      confidence: high
+  unresolved:
+    - "Exact CompetitionTracker EMA update formula and get_subnet_weights merge math live in the external 'taoverse' package, which is not vendored in this repo; alpha=0.90 and the 0.18 threshold are confirmed locally but the precise normalization step is not directly citable here."
+    - "normalize_score / INVERSE_EXPONENTIAL exact transform is in taoverse (not in-repo); only the ceiling kwargs (20.0, 40.0) are citable locally."
+    - "Whether multiple competitions are concurrently active at the current chain block (vs. only the latest scheduled one) depends on live block height vs. SUNSET_* blocks; not determinable from source alone."
+  extractor_notes: >-
+    KEY DIVERGENCE: docs/validator.md and the validator docstring describe weights as the
+    'ratio of wins' followed by softmax normalization (shared 'taoverse' framing with
+    macrocosm-os__pretraining). The ACTUAL active code in validation_step is winner-take-all:
+    step_weights = 1 for the uid(s) tying the best win rate, 0 otherwise. I recorded the code
+    as authoritative (aggregation.method=winner_take_all) and noted the documented softmax in
+    notes. The pairwise epsilon earlier-block win logic matches the pretraining sibling, but
+    the TASK differs: fine-tuning models scored on multiple-choice/IFEval/reference-loss eval
+    tasks combined into a weighted composite, across multiple block-scheduled competitions with
+    reward_percentage splits. No burn UID routing is present in this version.

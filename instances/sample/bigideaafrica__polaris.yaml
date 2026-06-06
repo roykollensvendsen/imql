@@ -1,0 +1,187 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+subnet:
+  name: "Polaris (Polaris Node Manager / Compute)"
+  owner_repo: "bigideaafrica__polaris"
+  netuid: null
+  implementation_lang: none_docs_only
+
+task:
+  summary: >-
+    Per the distribution docs, Polaris is an installer / node-manager for running compute
+    (GPU mining) nodes on the Bittensor network. A miner registers a machine, the manager
+    detects and reports its hardware, self-validates against the server, and the machine
+    participates as a rentable compute resource. The docs state that only NVIDIA GPUs
+    (24GB+ VRAM) qualify for rewards/incentives; AMD GPUs and CPUs do not earn rewards.
+    The actual scoring / weight-setting algorithm is NOT described anywhere in these
+    distribution READMEs — they are install/marketing docs with no validator code.
+  submission_format: [compute_service, other]
+  submission_format_other: "hardware_spec / registered machine: a node registers its detected GPU/CPU hardware specs for reward qualification"
+
+scoring_signals:
+  - name: gpu_reward_qualification
+    metric_kind: hardware_spec
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Docs state rewards require an NVIDIA GPU with 24GB+ VRAM (48GB+ recommended);
+      AMD GPUs and CPUs are explicitly excluded from rewards. This is the only
+      reward-relevant signal the docs reveal. No scoring formula or weighting is documented.
+  - name: self_validation_benchmark
+    metric_kind: other
+    metric_kind_other: "performance_benchmark / self-validation score (CPU/GPU scoring), formula undocumented"
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      v2 docs mention a "Self-Validation System", "built-in CPU/GPU scoring",
+      "performance benchmarking", and "tier qualification status", but give no
+      metric definition, units, or aggregation. Recorded as a documented-but-opaque signal.
+
+ground_truth_sources:
+  - kind: hardware_probe
+    description: >-
+      The node manager automatically detects and reports system specifications
+      (Python-based automatic remote hardware detection, v2.0.1) and runs a
+      self-validation / server-authentication step. Used to gate reward eligibility on GPU type/VRAM.
+    source_identifier: ""
+    trust_model: unknown
+
+aggregation:
+  method: other
+  method_other: "Not documented. Distribution READMEs describe no raw-score-to-weight aggregation."
+  normalization: none
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    notes: "No burn mechanism documented."
+  notes: "No aggregation algorithm is described in any version README; this is a docs-only download repo."
+
+weight_setting:
+  cadence: other
+  cadence_other: "Not documented in the distribution READMEs."
+  method: ""
+  on_chain_call: unknown
+  tempo_or_interval: null
+
+anti_gaming:
+  - kind: hardware_validation
+    enforcement: barrier
+    description: >-
+      Reward eligibility is gated on hardware: only NVIDIA GPUs (24GB+ VRAM) qualify
+      for rewards; AMD GPUs and CPUs do not. A "Self-Validation System" performs
+      automated server authentication and performance benchmarking before a machine
+      qualifies. Enforcement details and thresholds beyond the VRAM minimum are not documented.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: >-
+    Docs mention a "free tier" (CPU/testing, no rewards) versus a reward-earning
+    GPU tier, plus "tier qualification status", but no formal multi-stage competition
+    structure is described.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [status_enum, registration_age]
+  status_values: []
+  reset_policy: ""
+  notes: >-
+    Docs reference real-time status tracking, "tier qualification status", per-UID
+    multi-machine registration, and activity logging, implying some persistent per-miner
+    state. The concrete state model (status enum values, ledgers, reset policy) is not documented.
+
+documentation:
+  status: docs_only
+  source_version: "v3.0.2"
+  primary_docs:
+    - "README.md"
+    - "v3.0.2/README.md"
+    - "v3.0.2/linux/README.md"
+    - "v1/README.md"
+  completeness: low
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: low
+  extractor_notes: >-
+    DOCS-ONLY repo: this is the Polaris distributions/installer repository (binary
+    download READMEs), not the validator/subnet source. The READMEs are marketing and
+    install instructions; they contain NO incentive-mechanism algorithm, scoring formula,
+    weight-setting logic, or constants. The only incentive-relevant facts are the GPU
+    reward-qualification rules and vague references to "self-validation", "scoring", and
+    "tier qualification". All code-derived numeric fields are left null. Most enum fields
+    that have no documentary basis are set to "other" or "unknown" rather than guessed.
+  evidence:
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "README.md"
+      line_ref: "1-3"
+      quote: "Polaris Distributions — This repository contains distribution packages for the Polaris Node Manager application, organized by version."
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "v1/README.md"
+      line_ref: "1-3"
+      quote: "a tool designed to simplify the setup and management of Polaris mining nodes on the Bittensor network."
+      confidence: medium
+    - claim_field: "/documentation/source_version"
+      source_path: "README.md"
+      line_ref: "5-7"
+      quote: "## 🚀 Latest Version: v3.0.2 — Polaris Node Manager v3.0.2 delivers revolutionary compute resource management..."
+      confidence: high
+    - claim_field: "/scoring_signals/0/metric_kind"
+      source_path: "README.md"
+      line_ref: "262-276"
+      quote: "GPU Requirements (For Rewards & Incentives) — NVIDIA GPU: Only NVIDIA GPUs are supported for rewards and incentives. VRAM: 24GB minimum (48GB+ highly recommended). AMD GPUs: Currently not supported for rewards."
+      confidence: high
+    - claim_field: "/scoring_signals/1/metric_kind"
+      source_path: "README.md"
+      line_ref: "53-55"
+      quote: "Self-Validation System: Automated server authentication and performance benchmarking"
+      confidence: medium
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "README.md"
+      line_ref: "305-307"
+      quote: "Performance Benchmarking | None | Built-in CPU/GPU scoring | Advanced ML-based optimization"
+      confidence: medium
+    - claim_field: "/ground_truth_sources/0/kind"
+      source_path: "README.md"
+      line_ref: "319"
+      quote: "v2.0.1 ✅ - SSH overhaul, Python-based hardware detection, resource deletion verified"
+      confidence: medium
+    - claim_field: "/anti_gaming/0/kind"
+      source_path: "README.md"
+      line_ref: "277-283"
+      quote: "CPU Support: CPUs are accepted for testing purposes only. No Rewards: CPU processing does not qualify for incentives or rewards. Free Tier: CPU users are welcome to participate in the free tier."
+      confidence: high
+    - claim_field: "/per_miner_state/tracked"
+      source_path: "README.md"
+      line_ref: "53-55"
+      quote: "Multi-Machine Management: Register and manage multiple mining rigs under a single UID. Real-time Monitoring: Live status tracking for all connected mining machines."
+      confidence: medium
+    - claim_field: "/sub_competitions/notes"
+      source_path: "README.md"
+      line_ref: "317"
+      quote: "v2.0.3 ✅ - Advanced real-time monitoring system, visual status dashboard, automatic health checks ... Performance tracking with tier qualification status"
+      confidence: low
+  unresolved:
+    - "aggregation.method — no score-to-weight aggregation algorithm is described in any README."
+    - "aggregation.decay_rate / min_weight_floor — no numeric constants documented anywhere."
+    - "weight_setting.cadence / on_chain_call / tempo_or_interval — no on-chain weight-setting described."
+    - "scoring_signals[*].weight — no relative weighting of signals documented."
+    - "self_validation_benchmark — metric definition, units, scoring formula, and thresholds undocumented."
+    - "gpu_reward_qualification — exact reward function beyond the 24GB VRAM / NVIDIA-only gate is undocumented."
+    - "subnet.netuid — Bittensor netuid is not stated in the distribution docs."
+    - "per_miner_state status_values / reset_policy — concrete per-miner state model not documented."
+    - "burn_allocation — presence/absence of any burn not documented; assumed disabled, not confirmed."
+
+extensions:
+  note: >-
+    This is the Polaris *distributions* repo (installer binaries + download READMEs), separate
+    from any validator/subnet source. The incentive mechanism itself is not present here; the
+    extraction reflects only what the distribution docs assert about reward eligibility.

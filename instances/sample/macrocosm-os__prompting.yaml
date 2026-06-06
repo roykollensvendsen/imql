@@ -1,0 +1,289 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+subnet:
+  name: "Subnet 1: Apex"
+  owner_repo: "macrocosm-os__prompting"
+  netuid: 1
+  implementation_lang: python
+
+task:
+  summary: >-
+    Apex is a competition-based subnet. Miners submit Python-based algorithms (a
+    "solution file", optionally with binary artifacts) to a specific Competition
+    via the Apex CLI, paying an on-chain submission fee. Each Competition runs
+    multiple Rounds. An off-chain orchestrator (apex.api.macrocosmos.ai) executes
+    each submission in sandboxes against the competition's deterministic,
+    seed-generated challenge instances and produces a single scalar score per
+    submission, forming a per-competition leaderboard. Validators in this repo do
+    NOT score: they poll the orchestrator for "global miner scores" (already a
+    weight per UID) and submit them on-chain. Concrete competitions include energy
+    arbitrage (score = simulated total profit, higher is better), RL Battleship
+    (sink ships in as few turns as possible, lower is better), and an Iota
+    distributed-training simulator. Per-competition emissions are scaled by an
+    incentive_weight and reduced by a burn_factor, with a base (minimum) burn rate.
+  submission_format: [source_code]
+
+scoring_signals:
+  - name: competition_score
+    metric_kind: other
+    metric_kind_other: "per-competition scalar score from sandboxed execution of the submitted algorithm (e.g. simulated total_profit for energy_arbitrage; fewer turns for RL Battleship)"
+    direction: higher_is_better
+    weight: 1.0
+    normalization: rank
+    notes: >-
+      The orchestrator produces one scalar score per submission and ranks miners
+      into a leaderboard (MinerRankRecord.rank / top_scorer). The semantics of the
+      raw score are competition-specific: for energy_arbitrage higher total_profit
+      is better; for RL Battleship fewer turns is better. The orchestrator that
+      computes the raw score and converts it to a leaderboard/weight is a remote
+      API not present in this repo, so the cross-competition normalization beyond
+      "rank-based leaderboard with a top_scorer" is unresolved.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Each competition generates challenge instances deterministically from a seed
+      (and a hidden_seed not visible to the submitted policy). Scoring is the
+      objective outcome of running the submitted algorithm against these generated
+      instances inside a sandbox (e.g. simulated profit accumulated over the
+      rollout for energy_arbitrage).
+    source_identifier: "competition.<name> challenge generators (e.g. energy_arbitrage/python/challenge.py generate_instance)"
+    trust_model: trusted
+
+aggregation:
+  method: rank_based
+  normalization: other
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: null
+    fraction: null
+    notes: >-
+      Per-competition emissions = (1 - burn_factor) * incentive_weight; the
+      remainder is burned. burn_factor has a configured floor base_burn_rate
+      (DEFAULT_BASE_BURN_RATE = 0.9), shown in the CLI as "min burn". The exact
+      live burn_factor value and the recipient of the burned emission are set by
+      the off-chain orchestrator (not in this repo), so fraction/address are
+      unresolved.
+  notes: >-
+    Normalization is "other": per-competition incentive_weight is a direct decimal
+    allocation (0.0-1.0) scaled by (1 - burn_factor); the per-UID weights are
+    provided by the orchestrator. Validators receive an already-computed per-UID
+    weight from the orchestrator and submit it via set_weights; on failure they
+    copy a stake-weighted average of existing on-chain weights.
+
+weight_setting:
+  cadence: continuous
+  method: >-
+    Validator weight_loop polls the orchestrator (get_global_miner_scores) for a
+    SubnetScores object containing {uid, weight} per miner, then calls
+    set_weights. If no scores are available or on timeout/error it falls back to
+    copy_weights_from_chain (stake-weighted average of validator weights). Loops
+    every WEIGHT_SUBMIT_INTERVAL seconds.
+  on_chain_call: set_weights
+  tempo_or_interval: "WEIGHT_SUBMIT_INTERVAL = 60*21 (every 21 minutes) in production"
+
+anti_gaming:
+  - kind: collateral
+    enforcement: barrier
+    description: >-
+      Submitting requires an on-chain submission fee (amount_rao / fee_usd) paid
+      via transfer_keep_alive to SUBMISSION_FEE_ADDRESS; the orchestrator verifies
+      the payment receipt before accepting the submission. This acts as an
+      anti-spam / sybil barrier on submissions.
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Submitted algorithms run in sandboxes (SandboxRunRules) and receive only a
+      restricted PolicyView, not the full Challenge, so they cannot access the
+      seed or RT-price generation; the hidden_seed used to drive the rollout is
+      withheld from the policy. Challenge instances are deterministic from seeds.
+
+sub_competitions:
+  structure: multi_mechanism
+  stages: []
+  count: null
+  notes: >-
+    The subnet runs multiple independent Competitions in parallel, each with its
+    own package (pkg), process/competition type (ptype/ctype), deterministic
+    challenge, leaderboard, incentive_weight and burn_factor. Each Competition is
+    divided into Rounds (RoundRecord.round_number). Observed competitions in-repo:
+    energy_arbitrage, battleship, rl_battleship, iota_simulator, tron,
+    matrix_compression. The exact set and per-competition incentive_weight values
+    are owned by the off-chain orchestrator and not pinned in this repo.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, status_enum, registration_age]
+  status_values: []
+  reset_policy: >-
+    burn_factor_reset_at marks when the burn factor was reset (tied to a new top
+    scorer / "Age" of the current top scorer). Per-miner best score and rank
+    persist across submissions within a competition.
+  notes: >-
+    Per miner the orchestrator tracks best score, leaderboard rank, top_scorer
+    flag, submission version, submissions_count and join_date
+    (MinerRankRecord/SubmissionRankMiner). A miner is "top_scorer" if its current
+    submission is the competition winner. Submissions must beat a score_to_beat to
+    take the top spot.
+
+documentation:
+  status: docs_authoritative
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/sandbox-startup-config.md"
+    - "https://docs.macrocosmos.ai/subnets/new-subnet-1-apex/incentive-mechanism"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract"
+  confidence_overall: medium
+  extractor_notes: >-
+    This is the newer "Apex" competition architecture, not the classic SN1
+    prompting/reward-model LLM-inference subnet described in the task brief. The
+    actual scoring engine (orchestrator) is a remote API (apex.api.macrocosmos.ai)
+    and is NOT in this repo; only the validator (which forwards orchestrator
+    weights on-chain), the miner-facing CLI, the per-competition challenge
+    simulators, and shared API models are present. Reward-pipeline / leaderboard
+    construction internals are therefore inferred from data models and CLI render
+    logic, not from the scoring source.
+  unresolved:
+    - "Exact per-competition incentive_weight values and the live burn_factor (orchestrator-owned, not in repo)."
+    - "The recipient address/UID of burned emissions and the precise burn fraction beyond the 0.9 base_burn_rate floor."
+    - "Cross-competition aggregation: how per-competition leaderboards combine into the single per-UID global weight returned to validators."
+    - "Decay rate / min weight floor: no such constant present in this repo."
+    - "Whether any LLM/reference-model judging is used (none found in this repo; competitions are deterministic simulations/games)."
+  evidence:
+    - claim_field: "/subnet/name"
+      source_path: "README.md"
+      line_ref: "10"
+      quote: "# **Bittensor Subnet 1: Apex**"
+      confidence: high
+    - claim_field: "/subnet/netuid"
+      source_path: "shared/common/src/common/settings.py"
+      line_ref: "22"
+      quote: "NETUID = int(os.getenv(\"NETUID\", 1))"
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "shared/competition/src/competition/energy_arbitrage/python/challenge.py"
+      line_ref: "1"
+      quote: "\"\"\"Main Challenge module matching the Rust energy_arbitrage mod.rs.\"\"\""
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "18"
+      quote: "participants (miners) submit their Python-based algorithms through the Apex CLI and earn rewards based on their performance. Validators continuously evaluate these submissions, scoring them against benchmarks and  distributing blockchain-based rewards to miners whose solutions perform best"
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "src/cli/src/cli/commands/submit.py"
+      line_ref: "173-178"
+      quote: "submit_request = SubmitRequest(\n            competition_id=competition_id,\n            round_number=-1,\n            raw_code=code,"
+      confidence: high
+    - claim_field: "/scoring_signals/0/metric_kind_other"
+      source_path: "shared/competition/src/competition/energy_arbitrage/python/challenge.py"
+      line_ref: "163-165"
+      quote: "def compute_profit(self, state: State, action: list[float]) -> float:\n        \"\"\"Compute per-step portfolio profit per spec equation (3.7).\"\"\""
+      confidence: high
+    - claim_field: "/scoring_signals/0/normalization"
+      source_path: "shared/common/src/common/models/api/ranks.py"
+      line_ref: "11-18"
+      quote: "class MinerRankRecord(BaseModel):\n    # Miner rank in the leaderboard\n    rank: int\n    # True if current submission is a winner\n    top_scorer: bool\n    hotkey: str\n    # Miner's best score\n    score: float"
+      confidence: high
+    - claim_field: "/scoring_signals/0/direction"
+      source_path: "README.md"
+      line_ref: "30"
+      quote: "miners compete to sink ships on a 10x10 grid in as few turns as possible"
+      confidence: medium
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "shared/competition/src/competition/energy_arbitrage/python/challenge.py"
+      line_ref: "78-83"
+      quote: "def generate_instance(seed: bytes, track: Track) -> \"Challenge\":\n        \"\"\"Generate a challenge instance from seed and track.\"\"\"\n        rng = random.Random()\n        rng.seed(seed)"
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "shared/common/src/common/models/api/ranks.py"
+      line_ref: "12-15"
+      quote: "# Miner rank in the leaderboard\n    rank: int\n    # True if current submission is a winner\n    top_scorer: bool"
+      confidence: medium
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "src/cli/src/cli/dashboard/screens/competition_detail_screen.py"
+      line_ref: "221-224"
+      quote: "# Calculate % emissions - incentive_weight is now a direct decimal allocation (0.0-1.0)\n        if comp.burn_factor is not None and comp.state == \"active\":\n            emissions_percent = (1 - comp.burn_factor) * comp.incentive_weight * 100"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "shared/common/src/common/settings.py"
+      line_ref: "57"
+      quote: "DEFAULT_BASE_BURN_RATE = 0.9"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/enabled"
+      source_path: "src/cli/src/cli/dashboard/widgets/round_details.py"
+      line_ref: "117-120"
+      quote: "if burn_factor is not None:\n            burn_factor_percent = burn_factor * 100\n            min_burn_str = f\" [dim](min burn: {base_burn_rate * 100:.0f}%)[/dim]\" if base_burn_rate is not None else \"\""
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "src/validator/src/validator/validator.py"
+      line_ref: "95-126"
+      quote: "scores: dict | None = await ValidatorAPIClient.get_global_miner_scores(hotkey=self.wallet.hotkey)"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "src/validator/src/validator/validator.py"
+      line_ref: "313-320"
+      quote: "success, response = self.subtensor.set_weights(\n                wallet=self.wallet,\n                netuid=int(common_settings.NETUID),\n                uids=processed_weight_uids,\n                weights=processed_weights,"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "src/validator/src/validator/settings.py"
+      line_ref: "5"
+      quote: "WEIGHT_SUBMIT_INTERVAL: int = 10 if (MOCK or not BITTENSOR) else 60 * 21  # submit weight every 21 minutes"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "src/validator/src/validator/validator.py"
+      line_ref: "125-126"
+      quote: "logger.warning(\"No global weights received, temporarily copying weights from the chain\")\n                    await self.set_weights(weights=self.copy_weights_from_chain())"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "src/cli/src/cli/commands/submit.py"
+      line_ref: "225-228"
+      quote: "fee_info = asyncio.run(_get_fee())\n                    amount_rao = fee_info.get(\"amount_rao\", 0)\n                    send_address = fee_info.get(\"send_address\", \"\")\n                    fee_usd = Decimal(str(fee_info.get(\"fee_usd\", \"0\")))"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "shared/common/src/common/settings.py"
+      line_ref: "47-50"
+      quote: "SUBMISSION_FEE_ADDRESS = os.getenv(\n    \"SUBMISSION_FEE_ADDRESS\", \"5EtauUg5ZyHYuRN8MP1hBSejvFjXsKoCKcDr3FJrdy8dZepK\"\n)  # prod ss58 coldkey that receives submission fees"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "shared/competition/src/competition/energy_arbitrage/python/challenge.py"
+      line_ref: "244-247"
+      quote: "The policy receives a PolicyView (not the Challenge itself) so it\n        cannot access seeds or RT-price generation."
+      confidence: high
+    - claim_field: "/sub_competitions/structure"
+      source_path: "shared/common/src/common/models/api/competition.py"
+      line_ref: "30-43"
+      quote: "class CompetitionRecord(BaseModel):\n    id: int\n    name: str\n    description: str\n    state: str\n    pkg: str\n    ptype: str\n    ctype: str\n    baseline_score: float\n    baseline_raw_score: float\n    incentive_weight: float\n    burn_factor: float"
+      confidence: high
+    - claim_field: "/sub_competitions/notes"
+      source_path: "README.md"
+      line_ref: "30-32"
+      quote: "**[RL Battleship]** ... **[Iota Simulator]**: A distributed training simulation competition where miners submit routing and balancing algorithms"
+      confidence: high
+    - claim_field: "/per_miner_state/state_kinds"
+      source_path: "shared/common/src/common/models/api/ranks.py"
+      line_ref: "16-30"
+      quote: "# Miner's best score\n    score: float\n    # Score multiplied by incentive weight (for rendering)\n    score_render: float\n    # Miner's last submission version\n    version: int"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "shared/common/src/common/models/api/competition.py"
+      line_ref: "41"
+      quote: "burn_factor_reset_at: Optional[datetime] = None"
+      confidence: medium
+    - claim_field: "/per_miner_state/notes"
+      source_path: "shared/common/src/common/models/api/competition_details.py"
+      line_ref: "55-56"
+      quote: "top_score: float\n    score_to_beat: Optional[float] = None"
+      confidence: high
+    - claim_field: "/documentation/status"
+      source_path: "src/validator/README.md"
+      line_ref: "1"
+      quote: "# Apex Validator"
+      confidence: medium

@@ -1,0 +1,309 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+subnet:
+  name: "SN106"
+  owner_repo: "v0idai__SN106"
+  netuid: 106
+  implementation_lang: typescript
+
+task:
+  summary: >-
+    Miners provide concentrated liquidity to wAlpha/wTAO trading pairs on Solana
+    (Raydium CLMM), receive a liquidity-position NFT, and stake that NFT to the
+    SN106 program on Solana. The validator reads each staked NFT position
+    (tickLower/tickUpper/liquidity) and the pool's current tick from chain, then
+    scores positions: narrower (more concentrated) ranges, proximity to the
+    current market tick, and larger liquidity score higher; out-of-range
+    positions score zero. Emissions are split chain -> pool -> NFT position ->
+    miner. NOTE: the active validator entry point (runValidator) currently runs
+    in 100% burn mode (all weight to UID 0); the position-scoring emissions path
+    (runValidatorWithEmissions) is present but "kept for reference" and not
+    invoked.
+  submission_format: [other]
+  submission_format_other: >-
+    Staked Solana liquidity-position NFT (Raydium CLMM position) registered to
+    the SN106 program; the validator reads on-chain position state rather than a
+    direct miner-to-validator submission.
+
+scoring_signals:
+  - name: range_concentration
+    metric_kind: other
+    metric_kind_other: liquidity_range_width_penalty
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      widthPenalty = 1 / Math.pow(width, 1.2), where width = tickUpper -
+      tickLower. Narrower (more concentrated) ranges score higher. Part of the
+      reference emissions path only (runValidatorWithEmissions), not the active
+      burn path.
+  - name: market_proximity
+    metric_kind: other
+    metric_kind_other: distance_from_pool_current_tick
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      centerWeight = 1 / (1 + distanceFromCenter), distanceFromCenter =
+      |center - currentTick|, center = (tickLower + tickUpper) / 2. Closer to
+      current tick scores higher. Out-of-range positions (currentTick outside
+      [tickLower, tickUpper]) score 0.
+  - name: liquidity_amount
+    metric_kind: other
+    metric_kind_other: position_liquidity
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Final score = widthPenalty * centerWeight * position.liquidity. Larger
+      liquidity scales the score linearly.
+
+ground_truth_sources:
+  - kind: market_data
+    kind_other: ""
+    description: >-
+      On-chain Solana state: staked NFT position parameters (tickLower,
+      tickUpper, liquidity) decoded from SN106 program stake records, and each
+      pool's current tick decoded from Raydium CLMM pool state.
+    source_identifier: "solana_raydium_clmm_pool_state"
+    trust_model: trusted
+
+aggregation:
+  method: proportional
+  normalization: sum_to_one
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: 1.0
+    notes: >-
+      The active entry point runValidator() calls burnAllWeightsOnSubtensor,
+      allocating 100% (65535 u16 units) to UID 0. The reference emissions path
+      (runValidatorWithEmissions) sets burnPercentage = 0 (burn disabled), so
+      when that path is used the burn fraction is 0 and 100% goes to miners. As
+      shipped, the invoked path is full burn.
+  notes: >-
+    Reference path: per-NFT emission = (score / totalScore) * poolReward, where
+    poolReward = poolWeights[pool] * totalReward; per-miner weight is the sum of
+    that miner's NFT emissions, then normalized to sum to 1.0. Pool weights use
+    reserved fixed shares (85% to subnet-0 pools, 15% to subnet-106 pools) per
+    calculatePoolWeightsWithReservedPools. An EMA smoothing (alpha default 0.3,
+    configurable) is applied to eligible miners when CONFIG.VALIDATOR.USE_EMA is
+    set. These apply only to the reference path, not the active burn path.
+
+weight_setting:
+  cadence: other
+  cadence_other: >-
+    Fixed wall-clock timer: validator re-runs every 40 minutes
+    (scheduleNextRun, setTimeout). README text says every 20 minutes; code uses
+    40. Not tied to chain epoch/tempo.
+  method: >-
+    u16 largest-remainder scaling to 65535 total, then api.tx.subtensorModule.
+    setWeights(netuid, uids, scaled, versionKey) signed by the validator hotkey.
+    versionKey is the current chain block number.
+  on_chain_call: set_weights
+  tempo_or_interval: "40 minutes (setTimeout fixed interval)"
+
+anti_gaming:
+  - kind: deterministic_check
+    kind_other: ""
+    enforcement: rejection
+    description: >-
+      Out-of-range positions get zero score (isInRange = currentTick in
+      [tickLower, tickUpper]); invalid/degenerate positions (non-finite tick,
+      liquidity <= 0, width <= 0) also score 0. In setWeights, if all non-zero
+      weights are exactly equal it is treated as likely error and all weights
+      are forced to zero; empty/invalid weight sets are submitted as all-zero
+      (no uniform fallback).
+
+sub_competitions:
+  structure: other
+  structure_other: >-
+    Two-tier reward structure: subnet-level allocation (reserved pool shares by
+    subnetId) and individual NFT-position competition within each pool. Not a
+    ladder/tournament; positions compete continuously within their pool's
+    reward slice.
+  stages: []
+  count: null
+  notes: >-
+    README: "two-tier reward system: Subnet Performance ... Individual
+    Performance". Reserved shares: 85% subnet-0 pools, 15% subnet-106 pools.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [other]
+  status_values: []
+  reset_policy: >-
+    EMA state lives in global.__sn106EmaWeights, persisted on module scope
+    across scheduled runs in-process; reset on process restart. Only updated for
+    miners with positive (in-range) emissions.
+  notes: >-
+    Exponentially-weighted moving average of per-miner weights
+    (EMA_ALPHA * current + (1-EMA_ALPHA) * previous), applied only in the
+    reference emissions path when USE_EMA is enabled. Not a debt/status ledger.
+  extensions:
+    state_kind_detail: ema_weight_smoothing_in_memory
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/TECHNICAL_IMPLEMENTATION.md"
+    - "docs/ARCHITECTURE.md"
+    - "docs/QUICK_REFERENCE.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8"
+  extracted_at: "2026-06-05"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "111"
+      quote: "NETUID=106"
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "validator/index.ts"
+      line_ref: "1-16"
+      quote: "import { setWeightsOnSubtensor, burnAllWeightsOnSubtensor } from '../utils/setWeights';"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "5-13"
+      quote: >-
+        SN106 is a specialized Bittensor subnet that rewards miners for
+        providing concentrated liquidity to wAlpha/wTAO trading pairs on Solana.
+      confidence: high
+    - claim_field: "/task/submission_format_other"
+      source_path: "README.md"
+      line_ref: "39-46"
+      quote: "Stake your liquidity position NFT to the SN106 smart contract on Solana"
+      confidence: high
+    - claim_field: "/scoring_signals/0"
+      source_path: "validator/calculations/emissions.ts"
+      line_ref: "46-51"
+      quote: "const widthPenalty = 1 / Math.pow(width, 1.2); // Penalize wider ranges"
+      confidence: high
+    - claim_field: "/scoring_signals/1"
+      source_path: "validator/calculations/emissions.ts"
+      line_ref: "49-52"
+      quote: >-
+        const distanceFromCenter = Math.abs(center - currentTick);
+        const centerWeight = 1 / (1 + distanceFromCenter);
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "validator/calculations/emissions.ts"
+      line_ref: "41-43"
+      quote: >-
+        const isInRange = currentTick >= tickLower && currentTick <= tickUpper;
+        if (!isInRange) { return 0; }
+      confidence: high
+    - claim_field: "/scoring_signals/2"
+      source_path: "validator/calculations/emissions.ts"
+      line_ref: "53-54"
+      quote: "return baseScore * position.liquidity; // Incorporate liquidity"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0"
+      source_path: "docs/TECHNICAL_IMPLEMENTATION.md"
+      line_ref: "184-205"
+      quote: "const decoded = decodePoolState(accountInfo.data); const tickCurrent = decoded.tick_current;"
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "validator/calculations/emissions.ts"
+      line_ref: "72-75"
+      quote: "emission: totalScore === 0 ? 0 : (pos.score / totalScore) * totalReward"
+      confidence: high
+    - claim_field: "/aggregation/normalization"
+      source_path: "validator/calculations/emissions.ts"
+      line_ref: "120-136"
+      quote: "// --- Normalization: 2 decimal places, sum to 1.0 ---"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/enabled"
+      source_path: "validator/index.ts"
+      line_ref: "184-207"
+      quote: >-
+        Main validator function: Redirects 100% of emissions to UID 0 (burn) ...
+        await burnAllWeightsOnSubtensor(wsUrl, hotkeyUri, netuid, hotkeyToUid || {});
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "utils/setWeights.ts"
+      line_ref: "226-228"
+      quote: "// Allocate 100% to burn UID (65535 units) ... scaled[burnIdx] = 65535;"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "utils/setWeights.ts"
+      line_ref: "26"
+      quote: "const burnPercentage = 0; // burn disabled"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "utils/poolWeights.ts"
+      line_ref: "49-53"
+      quote: >-
+        // Reserve fixed shares for subnet id 0 and subnet id 106 pools
+        const zeroSubnetPools = poolsBySubnet[0] || [];
+        const subnet106Pools = poolsBySubnet[106] || [];
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "utils/setWeights.ts"
+      line_ref: "183"
+      quote: "const tx = api.tx.subtensorModule.setWeights(netuid, uids, scaled, versionKey);"
+      confidence: high
+    - claim_field: "/weight_setting/cadence_other"
+      source_path: "validator/index.ts"
+      line_ref: "231-243"
+      quote: >-
+        // Fixed interval of 40 minutes (in milliseconds)
+        const intervalMinutes = 40;
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "utils/setWeights.ts"
+      line_ref: "165-167"
+      quote: "const versionKey = header.number.toNumber();"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "utils/setWeights.ts"
+      line_ref: "43-49"
+      quote: >-
+        const allEqual = nonZeroWeights.every(w => Math.abs(w - firstWeight) < 1e-10);
+        if (allEqual) { ... floatWeights = Array(uids.length).fill(0); }
+      confidence: high
+    - claim_field: "/sub_competitions/structure_other"
+      source_path: "README.md"
+      line_ref: "9-13"
+      quote: >-
+        SN106 operates on a two-tier reward system: 1. Subnet Performance ...
+        2. Individual Performance: NFT liquidity positions compete within pools
+      confidence: high
+    - claim_field: "/per_miner_state/notes"
+      source_path: "validator/index.ts"
+      line_ref: "50-62"
+      quote: "next[k] = EMA_ALPHA * safeCurr + (1 - EMA_ALPHA) * safePrev;"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "validator/index.ts"
+      line_ref: "41-48"
+      quote: "if (!global.__sn106EmaWeights) { global.__sn106EmaWeights = {} as Record<string, number>; }"
+      confidence: high
+  unresolved:
+    - "/aggregation/decay_rate: EMA_ALPHA default is 0.3 in validator/index.ts but 0.8 in docs/TECHNICAL_IMPLEMENTATION.md; it is config-driven (CONFIG.VALIDATOR.EMA_ALPHA) and only used in the inactive reference path, so left null rather than commit to a constant."
+    - "scoring_signals/weight: individual signal weights are not numeric coefficients; score is a multiplicative composite (widthPenalty * centerWeight * liquidity) with no per-signal weight, so weights left null."
+    - "min_weight_floor: no explicit floor; EMA_EPSILON thresholds tiny weights to 0 but is a config value with no literal in source."
+    - "reserved-share constants: poolWeights default signature uses 0.85/0.15 (matching index.ts call), but the function default header and docs cite 0.25; only the index.ts call-site values (0.85 subnet-0, 0.15 subnet-106) are the actually-passed constants."
+    - "Active-vs-reference ambiguity: runValidator (full burn) is the invoked entry point; runValidatorWithEmissions (position scoring) is shipped but never called. Whether burn is a temporary launch state or permanent is not stated in source."
+  extractor_notes: >-
+    TypeScript/blockchain-centric subnet that does not fit the standard
+    bittensor reward-template vocabulary. Miners do not submit models/code to
+    validators; they provide Raydium CLMM concentrated liquidity on Solana and
+    stake position NFTs, which the validator reads from chain. The scoring is a
+    DeFi market-making quality function (concentration + price proximity +
+    liquidity), unlike loss/accuracy tasks. Two control-flow paths exist:
+    full-burn (active) and position-emissions (reference). I recorded the active
+    burn path in burn_allocation while capturing the reference scoring mechanism
+    in scoring_signals/aggregation, flagging the ambiguity in unresolved. No
+    config/ constants file was found by locate.py; numeric constants come from
+    call sites and function-default parameters, which conflict with the docs in
+    several places (EMA alpha, reserved shares, 20- vs 40-minute interval).

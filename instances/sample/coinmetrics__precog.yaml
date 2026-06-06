@@ -1,0 +1,309 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+subnet:
+  name: "CoinMetrics Precog"
+  owner_repo: "coinmetrics__precog"
+  netuid: 55
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners produce continuous high-frequency price forecasts for a fixed set of crypto
+    assets (BTC, ETH, TAO). Every 5 minutes the validator queries each miner for, per
+    asset, a point prediction of the price one hour into the future and an interval
+    estimate (a [min, max] band) the asset is expected to trade in over that hour.
+    One hour later the validator evaluates the point prediction against the CoinMetrics
+    1-second reference rate and the interval against the observed price path, ranks
+    miners per task, and converts ranks into rewards.
+  submission_format: [signals]
+
+scoring_signals:
+  - name: point_error
+    metric_kind: regression_error
+    direction: lower_is_better
+    weight: 0.166
+    normalization: rank
+    notes: >-
+      Per-asset relative point error abs(prediction - actual)/actual, evaluated at
+      eval_time against the CoinMetrics ReferenceRateUSD. Missing/absent predictions
+      receive np.inf (worst). Errors are ranked ascending (lower error = better rank).
+      The 0.166 weight is the per-asset 'point' weight from constants.TASK_WEIGHTS
+      (same value for btc/eth/tao_bittensor).
+  - name: interval_score
+    metric_kind: regression_error
+    direction: higher_is_better
+    weight: 0.166
+    normalization: rank
+    notes: >-
+      Per-asset interval score = inclusion_factor * width_factor, where
+      inclusion_factor = fraction of observed 1s prices inside the predicted [min,max]
+      band, and width_factor = (effective_top - effective_bottom)/(pred_max - pred_min).
+      Higher is better; ranks are computed on negated scores. The 0.166 weight is the
+      per-asset 'interval' weight from constants.TASK_WEIGHTS. metric_kind set to
+      regression_error as the closest fit (it is a composite inclusion/width score over
+      a forecast band, not classification accuracy or pnl).
+
+ground_truth_sources:
+  - kind: market_data
+    description: >-
+      CoinMetrics Reference Rate (ReferenceRateUSD) fetched at 1-second frequency via the
+      coinmetrics-api-client for the predicted hour window [prediction_time, eval_time].
+      Used both for the point-prediction actual price and for the observed price path that
+      the interval is scored against.
+    source_identifier: "coinmetrics_api"
+    trust_model: oracle
+
+aggregation:
+  method: rank_based
+  normalization: sum_to_one
+  decay_rate: 0.8
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    notes: ""
+  notes: >-
+    Each of the 6 tasks (point + interval for each of 3 assets) is scored and ranked
+    independently. Per task, ranks are converted to weights by get_average_weights_for_ties
+    with base_weights = decay ** arange(n), decay = 0.8 (a hardcoded local in calc_rewards,
+    NOT the EMA alpha) — i.e. a geometric rank-decay where rank 0 gets weight 1, rank 1
+    gets 0.8, etc., with ties averaged. The 6 per-task weight vectors are combined into
+    final_rewards by a weighted sum using constants.TASK_WEIGHTS (each 0.166, nominally
+    summing to ~1.0 across the 6 tasks). final_rewards then feed the per-UID moving
+    average (EMA) before weight-setting. normalization set to sum_to_one because the task
+    weights are documented to "sum to 1.0 across all tasks".
+
+weight_setting:
+  cadence: continuous
+  method: >-
+    Validator runs an async loop. Every weights_rate_limit blocks (when
+    blocks_since_last_update >= hyperparameters.weights_rate_limit), it emits the
+    per-UID moving_average_scores as weights. The moving average is updated each query
+    cycle (~every 5 minutes per prediction_interval) via the EMA:
+    ma = (1 - moving_average_alpha)*ma + moving_average_alpha*reward, with
+    moving_average_alpha default 0.05. If all weights are zero, a uniform vector
+    ([1]*n) is emitted. Weights are converted via
+    convert_weights_and_uids_for_emit and pushed with subtensor.set_weights using
+    version_key = __spec_version__.
+  on_chain_call: set_weights
+  tempo_or_interval: "weights_rate_limit hyperparam (blocks_since_last_update >= weights_rate_limit)"
+
+anti_gaming:
+  - kind: rate_limit
+    enforcement: barrier
+    description: >-
+      Weight-setting is gated by the subnet's weights_rate_limit hyperparameter; the
+      validator only calls set_weights once blocks_since_last_update >= weights_rate_limit.
+      This is a chain-side cadence limit rather than an explicit anti-gaming control.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      Miner UIDs are filtered by check_uid_availability against neuron.vpermit_tao_limit
+      (default 4096 TAO) when building available_uids; only available UIDs are queried and
+      scored.
+
+sub_competitions:
+  structure: multi_asset
+  stages: []
+  count: 3
+  notes: >-
+    Three supported assets (tao_bittensor, btc, eth), each with two independent tasks
+    (point + interval), for 6 ranked tasks total. Per-asset weights live in
+    constants.TASK_WEIGHTS (each task 0.166). No ladder/tournament/probation structure.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [performance_ledger, cumulative_score]
+  status_values: []
+  reset_policy: >-
+    MinerHistory per UID stores recent predictions/intervals; clear_old_predictions drops
+    entries older than 24h (run hourly). moving_average_scores is reset to 0 for a UID when
+    its hotkey is replaced or on --reset_state. State persisted to state.pt via pickle.
+  notes: >-
+    Per-UID MinerHistory holds submitted predictions and intervals keyed by timestamp
+    (used at eval time one hour later). Per-UID moving_average_scores is the EMA-smoothed
+    cumulative reward that is emitted as weights.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/Release Notes.md"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8[1m]"
+  extracted_at: "2026-06-05"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "7"
+      quote: "**Mainnet UID:**  55"
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "precog/validators/reward.py"
+      line_ref: "1-11"
+      quote: "from typing import List\nimport bittensor as bt\nimport numpy as np"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "234-237"
+      quote: "miners are rewarded based on two factors:\n1. A point estimate for the price of BTC in USD one hour from prediction time\n2. An interval estimate (the minimum and maximum price of BTC over the next hour based on a 1s frequency)"
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "precog/protocol.py"
+      line_ref: "46-57"
+      quote: "predictions: Optional[Dict[str, float]] ... intervals: Optional[Dict[str, List[float]]] ... Formatted as {asset: [min, max]}"
+      confidence: high
+    - claim_field: "/scoring_signals/0/name"
+      source_path: "precog/validators/reward.py"
+      line_ref: "70-71"
+      quote: "current_point_error = abs(prediction_value - actual_price) / actual_price\n                    asset_point_errors[asset].append(current_point_error)"
+      confidence: high
+    - claim_field: "/scoring_signals/0/direction"
+      source_path: "precog/validators/reward.py"
+      line_ref: "160"
+      quote: "point_ranks = rank(np.array(asset_point_errors[asset]))"
+      confidence: high
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "precog/constants/__init__.py"
+      line_ref: "18-22"
+      quote: "TASK_WEIGHTS = {\n    \"btc\": {\"point\": 0.166, \"interval\": 0.166},"
+      confidence: high
+    - claim_field: "/scoring_signals/1/name"
+      source_path: "precog/validators/reward.py"
+      line_ref: "47"
+      quote: "return inclusion_factor * width_factor"
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "precog/validators/reward.py"
+      line_ref: "38-45"
+      quote: "width_factor = (effective_top - effective_bottom) / (pred_max - pred_min)\n    ...\n    inclusion_factor = prices_in_bounds / len(hour_prices)"
+      confidence: high
+    - claim_field: "/scoring_signals/1/direction"
+      source_path: "precog/validators/reward.py"
+      line_ref: "168"
+      quote: "interval_ranks = rank(-np.array(asset_interval_scores[asset]))  # Flip for higher=better"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/kind"
+      source_path: "precog/utils/cm_data.py"
+      line_ref: "233-239"
+      quote: "reference_rate = self.client.get_asset_metrics(\n            assets,\n            metrics=[\"ReferenceRateUSD\"],"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "precog/validators/reward.py"
+      line_ref: "116-118"
+      quote: "historical_price_data: DataFrame = cm.get_CM_ReferenceRate(\n        assets=assets, start=start_time, end=end_time, frequency=\"1s\"\n    )"
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "precog/validators/reward.py"
+      line_ref: "160-163"
+      quote: "point_ranks = rank(np.array(asset_point_errors[asset]))\n        point_task_weights = get_average_weights_for_ties(point_ranks, decay)"
+      confidence: high
+    - claim_field: "/aggregation/decay_rate"
+      source_path: "precog/validators/reward.py"
+      line_ref: "99"
+      quote: "decay = 0.8"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "precog/utils/general.py"
+      line_ref: "58-59"
+      quote: "n = len(ranks)\n    base_weights = decay ** np.arange(n)"
+      confidence: high
+    - claim_field: "/aggregation/normalization"
+      source_path: "precog/constants/__init__.py"
+      line_ref: "16"
+      quote: "# Weights should sum to 1.0 across all tasks"
+      confidence: medium
+    - claim_field: "/aggregation/notes"
+      source_path: "precog/validators/reward.py"
+      line_ref: "178-184"
+      quote: "point_weight = constants.TASK_WEIGHTS.get(asset, {}).get(\"point\", 0.0)\n        ...\n        final_rewards += point_weight * task_weights[f\"{asset}_point\"]"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "precog/validators/weight_setter.py"
+      line_ref: "231-238"
+      quote: "result, msg = self.subtensor.set_weights(\n                netuid=self.config.netuid,\n                wallet=self.wallet,\n                uids=uint_uids,\n                weights=uint_weights,"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "precog/validators/weight_setter.py"
+      line_ref: "210"
+      quote: "if self.blocks_since_last_update >= self.hyperparameters.weights_rate_limit:"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "precog/validators/weight_setter.py"
+      line_ref: "269-271"
+      quote: "self.moving_average_scores[i] = (\n                            1 - self.config.neuron.moving_average_alpha\n                        ) * self.moving_average_scores[i] + self.config.neuron.moving_average_alpha * value"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "precog/utils/config.py"
+      line_ref: "198-203"
+      quote: "\"--neuron.moving_average_alpha\", ... default=0.05,"
+      confidence: high
+    - claim_field: "/weight_setting/cadence"
+      source_path: "precog/validators/weight_setter.py"
+      line_ref: "71"
+      quote: "self.loop.create_task(loop_handler(self, self.set_weights, sleep_time=self.hyperparameters.weights_rate_limit))"
+      confidence: medium
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "precog/validators/weight_setter.py"
+      line_ref: "210"
+      quote: "if self.blocks_since_last_update >= self.hyperparameters.weights_rate_limit:"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "precog/validators/weight_setter.py"
+      line_ref: "104-110"
+      quote: "uid_is_available = check_uid_availability(self.metagraph, uid, self.config.neuron.vpermit_tao_limit)"
+      confidence: high
+    - claim_field: "/sub_competitions/structure"
+      source_path: "precog/constants/__init__.py"
+      line_ref: "11-12"
+      quote: "SUPPORTED_ASSETS = [\"tao_bittensor\", \"btc\", \"eth\"]"
+      confidence: high
+    - claim_field: "/sub_competitions/count"
+      source_path: "precog/constants/__init__.py"
+      line_ref: "12"
+      quote: "SUPPORTED_ASSETS = [\"tao_bittensor\", \"btc\", \"eth\"]"
+      confidence: high
+    - claim_field: "/per_miner_state/tracked"
+      source_path: "precog/validators/weight_setter.py"
+      line_ref: "53"
+      quote: "self.MinerHistory = {uid: MinerHistory(uid, timezone=self.timezone) for uid in self.available_uids}"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "precog/utils/classes.py"
+      line_ref: "29-31"
+      quote: "def clear_old_predictions(self):\n        start_time = round_minute_down(get_now()) - timedelta(hours=24)"
+      confidence: high
+    - claim_field: "/per_miner_state/notes"
+      source_path: "precog/validators/weight_setter.py"
+      line_ref: "217"
+      quote: "weights = [self.moving_average_scores[uid] for uid in self.available_uids]"
+      confidence: high
+    - claim_field: "/documentation/status"
+      source_path: "README.md"
+      line_ref: "231-238"
+      quote: "## Incentive Mechanism\nPlease see the [Incentive mechanism Documentation] ... For more information, feel free to investigate [reward.py]"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "precog/constants/__init__.py"
+      line_ref: "7-9"
+      quote: "EVALUATION_WINDOW_HOURS: int = 6\nPREDICTION_FUTURE_HOURS: int = 1\nPREDICTION_INTERVAL_MINUTES: int = 5"
+      confidence: high
+  unresolved:
+    - "Exact weights_rate_limit value: read from chain hyperparameters at runtime (subtensor.get_subnet_hyperparameters), not a literal in the repo, so tempo cannot be pinned to a block count."
+    - "burn_allocation: no burn/null-UID routing found in the code; left disabled rather than asserted absent."
+    - "EVALUATION_WINDOW_HOURS=6 constant is defined but its role is not exercised in calc_rewards (which uses PREDICTION_FUTURE_HOURS=1 for the prediction window); its effect on scoring is unresolved."
+    - "min_weight_floor: no explicit floor found; if-all-zero fallback emits uniform [1]*n weights but that is not a per-miner floor."
+  extractor_notes: >-
+    Two distinct decay constants exist and must not be conflated: (1) decay=0.8 in
+    calc_rewards is the geometric rank-to-weight base used by get_average_weights_for_ties
+    (recorded as /aggregation/decay_rate); (2) moving_average_alpha=0.05 is the EMA alpha
+    applied to per-UID scores before weight-setting (recorded in /weight_setting/method).
+    Aggregation is fundamentally rank_based per task, then a fixed-weight linear combine
+    across the 6 asset-task vectors, then EMA smoothing — so it is a hybrid the schema
+    cannot fully express in a single 'method' enum.

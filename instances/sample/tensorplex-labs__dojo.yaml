@@ -1,0 +1,315 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+subnet:
+  name: "Dojo v2"
+  owner_repo: "tensorplex-labs__dojo"
+  netuid: 52
+  implementation_lang: go
+
+task:
+  summary: >-
+    Dojo v2 is a decentralized, competitive GAN. Bittensor miners act as both generators and
+    discriminators. Generators produce code outputs (completions) for a task; discriminators vote
+    for the completion they judge best (a "vote" is the unique ID of the selected code output).
+    For a normal task, discriminators are scored by participation and generators are rewarded in
+    proportion to the votes their output received; some tasks are "trap" tasks that penalise
+    discriminators who vote for a designated inferior ("negative generator") output. Per-task scores
+    are summed per miner UID and converted into on-chain weights.
+  submission_format: [content_link, signals]
+
+scoring_signals:
+  - name: discriminator_vote
+    metric_kind: human_judgment
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Each discriminator's vote is the unique ID of the code output it selects as best. In a normal
+      PvP task every discriminator receives 1/totalDiscriminators regardless of vote; in a PvV task a
+      discriminator scores 1/totalDiscriminators only if it voted for the validator's output, else 0.
+  - name: generator_vote_share
+    metric_kind: human_judgment
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Generators receive num_votes * (1/totalDiscriminators), i.e. their score scales with how many
+      discriminators selected their output (CalcPvPScores / CalcPvVScores in scoring.go).
+  - name: trap_penalty
+    metric_kind: human_judgment
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      In a trap task, discriminators that vote for the designated 'negative generator' (trap) output
+      receive a TrapPenalty of -0.4; all generators in a trap task receive 0.
+  - name: no_vote_penalty
+    metric_kind: human_judgment
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Active miners assigned as voters to a task who did not vote split a total penalty of -4.0
+      (NoVotePenaltyTotalDistribution / number of non-voters).
+
+ground_truth_sources:
+  - kind: real_engagement
+    description: >-
+      The "correct answer" is decided by the crowd of miner discriminators' votes; there is no
+      external deterministic ground truth. Trap tasks inject a known-inferior output to test
+      discriminator honesty, and PvV tasks use the validator's own output as a reference.
+    source_identifier: "internal/scoring/scoring.go (CalcPvPScores/CalcPvVScores/CalcTrapScores)"
+    trust_model: crowd
+
+aggregation:
+  method: proportional
+  normalization: other
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "158"
+    fraction: 1.0
+    notes: >-
+      BurnUID = 158, BurnWeight = 100. Burn fraction is BurnWeight/100.0 = 1.0 (100%). Non-burn miners
+      share (1 - BurnWeight/100.0). When BurnWeight is 100 the weight-setting step gate is skipped so
+      burn weights are always set. If total non-burn weight is 0, weights are set entirely to the burn
+      UID at round(0.01 * BurnWeight * 65535).
+  notes: >-
+    normalization=other: per-UID scores are summed across all scored tasks (AggregateTaskScoresByUID),
+    negative totals are clamped to 0 (ClampNegativeWeights), then each non-burn weight is divided by the
+    max weight and re-normalised to a proportional share that sums (across non-burn uids) to
+    (1 - BurnWeight/100), finally scaled to uint16 (round(finalWeight * 65535)). Scores are computed per
+    task then summed per UID. The burn fraction is a compile-time constant in
+    internal/utils/chain_utils/weights_util.go.
+
+weight_setting:
+  cadence: other
+  cadence_other: >-
+    Driven by time tickers: scoring runs every ScoringInterval (15m in prod) and setWeights is invoked
+    on the same tick, but only actually emits weights every WeightSettingInterval (1h in prod), i.e.
+    once every WeightSettingInterval/ScoringInterval scoring steps (unless burn is 100%, which always sets).
+  method: >-
+    setWeightsOnChain converts uids/weights for emit, fetches subnet hyperparams; if
+    CommitRevealWeightsEnabled it commits timelocked weights (commit-reveal v4), otherwise calls
+    Kami.SetWeights with the version key.
+  on_chain_call: set_weights
+  tempo_or_interval: "WeightSettingInterval = 1h (prod); ScoringInterval = 15m (prod)"
+
+anti_gaming:
+  - kind: other
+    kind_other: trap_task
+    enforcement: penalty
+    description: >-
+      Trap tasks plant a known-inferior 'negative generator' output; discriminators that vote for the
+      trap output are penalised (TrapPenalty = -0.4), testing whether discriminators vote honestly.
+  - kind: other
+    kind_other: non_voting_penalty
+    enforcement: penalty
+    description: >-
+      Active miners assigned as voters who fail to vote on a task are penalised; a total of -4.0
+      (NoVotePenaltyTotalDistribution) is split among all non-voters for that task.
+
+sub_competitions:
+  structure: other
+  structure_other: >-
+    Per-task type switch (Trap / PvP / PvV) rather than a staged ladder/tournament; the task type is
+    determined per task by DetermineTaskType, and a different scoring function is applied.
+  stages: []
+  count: null
+  notes: >-
+    Trap = trap-detection scoring; PvP = generator-vs-generator vote tally; PvV = generators vs the
+    validator's reference output.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score]
+  status_values: []
+  reset_policy: >-
+    Per-task scores are summed into a per-UID cumulative score array persisted to scores.json and
+    advanced by a Step counter; tasks are scored over a rolling window (ScoreResetInterval, 24h prod).
+    No explicit periodic reset of the cumulative score array was found in the read code.
+  notes: >-
+    ScoresData holds Scores (per-UID floats), a Step counter, and Hotkeys; AggregateTaskScoresByUID
+    sums task scores into the per-UID array each scoring step.
+
+documentation:
+  status: code_authoritative
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/validator.md"
+    - "https://docs.tensorplex.ai/tensorplex-docs/tensorplex-dojo-bittensor-subnet/subnet-mechanism"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: medium
+  evidence:
+    - claim_field: /subnet/name
+      source_path: README.md
+      line_ref: "1"
+      quote: "# Dojo v2"
+      confidence: high
+    - claim_field: /subnet/netuid
+      source_path: docs/validator.md
+      line_ref: "24"
+      quote: "NETUID=52 # 98 for testnet"
+      confidence: high
+    - claim_field: /subnet/implementation_lang
+      source_path: internal/scoring/scoring.go
+      line_ref: "2"
+      quote: "package scoring"
+      confidence: high
+    - claim_field: /task/summary
+      source_path: README.md
+      line_ref: "5"
+      quote: >-
+        Bittensor miners, acting as both generators and discriminators, are in constant competition to
+        produce and identify the best possible work.
+      confidence: high
+    - claim_field: /scoring_signals/0/notes
+      source_path: internal/scoring/scoring.go
+      line_ref: "120-122"
+      quote: >-
+        discriminator that voted for validator output gets 1/ totalDiscriminators score - discriminator
+        that voted for generator output gets nothing
+      confidence: high
+    - claim_field: /scoring_signals/1/notes
+      source_path: internal/scoring/scoring.go
+      line_ref: "35-36"
+      quote: >-
+        generators receive num_votes * 1 / totalDiscriminators score
+      confidence: high
+    - claim_field: /scoring_signals/2/notes
+      source_path: internal/scoring/scoring.go
+      line_ref: "14"
+      quote: "TrapPenalty                    = -0.4"
+      confidence: high
+    - claim_field: /scoring_signals/3/notes
+      source_path: internal/scoring/scoring.go
+      line_ref: "15"
+      quote: "NoVotePenaltyTotalDistribution = -4.0"
+      confidence: high
+    - claim_field: /scoring_signals/3/notes
+      source_path: internal/scoring/scoring.go
+      line_ref: "274-279"
+      quote: "return NoVotePenaltyTotalDistribution / float64(len(nonVoterAddresses))"
+      confidence: high
+    - claim_field: /ground_truth_sources/0/trust_model
+      source_path: internal/scoring/scoring.go
+      line_ref: "29-37"
+      quote: >-
+        discriminators receive 1 / totalDiscriminators score irrespective of their vote - generators
+        receive num_votes * 1 / totalDiscriminators score
+      confidence: medium
+    - claim_field: /aggregation/method
+      source_path: internal/scoring/scoring.go
+      line_ref: "282-305"
+      quote: >-
+        func AggregateTaskScoresByUID( ... ) []float64 { ... scores[uid] += score
+      confidence: high
+    - claim_field: /aggregation/notes
+      source_path: internal/utils/chain_utils/weights_util.go
+      line_ref: "75-81"
+      quote: >-
+        normalizedWeight := weights[i] / maxWeightForNormalization ... finalWeight = proportionalShare *
+        (1 - BurnWeight/100.0) ... uint16Val := int(math.Round(finalWeight * float64(U16MAX)))
+      confidence: high
+    - claim_field: /aggregation/burn_allocation/address_or_uid
+      source_path: internal/utils/chain_utils/weights_util.go
+      line_ref: "11-13"
+      quote: "BurnUID    = 158"
+      confidence: high
+    - claim_field: /aggregation/burn_allocation/fraction
+      source_path: internal/utils/chain_utils/weights_util.go
+      line_ref: "13"
+      quote: "BurnWeight = 100"
+      confidence: high
+    - claim_field: /aggregation/burn_allocation/notes
+      source_path: internal/utils/chain_utils/weights_util.go
+      line_ref: "55-58"
+      quote: >-
+        if BurnWeight > 0 { return []int{BurnUID}, []int{int(math.Round(0.01 * BurnWeight * U16MAX))}, nil }
+      confidence: high
+    - claim_field: /aggregation/notes
+      source_path: internal/validator/tasks.go
+      line_ref: "186"
+      quote: "weights := chainutils.ClampNegativeWeights(latestScoresData.Scores)"
+      confidence: high
+    - claim_field: /weight_setting/cadence_other
+      source_path: internal/validator/tasks.go
+      line_ref: "168"
+      quote: "weightSettingSteps := int(v.IntervalConfig.WeightSettingInterval / v.IntervalConfig.ScoringInterval)"
+      confidence: high
+    - claim_field: /weight_setting/cadence_other
+      source_path: internal/validator/validator.go
+      line_ref: "153-156"
+      quote: >-
+        go v.runTicker(v.Ctx, v.IntervalConfig.ScoringInterval, func() { v.startScoring();
+        v.setWeights(v.LatestScoresData) })
+      confidence: high
+    - claim_field: /weight_setting/tempo_or_interval
+      source_path: internal/config/env.go
+      line_ref: "122-128"
+      quote: "ScoringInterval:       15 * time.Minute, ... WeightSettingInterval: 1 * time.Hour,"
+      confidence: high
+    - claim_field: /weight_setting/on_chain_call
+      source_path: internal/validator/utils.go
+      line_ref: "172-177"
+      quote: >-
+        setWeightsExtrinsicHashResponse, err := v.Kami.SetWeights(kami.SetWeightsParams{ Netuid:
+        v.ValidatorConfig.Netuid, Dests: convertedUids, Weights: convertedWeights, VersionKey: versionKey, })
+      confidence: high
+    - claim_field: /weight_setting/method
+      source_path: internal/validator/utils.go
+      line_ref: "130-132"
+      quote: >-
+        if subnetHyperparams.Data.CommitRevealWeightsEnabled { tempo := v.MetagraphData.Metagraph.Tempo
+        revealPeriod := subnetHyperparams.Data.CommitRevealPeriod
+      confidence: high
+    - claim_field: /anti_gaming/0/description
+      source_path: internal/scoring/scoring.go
+      line_ref: "70-74"
+      quote: >-
+        discriminators that vote for the 'trap' output receive -1 score
+      confidence: medium
+    - claim_field: /anti_gaming/1/description
+      source_path: internal/scoring/scoring.go
+      line_ref: "188-194"
+      quote: >-
+        nonVoterAddresses := FindNonVoters(scores, ...) noVotePenalty := CalculateNoVotePenalty(nonVoterAddresses)
+        ... scores[nonVoter] = noVotePenalty
+      confidence: high
+    - claim_field: /sub_competitions/structure_other
+      source_path: internal/scoring/scoring.go
+      line_ref: "254-262"
+      quote: >-
+        func DetermineTaskType(completionMaps CompletionMaps, isTrap bool) string { if isTrap { return
+        "Trap" } else if len(completionMaps.Validator) == 0 { return "PvP" } else { return "PvV" } }
+      confidence: high
+    - claim_field: /per_miner_state/state_kinds
+      source_path: internal/validator/score_task.go
+      line_ref: "99-105"
+      quote: >-
+        scores := scoring.AggregateTaskScoresByUID(allTaskScores, v.MetagraphData.Metagraph.Hotkeys)
+        updatedScoresData := ScoresData{ Scores: scores, Step: latestScoresData.Step + 1, ... }
+      confidence: high
+    - claim_field: /per_miner_state/reset_policy
+      source_path: internal/validator/score_task.go
+      line_ref: "133-135"
+      quote: >-
+        hours := int(v.IntervalConfig.ScoreResetInterval / time.Hour) ... GetExpiredTasksRollingWindow(headers, hours)
+      confidence: medium
+    - claim_field: /documentation/primary_docs
+      source_path: README.md
+      line_ref: "7"
+      quote: "**More detailed info here:** [Dojo V2 Documentation](https://docs.tensorplex.ai/tensorplex-docs/tensorplex-dojo-bittensor-subnet/subnet-mechanism)"
+      confidence: high
+  unresolved:
+    - "scoring_signals weights: per-signal weighting is not explicit — task scores are summed raw per UID with no per-signal multiplier; left null."
+    - "min_weight_floor / decay_rate: no decay or weight floor found in the read scoring/weight code; left null."
+    - "Exact PvP discriminator scoring (1/totalDiscriminators regardless of vote) vs the doc-comment claim of -1 for trap: trap doc-comment says -1 but TrapPenalty constant is -0.4; code uses the -0.4 constant, so the -0.4 value is authoritative."
+    - "VALIDATOR/PvV reference output trust model: classified as crowd, but the validator-provided output in PvV acts as a quasi-oracle reference; schema trust_model lacks a precise fit."
+    - "Tempo / commit-reveal period are read from on-chain subnet hyperparams at runtime, not constants in repo — actual numeric tempo unknowable from source."
