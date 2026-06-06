@@ -1,0 +1,368 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: mixed
+mechanism_status_notes: >-
+  Active per-submission scoring pipeline (Cobb-Douglas SkillScore over 5 pillars)
+  feeds on-chain weights. Burn allocation is configurable: the live set_weights.py
+  path reads burn_rate from scoring_params.py where the default is 0.0 (no burn),
+  but the ledger compute_weights.py and auditor weight_verification.py paths default
+  burn_rate to 0.9 (90% to subnet owner). When all miner scores are zero, 100% is
+  allocated to the burn hotkey. Hence the operative burn fraction depends on which
+  code path / config is live and cannot be pinned to a single value from source.
+
+subnet:
+  name: "Sparket Subnet"
+  owner_repo: "sparket-ai__sparket-ai"
+  netuid: null
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners submit sports-betting odds and event outcomes. Two task tracks: Odds
+    Origination (miner decimal odds / implied probabilities scored against a
+    consensus closing line via CLV, CLE, MES) and Outcome Verification (miner
+    probabilities scored against the realized result via Brier, LogLoss, PSS).
+    Per-submission metrics are aggregated over a rolling window with time decay
+    and shrinkage, then combined into a multiplicative Cobb-Douglas SkillScore
+    across five pillars (Accuracy, Edge, Timeliness, Uniqueness, Marginal).
+  submission_format: [signals]
+
+scoring_signals:
+  - name: forecast_quality
+    metric_kind: probabilistic_forecast
+    direction: higher_is_better
+    weight: 0.6
+    normalization: min_max
+    notes: >-
+      FQ = 1 - 2*brier_mean, mapped [-1,1] -> [0,1] via (FQ+1)/2. Combined with
+      calibration into ForecastDim (Accuracy pillar). w_fq default 0.6.
+  - name: calibration
+    metric_kind: probabilistic_forecast
+    direction: higher_is_better
+    weight: 0.4
+    normalization: none
+    notes: >-
+      CAL = 1 / (1 + |b-1| + |a|) from logit regression fit; clipped to [0,1].
+      w_cal default 0.4. ForecastDim = w_fq*FQ_norm + w_cal*CAL.
+  - name: economic_edge
+    metric_kind: pnl
+    direction: higher_is_better
+    weight: 0.7
+    normalization: zscore
+    notes: >-
+      ES_adj = es_mean/es_std (Sharpe-like, from CLE = O_miner*p_close - 1),
+      normalized via zscore_logistic (or percentile when <10 miners). w_edge 0.7.
+  - name: market_efficiency
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 0.3
+    normalization: none
+    notes: >-
+      MES = 1 - min(1, |CLV_prob|); clipped to [0,1]. w_mes default 0.3.
+      EconDim = w_edge*ES_norm + w_mes*MES (Edge pillar).
+  - name: relative_skill_pss
+    metric_kind: probabilistic_forecast
+    direction: higher_is_better
+    weight: null
+    normalization: zscore
+    notes: >-
+      PSS = 1 - (miner_score/baseline_score), time-adjusted, normalized via
+      zscore_logistic. Feeds SkillDim and Timeliness pillar (0.5*SkillDim + 0.5*LEAD).
+  - name: lead_ratio
+    metric_kind: predictive_contribution
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      LEAD = Moves_led / Moves_matched; clipped [0,1]. Feeds Timeliness pillar
+      (0.5*SkillDim + 0.5*lead_norm).
+  - name: uniqueness
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Uniqueness pillar. Composite SOS (market+crowd+cluster) from Shapley/correlation
+      jobs, with bootstrap fallback SOS = 1 - |correlation|. Cobb-Douglas exponent 1.5
+      (highest, strong anti-sybil incentive).
+  - name: marginal_contribution
+    metric_kind: predictive_contribution
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Marginal pillar = leave-one-out Shapley contribution to crowd forecast;
+      bootstrap fallback 0.5 (neutral). Cobb-Douglas exponent 1.0.
+
+ground_truth_sources:
+  - kind: market_data
+    description: >-
+      Consensus closing line per market and side, built from ingested provider
+      (sportsbook) odds via inverse-variance weighting with bias adjustment.
+      Benchmark for both economic edge and outcome-relative (PSS) scoring.
+    source_identifier: "sparket/providers (sportsdataio); consensus closing line"
+    trust_model: oracle
+    notes: >-
+      min_books_for_consensus default 2; time-matched snapshots every
+      snapshot_interval_hours (default 6).
+  - kind: real_engagement
+    description: >-
+      Realized settled event outcomes (one-hot y_k) recorded when events settle,
+      used for Brier / LogLoss / PSS outcome accuracy scoring.
+    source_identifier: "settled event outcomes"
+    trust_model: oracle
+    notes: "Outcome accuracy track."
+
+aggregation:
+  method: weighted_average
+  composition: hybrid
+  normalization: l1
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "subnet owner / burn hotkey UID (get_subnet_owner_hotkey)"
+    fraction: null
+    dynamic: true
+    notes: >-
+      burn_rate default differs by code path: scoring_params.WeightEmissionParams
+      default 0.0 (live set_weights.py); ledger/compute_weights.py and auditor
+      weight_verification.py default 0.9. burn_rate fraction goes to burn_uid,
+      remaining (1-burn_rate) scaled across miners. If all scores zero -> 100% burn.
+  notes: >-
+    Per-submission metrics aggregated over rolling window (default 30 days) with
+    exponential time decay (half_life default 10 days; w_i = exp(ln(0.5)*age/half_life))
+    and Bayesian shrinkage toward population mean (k default 200). Within-dimension
+    combination is additive (weighted_average); across-pillar combination is
+    multiplicative Cobb-Douglas: SkillScore = Accuracy^0.5 * Edge^1.0 * Timeliness^0.5
+    * Uniqueness^1.5 * Marginal^1.0. Pillars clamped to [epsilon=0.01, 1.0]. Final
+    SkillScores are L1-normalized across miners before chain emission.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Load latest per-miner skill_score from miner_rolling_score DB table, fill score
+    array by UID (zeros for missing), replace NaN with 0, L1-normalize, apply burn_rate
+    redistribution, process_weights_for_netuid (max_weight_limit / min_allowed_weights),
+    convert to uint16, subtensor.set_weights.
+  on_chain_call: set_weights
+  tempo_or_interval: null
+  smoothing:
+    kind: ema
+    alpha: null
+    window: 30
+    notes: >-
+      No EMA on the final emitted weight itself; temporal smoothing is upstream via
+      exponential time-decayed rolling aggregates over rolling_window_days (default 30)
+      with half_life_days (default 10). alpha not expressed as a literal constant.
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: elimination
+    description: >-
+      Hard accuracy floor: SkillScore set to 0 if brier_mean > floor_threshold
+      (default 0.30), regardless of other pillars.
+  - kind: deduplication
+    enforcement: rejection
+    description: >-
+      Cluster/sub-window correlation detection penalizes near-identical (sybil /
+      copy-trading) submissions via the Uniqueness pillar (composite SOS with
+      cluster_correlation_threshold default 0.85). Super-linear exponent (1.5)
+      makes low uniqueness collapse the total score.
+  - kind: rate_limit
+    enforcement: rejection
+    description: >-
+      Per-miner daily submission caps: max_submissions_per_market_day default 200,
+      max_outcomes_per_event_day default 50; odds/outcome time-bucket dedup.
+  - kind: risk_limit
+    enforcement: penalty
+    description: >-
+      Time-to-close weighting: late correct predictions get reduced credit
+      (floor_factor default 0.1), early bad predictions clipped (early_penalty_clip
+      default 0.7) to discourage last-minute copy-trading.
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Security bounds reject invalid inputs: odds in (1.01, 1000], probabilities in
+      [0.001, 0.999], CLE clamped, max_odds_ratio_for_cle default 2.0 excludes
+      extreme-odds gaming from economic edge.
+
+sub_competitions:
+  structure: per_task_type
+  stages: []
+  count: 2
+  notes: >-
+    Two task tracks: Odds Origination (vs closing line) and Outcome Verification
+    (vs realized result). Both feed the same composite SkillScore rather than
+    separate weight pools.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, performance_ledger]
+  status_values: []
+  reset_policy: "Rolling window (default 30 days) with exponential time decay; old submissions decay out."
+  notes: >-
+    Per-miner rolling aggregates stored in miner_rolling_score (skill_score and
+    component dimensions, score_version). Effective sample size n_eff tracked;
+    metrics shrunk toward population mean for low-sample miners.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "docs/im.md"
+    - "docs/scoring_equations.md"
+    - "docs/architecture.md"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: /task/summary
+      source_path: README.md
+      line_ref: "6-8"
+      quote: "The Subnet beta supports two tasks—Odds Origination and Outcome Verification—with real‑money wagering planned for a later phase."
+    - claim_field: /scoring_signals/0/notes
+      source_path: docs/scoring_equations.md
+      line_ref: "76-77"
+      quote: "$$FQ = 1 - 2 \\cdot Brier_{mean}$$"
+    - claim_field: /scoring_signals/0/weight
+      source_path: sparket/validator/config/scoring_params.py
+      line_ref: "75-80"
+      quote: "w_fq: Decimal = Field(\n        default=Decimal(\"0.6\"),"
+    - claim_field: /scoring_signals/1/notes
+      source_path: docs/scoring_equations.md
+      line_ref: "82"
+      quote: "$$CAL = \\frac{1}{1 + |b - 1| + |a|}$$"
+    - claim_field: /scoring_signals/1/weight
+      source_path: sparket/validator/config/scoring_params.py
+      line_ref: "81-86"
+      quote: "w_cal: Decimal = Field(\n        default=Decimal(\"0.4\"),"
+    - claim_field: /scoring_signals/2/notes
+      source_path: docs/scoring_equations.md
+      line_ref: "30"
+      quote: "$$CLE = O_{miner} \\cdot p_{close} - 1$$"
+    - claim_field: /scoring_signals/2/weight
+      source_path: sparket/validator/config/scoring_params.py
+      line_ref: "89-94"
+      quote: "w_edge: Decimal = Field(\n        default=Decimal(\"0.7\"),"
+    - claim_field: /scoring_signals/3/notes
+      source_path: docs/scoring_equations.md
+      line_ref: "31"
+      quote: "$$MES = 1 - \\min\\left(1,\\; \\left|CLV_{prob}\\right|\\right)$$"
+    - claim_field: /scoring_signals/3/weight
+      source_path: sparket/validator/config/scoring_params.py
+      line_ref: "95-100"
+      quote: "w_mes: Decimal = Field(\n        default=Decimal(\"0.3\"),"
+    - claim_field: /scoring_signals/4/notes
+      source_path: docs/scoring_equations.md
+      line_ref: "44"
+      quote: "$$PSS = 1 - \\frac{Score_{miner}}{Score_{baseline}}$$"
+    - claim_field: /scoring_signals/5/notes
+      source_path: docs/scoring_equations.md
+      line_ref: "91"
+      quote: "$$Lead = \\frac{Moves_{led}}{Moves_{matched}}$$"
+    - claim_field: /scoring_signals/6/notes
+      source_path: docs/scoring_equations.md
+      line_ref: "118-119"
+      quote: "Uniqueness = ... uniqueness\\_dim, & \\text{if computed by Shapley jobs} ... SOS, & \\text{fallback}"
+    - claim_field: /scoring_signals/7/notes
+      source_path: docs/scoring_equations.md
+      line_ref: "119"
+      quote: "Marginal = ... marginal\\_dim, & \\text{if computed by Shapley jobs} ... 0.5, & \\text{fallback (neutral)}"
+    - claim_field: /ground_truth_sources/0/description
+      source_path: docs/im.md
+      line_ref: "24-27"
+      quote: "Validators ingest provider odds and create a consensus closing line per market and side. This is the benchmark for both economic edge and outcome skill scoring."
+    - claim_field: /ground_truth_sources/0/notes
+      source_path: sparket/validator/config/scoring_params.py
+      line_ref: "240-245"
+      quote: "min_books_for_consensus: int = Field(\n        default=2,"
+    - claim_field: /ground_truth_sources/1/description
+      source_path: docs/scoring_equations.md
+      line_ref: "9-11"
+      quote: "Outcomes are recorded when events settle. These two data sources power the two task tracks: odds origination (vs close) and outcome verification (vs realized result)."
+    - claim_field: /aggregation/composition
+      source_path: docs/scoring_equations.md
+      line_ref: "133-137"
+      quote: "The final SkillScore is a multiplicative product of the 5 pillar dimensions, each raised to a configured exponent."
+    - claim_field: /aggregation/notes
+      source_path: sparket/validator/scoring/jobs/skill_score.py
+      line_ref: "231-237"
+      quote: "skill_score = (\n            acc_c ** float(cd.accuracy_exponent)\n            * edge_c ** float(cd.edge_exponent)\n            * time_c ** float(cd.timeliness_exponent)\n            * uniq_c ** float(cd.uniqueness_exponent)\n            * marg_c ** float(cd.marginal_exponent)\n        )"
+    - claim_field: /aggregation/normalization
+      source_path: sparket/validator/handlers/core/weights/set_weights.py
+      line_ref: "269-292"
+      quote: "norm = np.linalg.norm(scores, ord=1, axis=0, keepdims=True)\n        ... raw_weights = scores / norm"
+    - claim_field: /aggregation/burn_allocation/enabled
+      source_path: sparket/validator/handlers/core/weights/set_weights.py
+      line_ref: "295-299"
+      quote: "burn_rate = float(self.params.weight_emission.burn_rate)\n            if burn_rate > 0.0:\n                burn_uid = self._get_burn_uid(validator)\n                if burn_uid is not None:\n                    raw_weights = self._apply_burn_rate(raw_weights, burn_uid, burn_rate)"
+    - claim_field: /aggregation/burn_allocation/notes
+      source_path: sparket/validator/config/scoring_params.py
+      line_ref: "718-728"
+      quote: "burn_rate: Decimal = Field(\n        default=Decimal(\"0.0\"),\n        ... \"A burn_rate of 0.9 means 90% of emissions go to the burn hotkey,"
+    - claim_field: /mechanism_status_notes
+      source_path: sparket/validator/ledger/compute_weights.py
+      line_ref: "167"
+      quote: "burn_rate = float(weight_emission.get(\"burn_rate\", 0.9))"
+    - claim_field: /aggregation/burn_allocation/dynamic
+      source_path: sparket/validator/handlers/core/weights/set_weights.py
+      line_ref: "237-241"
+      quote: "adjusted_weights *= (1.0 - burn_rate)\n        # Assign burn_rate to the burn_uid\n        adjusted_weights[burn_uid] = burn_rate"
+    - claim_field: /weight_setting/on_chain_call
+      source_path: sparket/validator/handlers/core/weights/set_weights.py
+      line_ref: "331-339"
+      quote: "result, msg = validator.subtensor.set_weights(\n                wallet=validator.wallet,\n                netuid=validator.config.netuid,\n                uids=uint_uids,\n                weights=uint_weights,"
+    - claim_field: /weight_setting/method
+      source_path: sparket/validator/handlers/core/weights/set_weights.py
+      line_ref: "152-171"
+      quote: "loads skill scores from the\n        database and emits them to the chain."
+    - claim_field: /weight_setting/smoothing/notes
+      source_path: sparket/validator/config/scoring_params.py
+      line_ref: "23-27"
+      quote: "half_life_days: int = Field(\n        default=10,\n        ... description=\"Half-life for exponential decay (days)."
+    - claim_field: /weight_setting/smoothing/window
+      source_path: sparket/validator/config/scoring_params.py
+      line_ref: "45-49"
+      quote: "rolling_window_days: int = Field(\n        default=30,"
+    - claim_field: /anti_gaming/0/description
+      source_path: sparket/validator/scoring/jobs/skill_score.py
+      line_ref: "239-241"
+      quote: "floor_mask = brier_arr > float(cd.floor_threshold)\n        skill_score[floor_mask] = 0.0"
+    - claim_field: /anti_gaming/1/description
+      source_path: sparket/validator/config/scoring_params.py
+      line_ref: "496-501"
+      quote: "cluster_correlation_threshold: Decimal = Field(\n        default=Decimal(\"0.85\"),\n        ... \"Pairwise correlation above which miners are considered clustered.\""
+    - claim_field: /anti_gaming/2/description
+      source_path: sparket/validator/config/scoring_params.py
+      line_ref: "645-650"
+      quote: "max_submissions_per_market_day: int = Field(\n        default=200,\n        ... description=\"Per-miner daily cap per market to prevent farming.\""
+    - claim_field: /anti_gaming/3/description
+      source_path: sparket/validator/config/scoring_params.py
+      line_ref: "398-409"
+      quote: "floor_factor: Decimal = Field(\n        default=Decimal(\"0.1\"),\n        ... early_penalty_clip: Decimal = Field(\n        default=Decimal(\"0.7\"),"
+    - claim_field: /anti_gaming/4/description
+      source_path: sparket/validator/config/scoring_params.py
+      line_ref: "580-591"
+      quote: "odds_min: Decimal = Field(\n        default=Decimal(\"1.01\"),\n        ... odds_max: Decimal = Field(\n        default=Decimal(\"1000\"),"
+    - claim_field: /sub_competitions/structure
+      source_path: README.md
+      line_ref: "6-8"
+      quote: "The Subnet beta supports two tasks—Odds Origination and Outcome Verification"
+    - claim_field: /per_miner_state/notes
+      source_path: sparket/validator/handlers/core/weights/set_weights.py
+      line_ref: "32-38"
+      quote: "JOIN miner_rolling_score mrs ON m.miner_id = mrs.miner_id AND m.hotkey = mrs.miner_hotkey\n    WHERE m.netuid = :netuid\n      AND m.active = 1\n      AND mrs.as_of = :as_of\n      AND mrs.window_days = :window_days"
+    - claim_field: /documentation/status
+      source_path: docs/im.md
+      line_ref: "20-22"
+      quote: "All windows and weights are deterministic and configured in `sparket/validator/config/scoring_params.py`."
+  unresolved:
+    - "subnet.netuid: example/test configs use placeholder netuid 1 or 2; real mainnet netuid not in source."
+    - "weight_setting.tempo_or_interval: cadence gated by neuron.epoch_length (sync_metagraph.py) but no literal default value found in source."
+    - "aggregation.decay_rate / smoothing.alpha: time decay uses half_life_days=10 (w_i = exp(ln(0.5)*age/half_life)), not expressed as a single decay_rate/alpha constant."
+    - "Operative burn fraction: depends on live code path/config (0.0 in scoring_params default vs 0.9 in compute_weights/auditor defaults); cannot pin a single value."

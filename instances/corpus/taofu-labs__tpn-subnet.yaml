@@ -1,0 +1,246 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  Validators burn a fixed 80% of weight to UID 0 (BURN_UID=0, BURN_WEIGHT=0.8) on every
+  set_weights call; the remaining 20% is distributed across mining pools according to the
+  composite mining-pool score computed in the federated container.
+
+subnet:
+  name: "TPN - Tao Private Network"
+  owner_repo: "taofu-labs__tpn-subnet"
+  netuid: 65
+  implementation_lang: mixed
+
+task:
+  summary: >-
+    Miners run "mining pools" that aggregate easy-to-run "worker" nodes offering VPN
+    connections across diverse geographic locations. Validators sample a pool's workers,
+    test that they respond, measure response speed and geographic/country coverage, and
+    compute a composite mining-pool score from pool size, stability (up fraction),
+    performance (response speed) and geographic uniqueness. Emissions are intended to be
+    proportional to worker pool size * geographic diversity * slowness penalty.
+  submission_format: [compute_service]
+
+scoring_signals:
+  - name: size_score
+    metric_kind: volume
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      workers.length * stability_fraction — number of up workers, penalised by stability.
+      Enters the composite multiplicatively.
+  - name: stability_score
+    metric_kind: uptime
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      stability_fraction = successes.length / selected_workers.length, times 100. The
+      fraction is applied again in the composite product.
+  - name: performance_score
+    metric_kind: latency
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Math.min( 100 / ( median_test_length_s / s_considered_good ), 100 ) with
+      s_considered_good = 20. Enters composite as performance_fraction = performance_score/100.
+  - name: geo_score
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      geo_completeness_fraction = countries_in_pool / total_countries_across_all_pools.
+      Enters composite as sqrt(geo_completeness_fraction).
+
+ground_truth_sources:
+  - kind: hardware_probe
+    description: >-
+      Validator samples workers (Cochrane sample size) and actively tests each via fetched
+      wireguard/socks5 configs, recording success/failure and test_duration_s.
+    source_identifier: "federated-container/modules/scoring/score_mining_pools.js"
+    trust_model: adversarial
+    notes: "Validators independently measure worker liveness and speed; pools cannot self-report."
+  - kind: organic_traffic
+    description: >-
+      Geolocation of worker IPs (country) via ip2location / maxmind to compute geographic
+      completeness across all pools.
+    source_identifier: "federated-container/modules/geolocation"
+    trust_model: oracle
+    notes: ""
+
+aggregation:
+  method: weighted_average
+  composition: multiplicative
+  normalization: l1
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: 0.8
+    dynamic: false
+    notes: >-
+      BURN_UID=0, BURN_WEIGHT=0.8. In process_weights_for_netuid the burn_uid is removed,
+      remaining weights normalized and scaled by (1 - burn_weight), then burn_weight is
+      assigned to burn_uid.
+  notes: >-
+    Composite mining-pool score: score = size_score * performance_fraction *
+    Math.sqrt( geo_completeness_fraction ) * stability_fraction. Python validator pulls
+    these scores per UID over HTTP, EMA-smooths them into self.scores, then L1-normalizes
+    (norm = ||scores||_1) into raw_weights before the burn split.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Validator forward() fetches per-pool composite scores from the federated container
+    (/validator/score/mining_pools), EMA-updates self.scores, then set_weights() L1-normalizes
+    scores into raw_weights, calls process_weights_for_netuid with burn_uid=0/burn_weight=0.8,
+    and emits on chain via subtensor.set_weights (retried up to 20 times).
+  on_chain_call: set_weights
+  tempo_or_interval: null
+  smoothing:
+    kind: ema
+    alpha: 0.1
+    window: null
+    notes: >-
+      self.scores = alpha * scattered_rewards + (1 - alpha) * self.scores, with
+      moving_average_alpha default 0.1.
+
+anti_gaming:
+  - kind: liveness_check
+    enforcement: penalty
+    description: >-
+      Workers are randomly sampled and actively tested; only successes count toward stability,
+      and the stability fraction multiplies the whole composite score, heavily penalising
+      unstable pools.
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Non-partnered mining pools must pass a node version check (score_node_version); pools
+      running an outdated version throw and are not scored.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      80% of emission weight is burned to UID 0, capping the share distributable to miners
+      regardless of scores.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score]
+  status_values: []
+  reset_policy: >-
+    On metagraph resync, scores[uid] is zeroed when the hotkey at that uid changes
+    (deregistration/replacement).
+  notes: >-
+    Validator maintains EMA self.scores per uid, persisted to state.npz across restarts.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs: ["README.md", "LITEPAPER.md", "federated-container/SPECIFICATION.md"]
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "203-204"
+      quote: "Use netuid 65 for mainnet, 279 for testnet"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "30-32"
+      quote: "Emissions for miners on this subnet are based linearly on your worker pool size and geographic uniqueness. In principle: ` amount of workers * geographic diversity * slowness penalty`."
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "federated-container/modules/scoring/score_mining_pools.js"
+      line_ref: "257-258"
+      quote: "const size_score = workers.length * stability_fraction"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "federated-container/modules/scoring/score_mining_pools.js"
+      line_ref: "253-255"
+      quote: "if( selected_workers.length ) stability_fraction = successes.length / selected_workers.length \n    const stability_score = stability_fraction * 100"
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "federated-container/modules/scoring/score_mining_pools.js"
+      line_ref: "283-285"
+      quote: "const s_considered_good = 20\n    const performance_score = Math.min( 100 / ( median_test_length_s / s_considered_good ), 100 )\n    const performance_fraction = performance_score / 100"
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "federated-container/modules/scoring/score_mining_pools.js"
+      line_ref: "292-293"
+      quote: "const geo_completeness_fraction = round_number_to_decimals( countries_in_pool.length / total_countries, 4 )\n    const geo_score = round_number_to_decimals( geo_completeness_fraction * 100, 2 )"
+    - claim_field: "/aggregation/notes"
+      source_path: "federated-container/modules/scoring/score_mining_pools.js"
+      line_ref: "298"
+      quote: "const score = size_score * performance_fraction * Math.sqrt( geo_completeness_fraction ) * stability_fraction"
+    - claim_field: "/aggregation/composition"
+      source_path: "federated-container/modules/scoring/score_mining_pools.js"
+      line_ref: "298"
+      quote: "const score = size_score * performance_fraction * Math.sqrt( geo_completeness_fraction ) * stability_fraction"
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "federated-container/modules/scoring/score_mining_pools.js"
+      line_ref: "200-201"
+      quote: "const sample_size = cochrane_sample_size( { node_count: workers.length } )"
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "sybil/base/consts.py"
+      line_ref: "1-2"
+      quote: "BURN_UID = 0\nBURN_WEIGHT = 0.8"
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "sybil/base/validator.py"
+      line_ref: "257-258"
+      quote: "burn_uid=BURN_UID,\n                burn_weight=BURN_WEIGHT,"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "sybil/base/utils/weight_utils.py"
+      line_ref: "250-253"
+      quote: "if burn_uid is not None:\n        final_weights = normalized_weights * (1 - burn_weight)\n        final_weights = np.append(final_weights, burn_weight)\n        final_weight_uids = np.append(non_zero_weight_uids, burn_uid)"
+    - claim_field: "/aggregation/normalization"
+      source_path: "sybil/base/validator.py"
+      line_ref: "236-243"
+      quote: "norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True)\n        ...\n        raw_weights = self.scores / norm"
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "sybil/utils/config.py"
+      line_ref: "183-188"
+      quote: "\"--neuron.moving_average_alpha\",\n        type=float,\n        ...\n        default=0.1,"
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "sybil/base/validator.py"
+      line_ref: "414-417"
+      quote: "alpha: float = self.config.neuron.moving_average_alpha\n        self.scores: np.ndarray = (\n            alpha * scattered_rewards + (1 - alpha) * self.scores\n        )"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "sybil/base/validator.py"
+      line_ref: "276-284"
+      quote: "response = self.subtensor.set_weights(\n                wallet=self.wallet,\n                netuid=self.config.netuid,\n                uids=uint_uids,\n                weights=uint_weights,"
+    - claim_field: "/weight_setting/method"
+      source_path: "sybil/validator/forward.py"
+      line_ref: "45-69"
+      quote: "result = await get_json( f\"{ self.validator_server_url }/validator/score/mining_pools\" )\n        ...\n            self.update_scores( all_scores, all_uids )"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "federated-container/modules/scoring/score_mining_pools.js"
+      line_ref: "257-258"
+      quote: "// Calculate size score, defined as workers that are up, penalised by stability fraction (which is also applied again below to be heavy on unstable pools)"
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "federated-container/modules/scoring/score_mining_pools.js"
+      line_ref: "186-187"
+      quote: "const { version_valid, version } = await score_node_version( { public_url: url, ip: mining_pool_ip, port } )\n        if( !version_valid ) throw new Error( `Mining pool ${ pool_label } is running an outdated version: ${ version }` )"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "sybil/base/validator.py"
+      line_ref: "313-315"
+      quote: "for uid, hotkey in enumerate(self.hotkeys):\n            if hotkey != self.metagraph.hotkeys[uid]:\n                self.scores[uid] = 0  # hotkey has been replaced"
+    - claim_field: "/per_miner_state/notes"
+      source_path: "sybil/base/validator.py"
+      line_ref: "434-439"
+      quote: "np.savez(\n            self.config.neuron.full_path + \"/state.npz\",\n            step=self.step,\n            scores=self.scores,\n            hotkeys=self.hotkeys,\n        )"
+  unresolved:
+    - "Cochrane sample-size formula constants (confidence/margin) live in math/samples.js; not read in detail."
+    - "no_response_penalty_s = 60 default penalty noted but not modeled as a separate signal."
+    - "Whether the 80% burn is currently active on mainnet (netuid 65) vs a different live value cannot be confirmed from source alone."

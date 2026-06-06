@@ -1,0 +1,278 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  A fixed 70% of every epoch's weight (ALPHA_BURN_RATIO = 0.7) is always assigned
+  to the subnet owner's hotkey (burn). Only the remaining 30% is distributed by the
+  documented per-category score. Additionally, any topic category with no scored
+  interactions assigns its full normalized weight to the owner hotkey (further burn).
+  Interaction type weights (reply, quote) are currently both 0.0, so only posts from
+  verified accounts contribute non-burn weight.
+
+subnet:
+  name: "Nuance"
+  owner_repo: "NuanceNetwork__Nuance"
+  netuid: 23
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners connect a verified X (Twitter) account to their hotkey and submit factual,
+    nuanced posts (and interactions/replies) relevant to constitution-defined topics.
+    Validators fetch the content, use an LLM to filter for quality and positive
+    sentiment, and score posts from verified accounts by an engagement-count base
+    score, a quality bonus, the posting user's influence weight, and the topic weight.
+  submission_format: [content_link]
+
+scoring_signals:
+  - name: post_base_engagement_score
+    metric_kind: engagement
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      Per-account base score from engagement count: 1 engagement = 1.0, 2 = 1.7,
+      3+ = 2.0, then divided by the engagement count (anti-spam cap). Posts default
+      base score multiplier is 1.0.
+  - name: quality_post_bonus
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      LLM QualityAssessor returns 'approve'/not; an approved (quality) post multiplies
+      its base score by 1.5 (50% bonus). Multiplicative, not additive.
+  - name: user_influence_weight
+    metric_kind: human_judgment
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      rank_multiplier read from the constitution's verified_users list (user_data['weight'])
+      for the post's category; final_score = topic_score * rank_multiplier. Multiplicative.
+  - name: interaction_type_weight
+    metric_kind: engagement
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      INTERACTION_TYPE_WEIGHTS = {REPLY: 0.0, QUOTE: 0.0}; interactions currently
+      contribute 0 score. Sentiment must be positive (not negative) for an interaction
+      to be ACCEPTED at all.
+
+ground_truth_sources:
+  - kind: llm_judgment
+    description: >-
+      LLM (via Chutes) assesses post quality ('approve') and interaction sentiment
+      ('positive'/'neutral'/'negative'); negative-sentiment interactions are rejected.
+    source_identifier: "nuance/processing/quality_assessing.py, nuance/processing/sentiment.py"
+    trust_model: oracle
+    notes: "Prompts and topic/user weights sourced from the external constitution repo."
+  - kind: real_engagement
+    description: >-
+      Real X (Twitter) posts/interactions fetched via the Datura social provider for
+      verified miner accounts; engagement counts drive the base score.
+    source_identifier: "X (Twitter) via Datura API"
+    trust_model: adversarial
+    notes: ""
+
+aggregation:
+  method: weighted_average
+  composition: hybrid
+  normalization: sum_to_one
+  normalization_other: ""
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "metagraph.owner_hotkey (owner_hotkey_index)"
+    fraction: 0.7
+    dynamic: false
+    notes: >-
+      ALPHA_BURN_RATIO = 0.7 of final weight goes to owner hotkey unconditionally;
+      additionally any category with zero total score assigns its whole normalized
+      weight to the owner hotkey.
+  notes: >-
+    Per category: scores placed in a per-hotkey vector, normalized to sum to one
+    (divide by category sum); empty categories give all weight to owner. Categories
+    combined as a weighted sum using constitution topic weights. Final on-chain weight
+    = 0.7 * owner_burn_vector + 0.3 * score_vector.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    score_aggregating loop computes node_scores, normalizes per category, weighted-sums
+    by topic weight, combines with 70% owner burn, then calls subtensor.set_weights over
+    all uids. Loops every EPOCH_LENGTH seconds.
+  on_chain_call: set_weights
+  tempo_or_interval: "EPOCH_LENGTH = 300*12 seconds (3600s)"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA/SMA on the final reward in code; weights set directly each cycle. A
+      7-day (SCORING_WINDOW) rolling cutoff window bounds which posts/interactions are scored.
+
+anti_gaming:
+  - kind: rate_limit
+    enforcement: penalty
+    description: >-
+      Per-account base score capped by engagement count (1.0/1.7/2.0 then divided by
+      count) to prevent gaming via spamming engagements.
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Account verification: miner must prove X-account ownership via hotkey verification
+      post or 'Nuance<username>' hashtag/marker; only posts from verified accounts are scored.
+  - kind: other
+    kind_other: "llm_quality_and_sentiment_gate"
+    enforcement: rejection
+    enforcement_other: ""
+    description: >-
+      LLM quality assessment and sentiment analysis; non-quality posts get no bonus and
+      negative-sentiment interactions are REJECTED (not scored).
+
+sub_competitions:
+  structure: per_task_type
+  stages: []
+  count: null
+  notes: >-
+    Scoring partitioned by constitution topic/category; each category normalized
+    independently then combined by topic weight. Categories are dynamic (from external
+    constitution repo).
+
+per_miner_state:
+  tracked: false
+  state_kinds: []
+  status_values: []
+  reset_policy: ""
+  notes: >-
+    Posts/interactions carry a ProcessingStatus (new/accepted/rejected/error) but
+    scoring recomputes from scratch each cycle over a 7-day window; no persistent
+    per-miner score ledger drives weights.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/dev/overall_architecture.md"
+    - "docs/validators.md"
+    - "docs/miners.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "nuance/settings.py"
+      line_ref: "16-19"
+      quote: "NETUID: int = Field(\n        default=23,\n        description=\"Subnet ID.\",\n    )"
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "nuance/validator/scoring.py"
+      line_ref: "1-6"
+      quote: "# neurons/validator/scoring.py\nimport datetime\n... import numpy as np"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "42-49"
+      quote: "Dynamic Scoring: Calculate rewards using a multi-factor system: Engagement Quality ... Account Influence ... 7-Day Window ... Anti-Spam Protection ... Topic Categories"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "neurons/validator/scoring.py"
+      line_ref: "218-224"
+      quote: "score = 1.0 if count == 1 else 1.7 if count == 2 else 2.0\n                score = score / count"
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "neurons/validator/scoring.py"
+      line_ref: "318-321"
+      quote: "if post.extra_data.get(\"is_quality_post\"):\n                    # Quality post get 50% bonus\n                    post_base_score *= 1.5"
+      confidence: high
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "neurons/validator/scoring.py"
+      line_ref: "156-163"
+      quote: "rank_multiplier = user_data.get(\"weight\", 0)\n... final_score = topic_score * rank_multiplier"
+      confidence: high
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "nuance/models.py"
+      line_ref: "24-27"
+      quote: "INTERACTION_TYPE_WEIGHTS = {\n    InteractionType.REPLY: 0.0,\n    InteractionType.QUOTE: 0.0,\n}"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "nuance/processing/sentiment.py"
+      line_ref: "42-43"
+      quote: "Is the reply positive, supportive, or constructive towards the original tweet? Respond with only 'positive', 'neutral', or 'negative'."
+      confidence: high
+    - claim_field: "/aggregation/normalization"
+      source_path: "neurons/validator/main.py"
+      line_ref: "626-629"
+      quote: "if np.sum(categories_scores[category]) > 0:\n                        categories_scores[category] = categories_scores[\n                            category\n                        ] / np.sum(categories_scores[category])"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "nuance/constants.py"
+      line_ref: "14"
+      quote: "ALPHA_BURN_RATIO = 0.7"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "neurons/validator/main.py"
+      line_ref: "660-667"
+      quote: "combined_weights = [\n                    (cst.ALPHA_BURN_RATIO * alpha_burn_weight)\n                    + ((1 - cst.ALPHA_BURN_RATIO) * score_weight)"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "neurons/validator/main.py"
+      line_ref: "631-635"
+      quote: "# If category has no score (no interaction) then we burn\n                        categories_scores[category] = np.zeros_like(\n... categories_scores[category][owner_hotkey_index] = 1.0"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "neurons/validator/main.py"
+      line_ref: "644-649"
+      quote: "scores += categories_scores[category] * constitution_topics.get(\n                        category, {}\n                    ).get(\"weight\", 0.0)"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "neurons/validator/main.py"
+      line_ref: "671-676"
+      quote: "await self.subtensor.set_weights(\n                    wallet=self.wallet,\n                    netuid=settings.NETUID,\n                    uids=list(range(len(combined_weights))),\n                    weights=combined_weights,\n                )"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "nuance/constants.py"
+      line_ref: "5"
+      quote: "EPOCH_LENGTH = 300 * 12 if not settings.DEBUG else 50 * 12 # seconds"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "nuance/constants.py"
+      line_ref: "16"
+      quote: "SCORING_WINDOW = 7 # days"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "neurons/validator/main.py"
+      line_ref: "479-487"
+      quote: "score = 1.0 if count == 1 else 1.7 if count == 2 else 2.0\n                score = score / count"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "neurons/validator/main.py"
+      line_ref: "236-242"
+      quote: "if account.account_username.lower() not in nuance_usernames_found:\n... verification hashtag #{account.account_username} not found in post content"
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "nuance/processing/sentiment.py"
+      line_ref: "62-67"
+      quote: "👎 Interaction ... has negative sentiment\n... status=ProcessingStatus.REJECTED ... reason=\"Negative sentiment\""
+      confidence: high
+    - claim_field: "/sub_competitions/structure"
+      source_path: "neurons/validator/scoring.py"
+      line_ref: "408-423"
+      quote: "# Normalize scores for each category ... final_scores += categories_scores[category] * constitution_topics.get(category, {}).get(\"weight\", 0.0)"
+      confidence: high
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "neurons/validator/scoring.py"
+      line_ref: "227-228"
+      quote: "# Process interactions\n        # Interaction currently give 0 score"
+      confidence: high
+  unresolved:
+    - "Constitution topic weights and verified-user influence weights are hosted in the external NuanceNetwork/constitution repo (not in this tree); their literal numeric values are not extractable here."
+    - "Quality assessment and sentiment prompts are fetched from the external constitution store at runtime; exact prompt text/thresholds beyond the inline sentiment prompt are not in-repo."

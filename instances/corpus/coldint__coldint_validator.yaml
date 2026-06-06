@@ -1,0 +1,286 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Validator distributes all miner emissions to evaluated models by win-rate
+  (REWARDS_MAX_FRACTION = 1.0; no burn UID in code). Up to that whole fraction
+  may be diverted to hall-of-fame bounties fetched from a remote JSON, but the
+  default code path scores live models. No emission burn observed in the source.
+
+subnet:
+  name: "CoLaborative Distributed INcentivized Training (coldint, SN29)"
+  owner_repo: "coldint__coldint_validator"
+  netuid: 29
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners commit (on-chain metadata pointing to a Hugging Face repo) a causal
+    language model. Validators download each model, compute per-sample
+    cross-entropy losses on a shared evaluation set drawn from Fineweb-edu-2,
+    and reward models that achieve the lowest loss across samples. Lower loss
+    relative to peers (with an age advantage for older models) yields a higher
+    win rate, which determines the model's weight. Additional rewards (bounties)
+    can be earned for code/insight contributions via a hall-of-fame list.
+  submission_format: [model_weights, commitment_hash]
+
+scoring_signals:
+  - name: per_sample_cross_entropy_loss
+    metric_kind: loss
+    direction: lower_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      compute_losses_regular() uses torch CrossEntropyLoss(reduction='sum') per
+      batch. Per-sample losses feed compute_wins(): for each sample the model
+      with the lowest advantage-adjusted loss wins one point.
+  - name: win_rate
+    metric_kind: win_rate
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      win_fractions = wins / n_samples (validation.py compute_wins). Model
+      weights derived as win_rate ** WEIGHT_SKEW_FACTOR then normalized.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Fineweb-edu-2 text samples loaded via dataset.SubsetFineWebEdu2Loader;
+      models are scored on next-token prediction cross-entropy over these
+      samples. The same sample set is shared across evaluated models.
+    source_identifier: "HuggingFaceFW/fineweb-edu-score-2"
+    trust_model: trusted
+    notes: >-
+      README: "initial competition rewards miners for improving model score on
+      the Fineweb-edu-2 dataset". Competition list is fetched from a remote
+      competitions.json on the coldint/sn29 GitHub.
+
+aggregation:
+  method: proportional
+  composition: hybrid
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: 0.995
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: >-
+      No burn UID in code. REWARDS_MAX_FRACTION = 1.0 caps the share that can be
+      diverted to hall-of-fame bounty recipients (reward_weights), but that is a
+      redistribution to other hotkeys, not an emission burn.
+  notes: >-
+    Per competition: model_weights = win_rate ** weight_skew_factor (default
+    WEIGHT_SKEW_FACTOR = 1.2), normalized to sum 1. update_weights():
+    new_weights[uid] = (1 - reward_sum) * cparams['reward'] * weight, plus
+    hall-of-fame reward_weights. decay_rate 0.995 = REWARDS_DECAY_FACTOR /
+    advantage_decay_per_epoch (both 0.995 per epoch); the win advantage uses
+    advantage_initial 0.004 decayed at 0.995 per 361-block epoch.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    update_weights() builds new_weights from competition win-rate weights plus
+    hall-of-fame bounties, normalizes to sum 1, then EMA-blends with previous
+    weights. try_set_weights() pushes via btlite.set_weights_retry_btlib, gated
+    by WEIGHT_SET_MIN_INTERVAL.
+  on_chain_call: set_weights
+  tempo_or_interval: "WEIGHT_SET_MIN_INTERVAL = 35*60 seconds (min interval)"
+  smoothing:
+    kind: ema
+    alpha: 0.5
+    window: null
+    notes: >-
+      self.weights = weight_alpha * self.weights + (1 - weight_alpha) *
+      new_weights, with constants.weight_alpha = 0.5. First non-zero update
+      skips EMA.
+
+anti_gaming:
+  - kind: deduplication
+    enforcement: rejection
+    description: >-
+      retrieve_metadata() keeps only the oldest commitment when the same model
+      label appears for multiple hotkeys (copies discarded by block). get_uid_metadata
+      ignores a UID serving a copy of a model first seen by an earlier hotkey/block.
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      check_and_compute_losses validates model constraints
+      (validate_model_constraints), rejects vocabulary-size mismatch between
+      tokenizer and model, and a fraction of cached losses (SAMPLE_CHECK_FRACTION
+      = 0.02, max SAMPLE_CHECK_MAX_N = 10) are recomputed to verify cache
+      consistency. Model hash is verified unless IGNORE_MODEL_HASH.
+  - kind: code_inspection
+    enforcement: penalty
+    description: >-
+      Models with current and absolute win-rate below defaults['discard_winrate']
+      (0.02) are marked discarded and not re-downloaded; advantage_initial (0.004)
+      gives earlier-committed models a small loss advantage, discouraging trivial
+      copy-then-resubmit improvements.
+
+sub_competitions:
+  structure: multi_mechanism
+  stages: []
+  count: null
+  notes: >-
+    Competitions are defined dynamically by a remote competitions.json
+    (constants.COMPETITIONS_URL). run_step iterates self.competitions; each has
+    its own reward fraction (cparams['reward']), pool_size (DEFAULT_POOL_SIZE 7),
+    pend_size (DEFAULT_PEND_SIZE 3), tokenizer and constraints. Exact set/count
+    is not in the repo (fetched at runtime).
+
+per_miner_state:
+  tracked: true
+  state_kinds: [performance_ledger, status_enum, cumulative_score]
+  status_values: [pool, pending, discarded]
+  reset_policy: >-
+    discarded_commitments persisted in validator_state.json; a discarded label
+    is removed if the UID later appears among top miners. State is reset if the
+    stored version major.minor differs from constants.__spec_version__.
+  notes: >-
+    cstate per competition tracks uids_pool, uids_pending (with priority) and
+    uids_weight. eval_state caches a loss matrix per model index.
+
+documentation:
+  status: docs_and_code
+  source_version: "1.0.17"
+  primary_docs: [README.md, docs/validator.md, docs/miner.md]
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: /subnet/netuid
+      source_path: constants/__init__.py
+      line_ref: "25"
+      quote: "SUBNET_UID      = 29"
+      confidence: high
+    - claim_field: /subnet/implementation_lang
+      source_path: neurons/validator.py
+      line_ref: "46-50"
+      quote: "import torch ... import numpy as np ... import transformers"
+      confidence: high
+    - claim_field: /task/summary
+      source_path: README.md
+      line_ref: "21"
+      quote: "The initial competition rewards miners for improving model score on the [Fineweb-edu-2 dataset]"
+      confidence: high
+    - claim_field: /scoring_signals/0/metric_kind
+      source_path: neurons/validation.py
+      line_ref: "199-202"
+      quote: "loss_fct = torch.nn.CrossEntropyLoss(reduction='sum') ... losses[i] = loss_fct(shift_logits, shift_labels).item()"
+      confidence: high
+    - claim_field: /scoring_signals/1/metric_kind
+      source_path: neurons/validation.py
+      line_ref: "142"
+      quote: "win_fractions = {uid: n_wins / n_samples for uid,n_wins in wins.items()}"
+      confidence: high
+    - claim_field: /scoring_signals/0/direction
+      source_path: neurons/validation.py
+      line_ref: "131-135"
+      quote: "if win_uid is None or loss < win_loss_adv: win_uid = uid ... wins[win_uid] += 1"
+      confidence: high
+    - claim_field: /ground_truth_sources/0/source_identifier
+      source_path: README.md
+      line_ref: "21"
+      quote: "[Fineweb-edu-2 dataset](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu-score-2)"
+      confidence: high
+    - claim_field: /aggregation/notes
+      source_path: neurons/validator.py
+      line_ref: "1137-1142"
+      quote: "skew_factor = cinfo.get('weight_skew_factor',constants.WEIGHT_SKEW_FACTOR) ; model_weights = win_rate**skew_factor ; model_weights /= weight_sum"
+      confidence: high
+    - claim_field: /aggregation/method
+      source_path: neurons/validator.py
+      line_ref: "813-819"
+      quote: "new_weights[uid] = (1 - reward_sum) * cparams['reward'] * weight ... new_weights /= new_weights.sum()"
+      confidence: high
+    - claim_field: /aggregation/decay_rate
+      source_path: constants/__init__.py
+      line_ref: "48,74"
+      quote: "REWARDS_DECAY_FACTOR    = 0.995 ... advantage_decay_per_epoch = 0.995"
+      confidence: high
+    - claim_field: /aggregation/burn_allocation/notes
+      source_path: constants/__init__.py
+      line_ref: "44-45"
+      quote: "# Maximum fraction of (miner) emissions for rewards\nREWARDS_MAX_FRACTION    = 1.0"
+      confidence: high
+    - claim_field: /weight_setting/smoothing/alpha
+      source_path: neurons/validator.py
+      line_ref: "825"
+      quote: "self.weights = constants.weight_alpha * self.weights + (1 - constants.weight_alpha) * new_weights"
+      confidence: high
+    - claim_field: /weight_setting/smoothing/alpha
+      source_path: constants/__init__.py
+      line_ref: "68"
+      quote: "weight_alpha = 0.5"
+      confidence: high
+    - claim_field: /weight_setting/on_chain_call
+      source_path: neurons/validator.py
+      line_ref: "740-748"
+      quote: "call = btlite.set_weights_retry_btlib( subtensor=st, wallet=self.wallet, uids=self.metagraph.uids, ... weights=self.weights[:len(self.metagraph.uids)],"
+      confidence: high
+    - claim_field: /weight_setting/tempo_or_interval
+      source_path: constants/__init__.py
+      line_ref: "94"
+      quote: "WEIGHT_SET_MIN_INTERVAL     = 35*60"
+      confidence: high
+    - claim_field: /weight_setting/cadence
+      source_path: neurons/validator.py
+      line_ref: "711-713"
+      quote: "if self.last_weights_set is not None and time.time() - self.last_weights_set < constants.WEIGHT_SET_MIN_INTERVAL: ... return"
+      confidence: high
+    - claim_field: /anti_gaming/0/description
+      source_path: neurons/validator.py
+      line_ref: "425-431"
+      quote: "if seen['block'] < mdl_metadata.block: ... discarding UID {miner_uid} ... mdl_metadata = None"
+      confidence: high
+    - claim_field: /anti_gaming/1/description
+      source_path: neurons/validator.py
+      line_ref: "1499-1500"
+      quote: "if max_token_id>=embed_size: raise ModelIssue(f\"Vocabulary size mismatch between tokenizer and model"
+      confidence: high
+    - claim_field: /anti_gaming/2/description
+      source_path: neurons/validator.py
+      line_ref: "1176-1184"
+      quote: "win_info['win_rate'][uid] < self.defaults['discard_winrate'] ... self.discarded_commitments.add(discard_lbl)"
+      confidence: high
+    - claim_field: /anti_gaming/2/description
+      source_path: constants/__init__.py
+      line_ref: "71-73"
+      quote: "# Initial advantage of oldest model\nadvantage_initial = 0.004"
+      confidence: high
+    - claim_field: /sub_competitions/notes
+      source_path: neurons/validator.py
+      line_ref: "888-892"
+      quote: "for cname in self.competitions: ... n_models_evaluated += self.run_step_for_competition(cname, dataloader, ts_expire=ts_expire)"
+      confidence: high
+    - claim_field: /sub_competitions/notes
+      source_path: constants/__init__.py
+      line_ref: "42"
+      quote: "COMPETITIONS_URL        = \"https://github.com/coldint/sn29/raw/main/competitions.json\""
+      confidence: high
+    - claim_field: /per_miner_state/state_kinds
+      source_path: neurons/validator.py
+      line_ref: "1187-1189"
+      quote: "self.cstate[cname]['uids_weight'] = model_weights ; self.cstate[cname]['uids_pool'] = new_uids_pool"
+      confidence: high
+    - claim_field: /documentation/source_version
+      source_path: constants/__init__.py
+      line_ref: "8"
+      quote: "__version__ = \"1.0.17\""
+      confidence: high
+    - claim_field: /mechanism_status
+      source_path: neurons/validator.py
+      line_ref: "1447-1448"
+      quote: "if not self.config.dont_set_weights and not self.config.offline: await self.try_set_weights(ttl=60)"
+      confidence: high
+  unresolved:
+    - "Exact competition definitions, count, per-competition reward fractions and tokenizers are fetched at runtime from a remote competitions.json (not in repo)."
+    - "Hall-of-fame bounty entries (reward values, recipients) are fetched from a remote hall_of_fame.json (HOF_URL); the in-repo decay (REWARDS_DECAY_FACTOR 0.995, REWARDS_IV_FACTOR) is known but the actual bounty amounts are external."
+    - "advantage_initial (0.004) and advantage_decay (0.995) are defaults that can be overridden per-competition via remote config."

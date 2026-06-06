@@ -1,0 +1,313 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  Debt-based scoring activated (first payouts Dec 2025 for Nov 2025 performance) and pays
+  miners proportional to remaining penalty-adjusted PnL debt. When the sum of distributed
+  miner weights is < 1.0 the residual (1.0 - sum) is assigned to a dedicated burn UID
+  (229 mainnet / 220 testnet), so emissions are partially burned dynamically. Pre-activation
+  miners received only minimum dust weights with the remainder burned.
+
+subnet:
+  name: "Vanta Network (formerly Proprietary Trading Network / PTN)"
+  owner_repo: "taoshidev__vanta-network"
+  netuid: 8
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners submit LONG, SHORT, or FLAT trading signals for Forex, Crypto, and Equities trade
+    pairs during market hours. Validators receive and validate signals, track positions and
+    portfolio returns with leverage limits, carry fees, spread fees and slippage, and reward
+    miners via a debt-based scoring system that pays them proportional to their previous pay
+    period's penalty-adjusted realized/unrealized PnL (in USD), with payouts targeting weekly
+    completion at midnight Sunday UTC.
+  submission_format: [signals]
+
+scoring_signals:
+  - name: penalty_adjusted_pnl
+    metric_kind: pnl
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      SCORING_PNL_WEIGHT = 1.0; all other component weights (Omega, Sharpe, Sortino,
+      statistical confidence, Calmar, return) are set to 0.0 in current config. Per-checkpoint
+      penalty-adjusted PnL = sum of HWM-gated realized_pnl deltas * total_penalty plus
+      min(0, unrealized_pnl) * total_penalty of the last checkpoint. Realized/unrealized PnL
+      are in USD.
+
+ground_truth_sources:
+  - kind: market_data
+    description: >-
+      Real-time market prices used to validate signals and compute position PnL, sourced from
+      multiple financial data providers (Polygon, Tiingo, Binance, Bybit, Kraken).
+    source_identifier: "data_generator (Polygon, Tiingo, Binance, Bybit, Kraken)"
+    trust_model: oracle
+    notes: "Validators receive signals and price them against live market data feeds."
+
+aggregation:
+  method: proportional
+  composition: weighted_sum
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: 0.075
+  min_weight_floor: 1.5e-05
+  burn_allocation:
+    enabled: true
+    address_or_uid: "229"
+    fraction: null
+    dynamic: true
+    notes: >-
+      If sum of miner weights < 1.0, burn address (uid 229 mainnet / uid 220 testnet) receives
+      the residual (1.0 - sum). If sum >= 1.0, weights are normalized to 1.0 and burn gets 0.
+  notes: >-
+    Weights are proportional to each miner's remaining_payout_usd (needed cumulative
+    penalty-adjusted PnL minus already-paid emissions). Minimum 'dust' floors are applied per
+    bucket (CHALLENGE/PLAGIARISM 1x, PROBATION 2x, MAINCOMP 3x, ENTITY 4x, UNKNOWN 0x of the
+    static dust value CHALLENGE_PERIOD_MIN_WEIGHT = 1.5e-05), scaled by 30-day PnL within
+    bucket. WEIGHTED_AVERAGE_DECAY_RATE = 0.075 emphasizes recent performance over the
+    180-day target ledger window.
+
+weight_setting:
+  cadence: weekly
+  method: >-
+    DebtBasedScoring.compute_results produces (hotkey, weight) tuples mapped to UIDs in
+    weight_calculator_manager; weights are submitted via subtensor_ops_client.set_weights_rpc.
+    Payout periods are weekly, starting and ending at midnight Sunday 00:00:00 UTC; weights are
+    refreshed every 5 minutes (SET_WEIGHT_REFRESH_TIME_MS).
+  on_chain_call: set_weights
+  tempo_or_interval: "SET_WEIGHT_REFRESH_TIME_MS = 60 * 5 * 1000 (5 minutes refresh); weekly payout window"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA on final reward; recency emphasis comes from the weighted-average decay
+      (WEIGHTED_AVERAGE_DECAY_RATE = 0.075) over the 180-day ledger window.
+
+anti_gaming:
+  - kind: plagiarism_detection
+    enforcement: elimination
+    description: >-
+      Cross-correlation analysis detects order similarity; follower similarity threshold 0.75
+      (PLAGIARISM_FOLLOWER_SIMILARITY_THRESHOLD), 10-day lookback (PLAGIARISM_LOOKBACK_RANGE_MS),
+      60-max time lags, with a 2-week review period (PLAGIARISM_REVIEW_PERIOD_MS) before
+      elimination. Repeated copying eliminates the miner.
+  - kind: risk_limit
+    enforcement: elimination
+    description: >-
+      Miners exceeding 10% max drawdown are eliminated (MAX_TOTAL_DRAWDOWN = 0.9, i.e. portfolio
+      may not fall below 0.90x peak). Daily drawdown limit MAX_DAILY_DRAWDOWN = 0.95.
+  - kind: challenge_period
+    enforcement: barrier
+    description: >-
+      New miners enter a 61-90 day challenge period (CHALLENGE_PERIOD_MINIMUM_DAYS = 61,
+      MAXIMUM_DAYS = 90) and must pass the 75th percentile
+      (CHALLENGE_PERIOD_PERCENTILE_THRESHOLD = 0.75) to enter the main competition; they receive
+      only minimal dust weights until then.
+  - kind: other
+    kind_other: probation_ranking_elimination
+    enforcement: elimination
+    description: >-
+      Probation: miners scoring below the 15th-highest ranked miner in their asset class enter a
+      probationary period (30 days per README) and are eliminated if they fail to outscore the
+      lowest-ranked main-competition miner. Eliminated/deregistered hotkeys are permanently
+      blacklisted.
+
+sub_competitions:
+  structure: multi_asset
+  stages: []
+  count: null
+  notes: >-
+    Competition is segmented by asset class: Crypto (6 pairs), Forex (32 pairs grouped G1-G5),
+    Equities (7 stocks, currently blocked), plus blocked Indices/Commodities. Rankings and
+    probation thresholds are evaluated per asset class.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [debt_ledger, status_enum, cumulative_score]
+  status_values:
+    - CHALLENGE
+    - PROBATION
+    - MAINCOMP
+    - PLAGIARISM
+    - ENTITY
+    - SUBACCOUNT_FUNDED
+    - SUBACCOUNT_ALPHA
+    - UNKNOWN
+  reset_policy: >-
+    Cumulative debt tracking from activation (2025-11-01) carries negative PnL forward to offset
+    future gains. Eliminated/deregistered hotkeys are permanently blacklisted and cannot
+    re-register.
+  notes: >-
+    Each miner has a DebtLedger of 12-hour DebtCheckpoints recording realized/unrealized PnL,
+    penalties, fees and challenge_period_status; only MAINCOMP/PROBATION (and a few subaccount/
+    entity) buckets count as earning periods.
+
+documentation:
+  status: docs_and_code
+  source_version: "8.8.8"
+  primary_docs:
+    - README.md
+    - CLAUDE.md
+    - docs/validator.md
+    - docs/miner.md
+    - docs/signal_reference.md
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: /subnet/netuid
+      source_path: CLAUDE.md
+      line_ref: "9"
+      quote: >-
+        The Vanta Network (formerly Proprietary Trading Network/PTN) is a Bittensor subnet
+        (netuid 8 mainnet, 116 testnet) developed by Taoshi.
+    - claim_field: /subnet/implementation_lang
+      source_path: vali_objects/scoring/debt_based_scoring.py
+      line_ref: "44"
+      quote: "import bittensor as bt"
+    - claim_field: /task/summary
+      source_path: README.md
+      line_ref: "99"
+      quote: >-
+        Miners can submit LONG, SHORT, or FLAT signal for Forex, Crypto, or Equities trade pairs
+        into the network during market hours.
+    - claim_field: /task/submission_format
+      source_path: README.md
+      line_ref: "104"
+      quote: >-
+        Miners are rewarded using a debt-based scoring system that tracks their emissions,
+        performance, and penalties. Weights are set based on previous week's performance (PnL
+        scaled by penalties)
+    - claim_field: /scoring_signals/0/weight
+      source_path: vali_objects/vali_config.py
+      line_ref: "412-418"
+      quote: >-
+        SCORING_OMEGA_WEIGHT = 0.0 ... SCORING_RETURN_WEIGHT = 0.0 SCORING_PNL_WEIGHT = 1.0
+    - claim_field: /scoring_signals/0/metric_kind
+      source_path: vali_objects/scoring/debt_based_scoring.py
+      line_ref: "791-806"
+      quote: >-
+        HWM-gated realized component: only pay the delta above prior cumulative peak ...
+        penalty_adjusted_pnl += delta * cp.total_penalty ... penalty_adjusted_pnl +=
+        min(0.0, last_checkpoint.unrealized_pnl) * last_checkpoint.total_penalty
+    - claim_field: /ground_truth_sources/0/kind
+      source_path: CLAUDE.md
+      line_ref: "3"
+      quote: >-
+        Real-time price validation using multiple data sources (Polygon, Tiingo, Binance, Bybit,
+        Kraken)
+    - claim_field: /aggregation/method
+      source_path: vali_objects/scoring/debt_based_scoring.py
+      line_ref: "14-15"
+      quote: >-
+        Weights = Proportional to remaining_payout_usd, with warning if insufficient emissions
+    - claim_field: /aggregation/decay_rate
+      source_path: vali_objects/vali_config.py
+      line_ref: "316"
+      quote: "WEIGHTED_AVERAGE_DECAY_RATE = 0.075"
+    - claim_field: /aggregation/min_weight_floor
+      source_path: vali_objects/vali_config.py
+      line_ref: "450"
+      quote: "CHALLENGE_PERIOD_MIN_WEIGHT = 1.5e-05  # essentially nothing"
+    - claim_field: /aggregation/burn_allocation/dynamic
+      source_path: vali_objects/scoring/debt_based_scoring.py
+      line_ref: "1437-1451"
+      quote: >-
+        if sum_weights < 1.0: # Excess weight goes to burn address burn_weight = 1.0 -
+        sum_weights ... result.append((burn_hotkey, burn_weight))
+    - claim_field: /aggregation/burn_allocation/address_or_uid
+      source_path: vali_objects/scoring/debt_based_scoring.py
+      line_ref: "78-79"
+      quote: "BURN_UID_MAINNET = 229     BURN_UID_TESTNET = 220"
+    - claim_field: /aggregation/notes
+      source_path: vali_objects/scoring/debt_based_scoring.py
+      line_ref: "1171-1177"
+      quote: >-
+        BUCKET_DUST_FLOORS = { MinerBucket.CHALLENGE.value: 1, ... PROBATION.value: 2, ...
+        MAINCOMP.value: 3, ... UNKNOWN.value: 0, ... PLAGIARISM.value: 1, ... ENTITY.value: 4,
+    - claim_field: /weight_setting/cadence
+      source_path: vali_objects/scoring/debt_based_scoring.py
+      line_ref: "10-11"
+      quote: >-
+        Payout periods are now weekly, starting and ending at midnight on Sunday, 00:00:00 UTC
+    - claim_field: /weight_setting/method
+      source_path: vali_objects/scoring/weight_calculator_manager.py
+      line_ref: "317-354"
+      quote: >-
+        checkpoint_results = DebtBasedScoring.compute_results( ... ) ... result =
+        self._subtensor_ops_client.set_weights_rpc( uids=uids, weights=weights, ... )
+    - claim_field: /weight_setting/tempo_or_interval
+      source_path: vali_objects/vali_config.py
+      line_ref: "325"
+      quote: "SET_WEIGHT_REFRESH_TIME_MS = 60 * 5 * 1000  # 5 minutes"
+    - claim_field: /anti_gaming/0/description
+      source_path: vali_objects/vali_config.py
+      line_ref: "394-396"
+      quote: >-
+        PLAGIARISM_LOOKBACK_RANGE_MS = 10 * 24 * 60 * 60 * 1000  # 10 days ...
+        PLAGIARISM_FOLLOWER_SIMILARITY_THRESHOLD = 0.75
+    - claim_field: /anti_gaming/1/description
+      source_path: vali_objects/vali_config.py
+      line_ref: "368-369"
+      quote: >-
+        MAX_DAILY_DRAWDOWN = 0.95 ... MAX_TOTAL_DRAWDOWN = 0.9  # Portfolio should never fall
+        below .90 x of initial value when measured at any instant
+    - claim_field: /anti_gaming/2/description
+      source_path: vali_objects/vali_config.py
+      line_ref: "452-455"
+      quote: >-
+        CHALLENGE_PERIOD_MINIMUM_DAYS = 61 CHALLENGE_PERIOD_MAXIMUM_DAYS = 90 ...
+        CHALLENGE_PERIOD_PERCENTILE_THRESHOLD = 0.75 # miners must pass 75th percentile to enter
+        the main competition
+    - claim_field: /anti_gaming/3/description
+      source_path: README.md
+      line_ref: "122-139"
+      quote: >-
+        Miners who score less than the 15th highest ranking miner in each asset class will be
+        observed in a probationary period. ... Once a hotkey is eliminated or deregistered from
+        the network, it is permanently blacklisted and cannot be re-registered.
+    - claim_field: /sub_competitions/structure
+      source_path: README.md
+      line_ref: "124"
+      quote: >-
+        Miners who score less than the 15th highest ranking miner in each asset class will be
+        observed in a probationary period.
+    - claim_field: /per_miner_state/state_kinds
+      source_path: vali_objects/scoring/debt_based_scoring.py
+      line_ref: "40-41"
+      quote: >-
+        Checkpoints are 12-hour intervals (2 per day) - Uses real-time subtensor queries for
+        emission rate estimation
+    - claim_field: /per_miner_state/status_values
+      source_path: vali_objects/scoring/debt_based_scoring.py
+      line_ref: "82-88"
+      quote: >-
+        EARNING_MINER_BUCKETS = { MinerBucket.MAINCOMP.value, MinerBucket.PROBATION.value,
+        MinerBucket.SUBACCOUNT_FUNDED.value, MinerBucket.SUBACCOUNT_ALPHA.value,
+        MinerBucket.ENTITY.value, }
+    - claim_field: /per_miner_state/reset_policy
+      source_path: vali_objects/scoring/debt_based_scoring.py
+      line_ref: "16"
+      quote: >-
+        Cumulative tracking allows negative PnL to carry forward and offset future gains
+    - claim_field: /mechanism_status
+      source_path: vali_objects/scoring/debt_based_scoring.py
+      line_ref: "32-34"
+      quote: >-
+        Normalize weights with burn address logic: - If sum < 1.0: assign (1.0 - sum) to burn
+        address (uid 229 mainnet / uid 5 testnet) - If sum >= 1.0: normalize to 1.0, burn
+        address gets 0
+    - claim_field: /documentation/source_version
+      source_path: CLAUDE.md
+      line_ref: "3"
+      quote: "meta/meta.json (subnet_version: 8.8.8)"
+  unresolved:
+    - "Exact carry/spread/slippage fee constants not read from source (README cites 10.95/3/5.25% carry, 0.1% x leverage spread)."
+    - "TARGET_LEDGER_WINDOW_DAYS = 180 vs CLAUDE.md mention of 120-day window; used 180 from vali_config.py as authoritative."
+    - "Precise activation date (2025-11-01) and ENTITY/SUBACCOUNT bucket semantics only partially documented in code comments."

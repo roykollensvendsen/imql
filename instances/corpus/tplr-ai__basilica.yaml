@@ -1,0 +1,285 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+# The documented mechanism is a live USD-denominated incentive pool (CU + RU) that
+# computes per-miner weights and routes the residual to burn dynamically. The example
+# validator config additionally sets a forced_burn_percentage of 95.0, which removes
+# 95% of emission capacity before the dynamic pool runs — i.e. live scoring on a small
+# remainder alongside a large fixed burn. Hence partial_burn.
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  Scoring is live (compute_incentive_pool drives set_weights), but the shipped
+  validator.toml.example sets forced_burn_percentage = 95.0, so 95% of emission capacity
+  is removed before the dynamic pool, and any further unmet capacity becomes additional
+  dynamic burn to burn_uid (default 204). The forced fraction is a config value, not a
+  hardcoded constant, so the operative split depends on deployed config.
+
+subnet:
+  name: "Basilica"
+  owner_repo: "tplr-ai__basilica"
+  netuid: 39
+  implementation_lang: rust
+
+task:
+  summary: >-
+    Miners operate GPU machines (assumed 8 GPUs per node) that are validated for hardware
+    authenticity via attestation/SSH automation. Earnings are denominated in USD via two
+    ledgers fetched from the Basilica API: Compute Units (CU), a capacity signal priced per
+    GPU-hour per GPU category and diluted by category supply, and Revenue Units (RU), the
+    organic rental revenue a miner's hardware actually earned, paid at a revenue-share
+    percentage. Per-epoch USD payouts are converted to weights against the epoch's alpha
+    emission capacity; any shortfall and any forced burn go to a burn UID.
+  submission_format: [compute_service]
+  submission_format_other: ""
+
+scoring_signals:
+  - name: compute_units_capacity
+    metric_kind: hardware_spec
+    direction: higher_is_better
+    weight: null
+    normalization: other
+    normalization_other: >-
+      Per-GPU-category dilution: effective_price = min(row_price_usd, category_capacity_budget /
+      category_cu_supply); payout = vested_fraction * cu_amount * effective_price. Capacity budget =
+      target_count*8 * window_hours * price_per_gpu_usd.
+    notes: >-
+      CU rows priced per GPU-hour (price_per_gpu_cents). target_count assumes 8 GPUs/node.
+      Diluted so that an over-provisioned category cannot earn above its capacity budget.
+  - name: revenue_units_organic
+    metric_kind: volume
+    direction: higher_is_better
+    weight: null
+    normalization: other
+    normalization_other: >-
+      payout = vested_fraction * ru_amount * revenue_share_pct/100. Not subject to per-category dilution.
+    notes: >-
+      RU = realized organic rental revenue; paid additively with CU at a revenue-share fraction.
+  - name: hardware_attestation
+    metric_kind: hardware_spec
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      verification_score = valid_count/total_count over node validations where is_valid &&
+      attestation_valid; tracked in GPU profile. The CU/RU ledger (server-side) is the basis for
+      weight payouts; on-chain attestation gates whether a node's units count (is_slashed filter).
+
+ground_truth_sources:
+  - kind: hardware_probe
+    description: >-
+      Node validation via attestation / ssh_automation producing GPU model, count, memory; stored as
+      VerificationLog and used to build the miner GPU profile.
+    source_identifier: "VerificationLog.verification_type in {attestation, ssh_automation}"
+    trust_model: adversarial
+    notes: "attestation_valid requires verification_type attestation/ssh_automation AND success."
+  - kind: organic_traffic
+    description: >-
+      CU/RU ledgers fetched from the Basilica API (get_cus / get_rus / get_incentive_config),
+      reflecting metered GPU capacity and realized rental revenue. Token prices (alpha/tao USD) also
+      fetched from the API to size emission capacity.
+    source_identifier: "BasilicaApiClient: /v1/incentive/* CU and RU ledger rows"
+    trust_model: oracle
+    notes: "Off-chain server-side ledgers; validator trusts the API for CU/RU/prices/config."
+
+aggregation:
+  method: proportional
+  composition: weighted_sum
+  normalization: sum_to_one
+  normalization_other: ""
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "204"
+    fraction: null
+    dynamic: true
+    notes: >-
+      Two burn sources. (1) Forced: forced_burn_percentage (config; 95.0 in
+      validator.toml.example) removes that fraction of usd_emission_capacity up front and adds
+      forced_pct*u16::MAX weight to burn_uid. (2) Dynamic residual: burn_rate =
+      max(0, 1 - usd_required_epoch/effective_usd_capacity); when required < capacity the unmet
+      share routes to burn_uid. If no payouts or zero capacity, all weight (u16::MAX) goes to burn_uid.
+  notes: >-
+    Per-miner USD payouts summed, scaled down by effective_usd_capacity/required if over capacity,
+    then each uid share = payout/effective_usd_capacity; shares normalized to u16::MAX via
+    largest-remainder rounding. burn_uid receives the residual.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Every weight_set_interval_blocks the validator computes the incentive pool from CU/RU ledgers and
+    submits NormalizedWeights via set_weights_payload + submit_extrinsic. version_key increments each
+    set to prevent replay. Retries up to 3x at the compute and submission layers.
+  on_chain_call: set_weights
+  tempo_or_interval: "360 blocks"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA on the final weights; instead each ledger row vests linearly over its window_hours
+      (vested_fraction = epoch/window overlap), spreading a row's value across epochs.
+
+anti_gaming:
+  - kind: hardware_validation
+    enforcement: rejection
+    description: >-
+      CU/RU rows are only counted if not is_slashed, the hotkey is in the metagraph, and (for CU) the
+      gpu_category is configured. GPU profile score depends on attestation_valid node validations.
+  - kind: code_inspection
+    enforcement: penalty
+    description: >-
+      slash_node POSTs /v1/incentive/slash with slash_pct (config slash_pct, e.g. 100); slashed ledger
+      rows are excluded from payouts (is_slashed filter), zeroing that node's contribution.
+  - kind: deduplication
+    enforcement: rejection
+    description: >-
+      CU dilution caps a category's total payout at its capacity budget (target_count*8 GPUs), so
+      over-provisioning a category dilutes per-CU price rather than increasing total category payout.
+
+sub_competitions:
+  structure: per_task_type
+  stages:
+    - name: "CU compute-capacity pool (per GPU category: A100, H100, H200, B200, B300)"
+      role: main
+      advancement_rule: "per-category capacity-budget dilution; payout = vested * cu_amount * min(price, budget/supply)"
+    - name: "RU organic-revenue pool (revenue-share, not category-diluted)"
+      role: main
+      advancement_rule: "payout = vested * ru_amount * revenue_share_pct/100"
+  count: null
+  notes: >-
+    Two payout ledgers (CU, RU) combine additively per miner. CU is further partitioned by GPU
+    category, each with its own target_count, price_per_gpu_cents, and capacity budget.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [performance_ledger, cumulative_score]
+  status_values: []
+  reset_policy: >-
+    Per-epoch: payouts recomputed each epoch from ledger rows overlapping the epoch window; vesting
+    spreads a row across epochs. GPU profile (total_score, last_successful_validation) upserted per
+    validation; only last GPU_CATEGORY_CUTOFF_HOURS=3 hours of validations considered for scoring refresh.
+  notes: >-
+    GpuProfileRepository stores MinerGpuProfile (total_score, gpu_counts); WeightSetEpochRepository
+    tracks epoch windows (period_start/end, attempts, success). CU/RU ledgers held server-side via API.
+
+documentation:
+  status: code_authoritative
+  source_version: null
+  primary_docs:
+    - "crates/basilica-validator/src/incentive/incentive_pool.rs"
+    - "crates/basilica-validator/src/bittensor_core/weight_setter.rs"
+    - "config/validator.toml.example"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8[1m]"
+  extracted_at: "2026-06-06"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "config/validator.toml.example"
+      line_ref: "19"
+      quote: "netuid = 39         # Use 387 for test network"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "crates/basilica-validator/src/incentive/incentive_pool.rs"
+      line_ref: "1-13"
+      quote: "use crate::basilica_api::{CuLedgerRowResponse, IncentiveConfigResponse, RuLedgerRowResponse};"
+    - claim_field: "/task/summary"
+      source_path: "crates/basilica-validator/src/basilica_api/mod.rs"
+      line_ref: "541-563"
+      quote: "Number of nodes to target. Each node is assumed to have 8 GPUs, so target_count=1 means 8 GPUs."
+    - claim_field: "/scoring_signals/0/normalization_other"
+      source_path: "crates/basilica-validator/src/incentive/incentive_pool.rs"
+      line_ref: "124-129"
+      quote: >-
+        let per_cu_budget = row_capacity_budget / category_supply; let effective_price =
+        min_decimal(row_price_usd, per_cu_budget); let row_payout = vested_fraction * row.cu_amount * effective_price;
+    - claim_field: "/scoring_signals/1/normalization_other"
+      source_path: "crates/basilica-validator/src/incentive/incentive_pool.rs"
+      line_ref: "152-153"
+      quote: "let row_payout = vested_fraction * row.ru_amount * Decimal::from(row.revenue_share_pct) / Decimal::from(100u32);"
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "crates/basilica-validator/src/gpu/gpu_scoring.rs"
+      line_ref: "164-181"
+      quote: "let final_score = valid_count as f64 / total_count as f64;"
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "crates/basilica-validator/src/bittensor_core/weight_setter.rs"
+      line_ref: "1449-1451"
+      quote: "attestation_valid: (log.verification_type == \"attestation\" || log.verification_type == \"ssh_automation\") && log.success,"
+    - claim_field: "/ground_truth_sources/1/source_identifier"
+      source_path: "crates/basilica-validator/src/bittensor_core/weight_setter.rs"
+      line_ref: "389-404"
+      quote: >-
+        let incentive_config = self.api_client.get_incentive_config()...; let cu_rows = self.api_client.get_cus(...);
+        let ru_rows = self.api_client.get_rus(...); let token_prices = self.api_client.get_token_prices(...);
+    - claim_field: "/aggregation/method"
+      source_path: "crates/basilica-validator/src/incentive/incentive_pool.rs"
+      line_ref: "227-243"
+      quote: "*shares_by_uid.entry(uid).or_insert(Decimal::ZERO) += *payout / effective_usd_capacity; ... let mut weights = normalize_uid_shares(&shares_by_uid, available_weight);"
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "crates/basilica-validator/src/config/emission.rs"
+      line_ref: "5-6"
+      quote: "/// Default burn UID for Basilica validator emissions\npub const DEFAULT_BURN_UID: u16 = 204;"
+    - claim_field: "/aggregation/burn_allocation/dynamic"
+      source_path: "crates/basilica-validator/src/incentive/incentive_pool.rs"
+      line_ref: "219-220"
+      quote: "let burn_rate = (Decimal::ONE - (usd_required_epoch / effective_usd_capacity)).max(Decimal::ZERO);"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "crates/basilica-validator/src/incentive/incentive_pool.rs"
+      line_ref: "60-68"
+      quote: >-
+        let forced_pct = Decimal::from_f64_retain(forced_burn_percentage.unwrap_or(0.0) / 100.0)...;
+        let effective_usd_capacity = usd_emission_capacity * available_fraction; let forced_weight =
+        (forced_pct * Decimal::from(u16::MAX)).round().to_u16().unwrap_or(0);
+    - claim_field: "/mechanism_status_notes"
+      source_path: "config/validator.toml.example"
+      line_ref: "104-106"
+      quote: "# Forced minimum burn percentage (0.0-99.9). Reduces effective emission capacity.\n# Omit to disable.\nforced_burn_percentage = 95.0"
+    - claim_field: "/aggregation/notes"
+      source_path: "crates/basilica-validator/src/incentive/incentive_pool.rs"
+      line_ref: "187-191"
+      quote: "let scale_factor = if raw_usd_required_epoch > effective_usd_capacity { effective_usd_capacity / raw_usd_required_epoch } else { Decimal::ONE };"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "crates/basilica-validator/src/bittensor_core/weight_setter.rs"
+      line_ref: "917-924"
+      quote: "let payload = bittensor::set_weights_payload(self.config.netuid, normalized_weights.clone(), version_key); ... self.bittensor_service.submit_extrinsic(payload).await"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "config/validator.toml.example"
+      line_ref: "111-113"
+      quote: "# 360 blocks = ~1 hour on Bittensor (12 seconds per block)\nweight_set_interval_blocks = 360"
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "crates/basilica-validator/src/incentive/incentive_pool.rs"
+      line_ref: "302-323"
+      quote: "let overlap_start_ms = ...max(epoch_start...); let overlap_end_ms = ...min(epoch_end...); Decimal::from_i128_with_scale(overlap_end_ms - overlap_start_ms, 0) / Decimal::from_i128_with_scale(window_ms, 0)"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "crates/basilica-validator/src/incentive/incentive_pool.rs"
+      line_ref: "70-80"
+      quote: ".filter(|row| !row.is_slashed).filter(|row| hotkey_to_uid.contains_key(&row.hotkey)).filter(|row| config.gpu_categories.contains_key(&row.gpu_category))"
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "crates/basilica-validator/src/basilica_api/mod.rs"
+      line_ref: "405-417"
+      quote: "pub async fn slash_node(&self, node_id: &str, slash_pct: u32, ...) ... let url = format!(\"{}/v1/incentive/slash\", ...);"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "crates/basilica-validator/src/incentive/incentive_pool.rs"
+      line_ref: "124-128"
+      quote: "let target_gpus = Decimal::from(category_config.target_count) * Decimal::from(8u32); ... let per_cu_budget = row_capacity_budget / category_supply; let effective_price = min_decimal(row_price_usd, per_cu_budget);"
+    - claim_field: "/sub_competitions/stages"
+      source_path: "crates/basilica-common/src/types.rs"
+      line_ref: "114-122"
+      quote: "pub enum GpuCategory { A100, H100, H200, B200, ... }"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "crates/basilica-validator/src/bittensor_core/weight_setter.rs"
+      line_ref: "33-34"
+      quote: "/// Cutoff time in hours for filtering miners by GPU category\nconst GPU_CATEGORY_CUTOFF_HOURS: u32 = 3;"
+  unresolved:
+    - "Exact deployed forced_burn_percentage in production (95.0 is only the example config; field is None by default in code)."
+    - "Numeric gpu_categories target_count / price_per_gpu_cents / window_hours and slash_pct are fetched at runtime from the Basilica API (get_incentive_config); not present as literals in this repo."
+    - "miner_emission_share (41% / Decimal::new(41,2)) appears in weight_setter as the miner share of alpha emission, but is a hardcoded value in code, not in config."
+  extractor_notes: >-
+    SN39 Basilica is a GPU-rental subnet: weights derive from off-chain USD ledgers (CU capacity + RU
+    organic revenue) sized against alpha emission capacity, with a dynamic residual burn plus an optional
+    forced burn fraction. The incentive config (per-category targets/prices, window_hours, revenue_share_pct,
+    slash_pct) is served by the Basilica API and not hardcoded here, so those numeric constants are left
+    unresolved rather than guessed.

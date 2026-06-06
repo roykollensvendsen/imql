@@ -1,0 +1,259 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: mixed
+mechanism_status_notes: >-
+  The validator does not compute scores locally: it fetches orchestrator-computed
+  global miner scores via the orchestrator API (/validator/global_miner_scores) and
+  copies them onto the chain. The actual scoring/spot-check logic is dynamically
+  fetched as zipped "validator code" from the orchestrator at runtime, so it is not
+  present in this repo. A dynamic burn factor is applied (subnet burn_factor =
+  1 - sum(all miner weights)); when no global weights are received the validator
+  falls back to copying stake-weighted weights from the chain.
+
+subnet:
+  name: "IOTA (Incentivized Orchestrated Training Architecture)"
+  owner_repo: "macrocosm-os__iota"
+  netuid: 9
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners are nodes in a data- and pipeline-parallel LLM pretraining pipeline.
+    The orchestrator distributes model layers across heterogeneous miners and
+    streams activations between them; miners compete to process as many activations
+    as possible during the training stage, periodically upload local weights, and
+    merge activations via a variant of Butterfly All-Reduce. Validators spot-check
+    miners to ensure work was actually performed.
+  submission_format: [compute_service]
+
+scoring_signals:
+  - name: miner_raw_score
+    metric_kind: throughput
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      raw_score is documented as "sum(scores within time window)" per miner; the
+      per-activation scoring that produces these is computed by the orchestrator
+      (off-repo). total_score = raw_score * multiplier. Concrete scoring formula and
+      the multiplier value are not present in this repository.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Training data is the FineWeb dataset; pretraining loss/work is the underlying
+      training signal. Activations carry BLAKE3 hash chains and a fraction are
+      spot-checked against S3-verifiable uploads.
+    source_identifier: "HuggingFaceFW/fineweb"
+    trust_model: trusted
+    notes: >-
+      DATASET_NAME = "HuggingFaceFW/fineweb" in shared/common settings. Spot-check
+      verification logic runs on the orchestrator.
+
+aggregation:
+  method: proportional
+  composition: weighted_sum
+  normalization: l1
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "209"
+    fraction: null
+    dynamic: true
+    notes: >-
+      Subnet burn_factor is documented as "1 - sum(all miner weights)" (a dynamic
+      residual). Per-run burn_factor also exists. Burn is realized as weight assigned
+      to OWNER_UID (209). FALLBACK_BURN_FACTOR = 0.8 is used only as a fallback
+      constant; the active per-run/subnet burn fraction is computed by the
+      orchestrator and not a fixed literal in this repo.
+  notes: >-
+    Final per-miner weight is documented as run_weight * (1 - run's burn rate) *
+    run's incentive_perc; run_weight = total_score / sum of total_scores for the run.
+    The validator L1-normalizes the received scores (torch normalize p=1) before
+    process_weights_for_netuid.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    weight_setting_step fetches global miner scores from the orchestrator, sums
+    per-uid weights into a dict, L1-normalizes to a tensor, runs
+    bt.utils.weight_utils.process_weights_for_netuid, then calls
+    subtensor.set_weights. If no global weights are returned it falls back to
+    copy_weights_from_chain (stake-weighted average of on-chain validator weights).
+  on_chain_call: set_weights
+  tempo_or_interval: "1260 seconds (60*21)"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No local temporal smoothing of the final reward in this repo; the validator
+      copies orchestrator-provided scores each interval. WEIGHT_SUBMIT_INTERVAL =
+      60*21 seconds.
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Validators spot-check miners by re-validating activations/weights against
+      thresholds: COSINE_SIMILARITY_THRESHOLD = 0.9, ACTIVATION_MAGNITUDE_THRESHOLD =
+      0.8, OPTIMIZER_SIMILARITY_THRESHOLD = 0.8 (validator settings).
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Every activation carries a BLAKE3 hash chain; producer/consumer hashes are
+      submitted to the orchestrator for auditability. A configurable fraction of P2P
+      activations (SPOT_CHECK_RATE, default 0.01) are randomly uploaded to S3 for
+      verification (documented in docs/p2p_design_doc.md; constant not present in
+      this repo's Python).
+  - kind: hardware_validation
+    enforcement: rejection
+    description: >-
+      Miners answer attestation challenges (registration / weights / merged_partitions)
+      with signed/enclave attestation payloads, supporting delay-suspect runtime checks.
+
+sub_competitions:
+  structure: multi_mechanism
+  stages: []
+  count: null
+  notes: >-
+    Incentive is allocated across multiple concurrent training runs: each
+    RunIncentiveAllocation has an incentive_weight (fraction of incentive for the run)
+    and a per-run burn_factor; miner scores are weighted within their assigned run.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, status_enum]
+  status_values: []
+  reset_policy: ""
+  notes: >-
+    Per-miner MinerScore carries raw_score, total_score, run_weight, weight and an
+    assigned run_id; miners progress through status states (e.g. uploading_weights).
+    Detailed status enum and reset policy are managed orchestrator-side.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/p2p_design_doc.md"
+    - "docs/VALIDATOR_README.md"
+    - "https://arxiv.org/abs/2507.17766"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "shared/common/src/common/settings.py"
+      line_ref: "22"
+      quote: 'NETUID = int(os.getenv("NETUID", "9"))'
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "src/validator/src/validator/utils/weight_setting.py"
+      line_ref: "1-8"
+      quote: "import torch / import numpy as np / import bittensor as bt"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "19-23"
+      quote: >-
+        The orchestrator distributes model layers across heterogeneous miners and
+        streams activations between them. ... Miners compete to process as many
+        activations as possible in the training stage. ... Validators spot-check
+        miners to ensure that work was performed as required.
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "shared/common/src/common/models/api_models.py"
+      line_ref: "210-215"
+      quote: >-
+        # The raw score for the miner sum(scores within time window) / raw_score: float
+        / # Calculated by: sum(scores within time window) * multipler / total_score: float
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "shared/common/src/common/settings.py"
+      line_ref: "61"
+      quote: 'DATASET_NAME = "HuggingFaceFW/fineweb"'
+    - claim_field: "/aggregation/normalization"
+      source_path: "src/validator/src/validator/utils/weight_setting.py"
+      line_ref: "82"
+      quote: "raw_weights = torch.nn.functional.normalize(scores, p=1, dim=0)"
+    - claim_field: "/aggregation/notes"
+      source_path: "shared/common/src/common/models/api_models.py"
+      line_ref: "217-223"
+      quote: >-
+        run_weight: total_score / all total_scores for the run; weight Calculated by:
+        run_weight * (1 - run's burn rate) * run's incentive_perc
+    - claim_field: "/aggregation/burn_allocation/dynamic"
+      source_path: "shared/common/src/common/models/api_models.py"
+      line_ref: "245-247"
+      quote: >-
+        # Overall burn factor calculated for the subnet / # Calculated by: 1 - sum(all
+        miner weights) / burn_factor: float
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "shared/common/src/common/settings.py"
+      line_ref: "24"
+      quote: "OWNER_UID = 209"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "src/validator/src/validator/utils/weight_setting.py"
+      line_ref: "86"
+      quote: "burn_factor = next((weight for uid, weight in weights.items() if uid == common_settings.OWNER_UID), None)"
+    - claim_field: "/weight_setting/method"
+      source_path: "src/validator/src/validator/utils/weight_setting.py"
+      line_ref: "11-16"
+      quote: >-
+        if not (global_weights := await ValidatorAPIClient.get_global_miner_scores(...)):
+        ... weights = copy_weights_from_chain(metagraph=metagraph); await set_weights(...)
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "src/validator/src/validator/utils/weight_setting.py"
+      line_ref: "111-118"
+      quote: "success, response = subtensor.set_weights(wallet=wallet, netuid=int(common_settings.NETUID), uids=processed_weight_uids, weights=processed_weights, ...)"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "src/validator/src/validator/settings.py"
+      line_ref: "14"
+      quote: "WEIGHT_SUBMIT_INTERVAL: int = 60 * 21 if BITTENSOR else 10  # submit weight every 21 minutes"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "src/validator/src/validator/settings.py"
+      line_ref: "19-21"
+      quote: >-
+        COSINE_SIMILARITY_THRESHOLD = 0.9 / ACTIVATION_MAGNITUDE_THRESHOLD = 0.8 /
+        OPTIMIZER_SIMILARITY_THRESHOLD = 0.8
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "docs/p2p_design_doc.md"
+      line_ref: "275"
+      quote: >-
+        a configurable fraction of activations (`SPOT_CHECK_RATE = 0.01` by default)
+        are randomly selected for S3 upload
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "shared/common/src/common/models/api_models.py"
+      line_ref: "276-278"
+      quote: 'action: Literal["registration", "weights", "merged_partitions"]'
+    - claim_field: "/sub_competitions/notes"
+      source_path: "shared/common/src/common/models/api_models.py"
+      line_ref: "229-236"
+      quote: >-
+        incentive_weight: ... Weight of the run that determines percentage of
+        incentive allocated for this run ... burn_factor: ... How much of the
+        allocated incentive is burned for this run
+    - claim_field: "/per_miner_state/notes"
+      source_path: "shared/common/src/common/models/api_models.py"
+      line_ref: "200-223"
+      quote: "class MinerScore(BaseModel): ... uid ... run_id ... raw_score ... total_score ... run_weight ... weight"
+    - claim_field: "/mechanism_status_notes"
+      source_path: "src/validator/src/validator/validator.py"
+      line_ref: "105-130"
+      quote: >-
+        validator_code = await ValidatorAPIClient.get_validator_code(...) ... Extract
+        the zip file ... result = await execute_task(task, validator_code_dir=temp_dir)
+    - claim_field: "/documentation/primary_docs"
+      source_path: "README.md"
+      line_ref: "25"
+      quote: >-
+        please refer to our technical paper here ... find the report on ArXiv
+        (https://arxiv.org/abs/2507.17766)
+  unresolved:
+    - "Concrete per-activation scoring formula and the total_score multiplier (computed on the orchestrator; not in this repo)."
+    - "Active burn fraction value (dynamic, orchestrator-computed; FALLBACK_BURN_FACTOR=0.8 is only a fallback constant)."
+    - "Per-run incentive_weight / incentive_perc literal values (assigned by orchestrator at runtime)."
+    - "Full miner status enum and reset policy (orchestrator-side state machine)."
+    - "Whether SPOT_CHECK_RATE / spot-check verification is enforced in the live deployment (defined only in docs, no Python source in this repo)."

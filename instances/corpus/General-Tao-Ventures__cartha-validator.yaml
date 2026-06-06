@@ -1,0 +1,350 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: mixed
+mechanism_status_notes: >-
+  Documented scoring is fully implemented (liquidity-weighted per-position scoring), and a fixed
+  24.3902% of weight always goes to the "Cartha's Incentive Pool" hotkey. When no miners meet the
+  100,000 USDC minimum threshold, the remaining 75.6098% is routed to the subnet owner hotkey
+  explicitly for EMISSION BURNING. So the live mechanism mixes active scoring, a fixed pool
+  allocation, and a burn fallback depending on whether any miners qualify.
+
+subnet:
+  name: "Cartha"
+  owner_repo: "General-Tao-Ventures__cartha-validator"
+  netuid: 35
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners are USDC liquidity providers who lock USDC into Cartha vaults (principal miners operate
+    vaults; federated miners lock into a principal's vault). A miner's reward is driven by the sum of
+    all their active locked positions, each scored as pool_weight x amount_usdc x lock_boost, where
+    lock_boost rewards longer lock durations (capped at 365 days). The validator fetches an
+    epoch-frozen miner/position snapshot from the Cartha verifier API rather than evaluating any
+    model output.
+  submission_format: [other]
+  submission_format_other: >-
+    On-chain/off-chain USDC liquidity lock positions reported by the Cartha verifier API as
+    (hotkey, pool_id, amount, lock_days, expires_at, deregistered_at) entries.
+
+scoring_signals:
+  - name: locked_usdc_amount
+    metric_kind: volume
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      amount_usdc = original_amount_usdc frozen at epoch start (6 decimals). Mid-epoch top-ups do not
+      count until the next epoch. Multiplicative factor in position_score = pool_weight x amount_usdc
+      x lock_boost.
+  - name: lock_duration_boost
+    metric_kind: other
+    metric_kind_other: lock_duration_commitment
+    direction: higher_is_better
+    weight: null
+    normalization: min_max
+    notes: >-
+      lock_boost = min(lock_days, max_lock_days) / max_lock_days, with max_lock_days = 365. A 365-day
+      lock gives boost 1.0, 182 days gives ~0.5. Multiplicative factor in position_score.
+  - name: pool_weight
+    metric_kind: other
+    metric_kind_other: pool_multiplier
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Per-pool multiplier looked up from settings.pool_weights, defaulting to 1.0. Currently 1.0 for
+      all pools (PRE_DEX equal-weight mode); POST_DEX on-chain allocations exist in pool_weights.py
+      but are inactive.
+
+ground_truth_sources:
+  - kind: other
+    kind_other: verifier_api_epoch_frozen_snapshot
+    description: >-
+      Cartha verifier API (https://api.cartha.finance) returns the epoch-frozen verified-miner list
+      with (hotkey, slot_uid, pool_id, amount, lock_days, expires_at, deregistered_at). This is the
+      single source of truth for verified miner positions and frozen liquidity amounts.
+    source_identifier: "https://api.cartha.finance"
+    trust_model: trusted
+    notes: >-
+      Verifier handles all on-chain (EVM) validation and RPC queries. Legacy on-chain EVM event
+      replay (LockCreated/LockUpdated/LockReleased) exists but is used only with
+      --no-use-verified-amounts; verified-amounts mode is the default and required mode on mainnet.
+
+aggregation:
+  method: proportional
+  composition: multiplicative
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "subnet owner hotkey (metagraph.owner_hotkey UID)"
+    fraction: null
+    dynamic: true
+    notes: >-
+      When miner_total <= 0 (no miners with positive score, e.g. all below the 100,000 USDC minimum),
+      the remaining_weight (1.0 - trader_pool_weight = 0.756098) is allocated to the subnet owner
+      hotkey UID for EMISSION BURNING (explicitly "not rewards"). Separately, a fixed 0.243902
+      (24.3902%) is always allocated to the trader rewards pool hotkey
+      (5EPdZMZyByHbweNBWRFwYqL5czKGbdeVKTpHqVizp4UyUq94); this is a fixed reserved allocation, not a
+      burn.
+  notes: >-
+    Per-miner raw score = sum over active positions of (pool_weight x amount_tokens x boost).
+    Negative scores clamped to 0; miners with score 0 (incl. below-threshold) excluded. Miner weights
+    = (score_i / sum_score) x remaining_weight where remaining_weight = 1.0 - 0.243902. Trader pool
+    gets fixed 0.243902. Weights verified to sum to 1.0.
+
+weight_setting:
+  cadence: weekly
+  method: >-
+    Weights computed once per weekly epoch (Friday 00:00 UTC -> Thursday 23:59 UTC), cached for the
+    week, and republished every Bittensor epoch (tempo blocks) via subtensor.set_weights with a
+    cooldown check (blocks_since_update vs tempo/epoch_length_blocks). version_key = __spec_version__
+    (1000*major + 10*minor + 1*patch). Daily expiry checks re-filter expired pools/deregistered
+    hotkeys and force re-publication.
+  on_chain_call: set_weights
+  tempo_or_interval: "360 blocks (default_tempo / epoch_length_blocks fallback; tempo from metagraph when available)"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA/SMA smoothing of the final reward. Weekly cached weights are republished unchanged each
+      tempo; scores are recomputed fresh per weekly epoch from the frozen snapshot.
+
+anti_gaming:
+  - kind: risk_limit
+    enforcement: rejection
+    description: >-
+      Minimum total assets threshold: principal miners with total locked USDC < 100,000
+      (min_total_assets_usdc) score 0.0 regardless of lock duration, so all federated miners in that
+      vault also earn nothing for the epoch. Prevents dust positions from gaming weight distribution.
+  - kind: other
+    kind_other: epoch_freeze_snapshot
+    enforcement: barrier
+    description: >-
+      Epoch freezing: scoring uses the verifier's epoch-frozen original_amount_usdc snapshot taken at
+      Friday 00:00 UTC. Mid-epoch top-ups (pending_amount) do not count until the next epoch,
+      preventing mid-epoch manipulation.
+  - kind: liveness_check
+    enforcement: rejection
+    description: >-
+      Expired pool filtering (pools with expires_at < now excluded) and deregistered-hotkey filtering
+      (all positions for deregistered hotkeys scored 0). Deregistered hotkeys fetched from the
+      verifier; expiry/deregistration parsed per position in process_entries.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      Validator whitelist: only whitelisted validator hotkeys may query verified miners from the
+      verifier; non-whitelisted validators are rejected. Validators must also meet the on-chain
+      minimum version requirement (weight_versions hyperparameter).
+
+sub_competitions:
+  structure: multi_asset
+  stages: []
+  count: 6
+  notes: >-
+    Six market pools across three parent vaults (Cryptos: BTC/USD, ETH/USD; Currencies: EUR/USD,
+    GBP/USD, JPY/USD; Commodities: GOLD/USD). Currently all pools have equal weight 1.0 (PRE_DEX);
+    pool choice does not differentiate scores until POST_DEX on-chain allocations activate. Treated as
+    multi_asset rather than separate competitions because all pools feed one summed per-miner score.
+
+per_miner_state:
+  tracked: false
+  state_kinds: []
+  status_values: []
+  reset_policy: >-
+    Scores are recomputed fresh each weekly epoch from the frozen verifier snapshot; no persistent
+    per-miner ledger or reputation carried across epochs in this validator.
+  notes: >-
+    Weights are cached for the duration of a weekly epoch and recomputed at the next epoch boundary,
+    but this is a per-epoch cache, not persistent per-miner state.
+
+documentation:
+  status: docs_and_code
+  source_version: "1.1.4"
+  primary_docs:
+    - "README.md"
+    - "docs/ARCHITECTURE.md"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "cartha_validator/config.py"
+      line_ref: "58"
+      quote: "netuid: int = 35"
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "cartha_validator/scoring.py"
+      line_ref: "1-9"
+      quote: "\"\"\"Scoring helpers.\"\"\" ... import bittensor as bt"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "9"
+      quote: "Score miners based on locked USDC amounts, lock duration, pool weights, and expired pool filtering"
+      confidence: high
+    - claim_field: "/scoring_signals/0/name"
+      source_path: "docs/ARCHITECTURE.md"
+      line_ref: "42-49"
+      quote: "position_score = pool_weight × amount_usdc × lock_boost ... amount_usdc — the USDC amount frozen at epoch start (original_amount_usdc)"
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "cartha_validator/scoring.py"
+      line_ref: "37"
+      quote: "boost = min(lock_days, settings.max_lock_days) / settings.max_lock_days"
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "cartha_validator/config.py"
+      line_ref: "70"
+      quote: "max_lock_days: int = 365"
+      confidence: high
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "cartha_validator/scoring.py"
+      line_ref: "27"
+      quote: "weight = settings.pool_weights.get(actual_pool_id, 1.0)"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "cartha_validator/scoring.py"
+      line_ref: "29-31"
+      quote: "decimals = max(0, settings.token_decimals) ... amount_tokens = float(amount_raw) / scale"
+      confidence: high
+    - claim_field: "/aggregation/composition"
+      source_path: "cartha_validator/scoring.py"
+      line_ref: "38"
+      quote: "raw_contrib = weight * amount_tokens * boost"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "cartha_validator/scoring.py"
+      line_ref: "45"
+      quote: "raw_total += raw_contrib"
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "cartha_validator/weights.py"
+      line_ref: "113-116"
+      quote: "weights = { uid: (score / miner_total) * remaining_weight for uid, score in positive_miner_scores.items() }"
+      confidence: high
+    - claim_field: "/aggregation/normalization"
+      source_path: "cartha_validator/weights.py"
+      line_ref: "30-36"
+      quote: "Normalize scores into weights that sum to 1, with optional fixed trader pool allocation."
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/enabled"
+      source_path: "cartha_validator/weights.py"
+      line_ref: "89-102"
+      quote: "🔥 [EMISSION BURN] ... allocating ... ({remaining_weight * 100:.4f}%) to subnet owner hotkey (UID {owner_hotkey_uid}) for BURNING EMISSIONS. ... weights[owner_hotkey_uid] = remaining_weight"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/dynamic"
+      source_path: "cartha_validator/weights.py"
+      line_ref: "59-80"
+      quote: "remaining_weight = 1.0 - trader_pool_weight ... if miner_total <= 0:"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "cartha_validator/config.py"
+      line_ref: "31-33"
+      quote: "TRADER_REWARDS_POOL_HOTKEY = \"5EPdZMZyByHbweNBWRFwYqL5czKGbdeVKTpHqVizp4UyUq94\" ... TRADER_REWARDS_POOL_WEIGHT = 0.243902  # 24.3902% fixed allocation"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "cartha_validator/weights.py"
+      line_ref: "59"
+      quote: "remaining_weight = 1.0 - trader_pool_weight"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "docs/ARCHITECTURE.md"
+      line_ref: "98"
+      quote: "remaining_weight = 1.0 - trader_pool_weight          # = 0.756098"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "cartha_validator/weights.py"
+      line_ref: "174-182"
+      quote: "result[0] = subtensor.set_weights( wallet=wallet, netuid=netuid, uids=uids, weights=weights, version_key=version_key, ...)"
+      confidence: high
+    - claim_field: "/weight_setting/cadence"
+      source_path: "README.md"
+      line_ref: "50"
+      quote: "The validator operates on a weekly epoch cycle (Friday 00:00 UTC → Thursday 23:59 UTC)"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "cartha_validator/weights.py"
+      line_ref: "342-361"
+      quote: "if blocks_since_update < epoch_length: ... Skipping set_weights ... epoch_length = getattr(metagraph, \"tempo\", None) or settings.epoch_length_blocks"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "cartha_validator/config.py"
+      line_ref: "88-91"
+      quote: "epoch_length_blocks: int = Field( default=360, description=\"Fallback epoch length in blocks for cooldown checks (default: 360 blocks)\")"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "cartha_validator/weights.py"
+      line_ref: "363-364"
+      quote: "# Use spec_version as the version_key ... version_key = __spec_version__"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "cartha_validator/processor.py"
+      line_ref: "451-458"
+      quote: "min_threshold = settings.min_total_assets_usdc; if total_amount_usdc < min_threshold: ... score = 0.0"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "cartha_validator/config.py"
+      line_ref: "138-141"
+      quote: "min_total_assets_usdc: float = Field( default=100_000.0, description=\"Minimum total assets in USDC required for a miner to receive weight. Miners below this threshold score 0.\")"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "docs/ARCHITECTURE.md"
+      line_ref: "287"
+      quote: "Epoch Freezing: Uses verifier's epoch-frozen snapshots (original_amount_usdc) to prevent mid-epoch manipulation"
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "cartha_validator/processor.py"
+      line_ref: "179-188"
+      quote: "if hotkey and hotkey in deregistered_hotkeys: ... scoring all positions as 0 ... scores[uid] = 0.0"
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "cartha_validator/processor.py"
+      line_ref: "257-267"
+      quote: "if expires_at < current_time: # Pool has expired - skip this pool (don't add to combined_positions)"
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "README.md"
+      line_ref: "122"
+      quote: "Validator Whitelist - Only whitelisted validators can query verified miners."
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "cartha_validator/config.py"
+      line_ref: "17"
+      quote: "DEFAULT_VERIFIER_URL = \"https://api.cartha.finance\""
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/notes"
+      source_path: "docs/ARCHITECTURE.md"
+      line_ref: "214"
+      quote: "verified amounts mode is the default and required mode on mainnet (netuid 35)"
+      confidence: high
+    - claim_field: "/sub_competitions/notes"
+      source_path: "docs/ARCHITECTURE.md"
+      line_ref: "199-204"
+      quote: "BTC/USD, ETH/USD | Cryptos parent vault ... EUR/USD, GBP/USD, JPY/USD | Currencies ... GOLD/USD | Commodities parent vault"
+      confidence: high
+    - claim_field: "/sub_competitions/notes"
+      source_path: "docs/ARCHITECTURE.md"
+      line_ref: "191-193"
+      quote: "Current: PRE_DEX Equal Weights ... All 6 market pools receive identical weight (1.0)."
+      confidence: high
+    - claim_field: "/documentation/source_version"
+      source_path: "cartha_validator/__init__.py"
+      line_ref: "4"
+      quote: "__version__ = \"1.1.4\""
+      confidence: high
+  unresolved:
+    - >-
+      /weight_setting/smoothing: No EMA/SMA smoothing of final weights found; weights are simply
+      cached weekly and republished unchanged. Recorded as kind:none rather than a numeric smoother.
+    - >-
+      /aggregation/burn_allocation/fraction: Burn fraction is dynamic (1.0 - trader_pool_weight =
+      0.756098 residual when no miners qualify), not a hardcoded burn constant, so fraction left null
+      and dynamic:true set.

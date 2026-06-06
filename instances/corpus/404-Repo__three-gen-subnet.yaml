@@ -1,0 +1,264 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: full_burn
+mechanism_status_notes: >-
+  The validator's run loop (validator.py `run`) calls `self._burn_all()` on every metagraph sync,
+  which sets weight 1.0 to a single hard-coded UID (199). The fully-documented scoring/weight
+  distribution in `_set_weights()` (rank sigmoid over per-miner glicko*observation rewards) exists
+  in the code but is NOT invoked anywhere in the active loop. So the live mechanism is a full burn
+  to UID 199 while the documented scoring pipeline is dormant.
+
+subnet:
+  name: "404-GEN (three-gen-subnet)"
+  owner_repo: "404-Repo__three-gen-subnet"
+  netuid: 17
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners generate 3D assets (3D Gaussian Splatting / .spz files) from a text prompt or a prompt
+    image. The validator renders the submitted asset to images and scores them on image quality
+    (DINOv2 classifier), prompt-image alignment (CLIP), and inter-view similarity (SSIM/LPIPS),
+    combining them into a fidelity score; only assets above a quality threshold are accepted.
+  submission_format: [content_link]
+  submission_format_other: ""
+
+scoring_signals:
+  - name: image_quality_assessment
+    metric_kind: vlm_judgment
+    direction: higher_is_better
+    weight: 0.75
+    normalization: none
+    notes: >-
+      DINOv2-small based quality classifier (`QualityClassifierModel`), raw sigmoid output averaged
+      over rendered views. Weighted 0.75 in `_compute_final_score`.
+  - name: prompt_alignment
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 0.2
+    normalization: none
+    notes: >-
+      CLIP text-vs-image (or image-vs-image) cosine alignment of rendered views to the prompt.
+      Weighted 0.2 in final score; acts as a gate (final_score forced to 0.0 if alignment < 0.3).
+  - name: ssim_similarity
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 0.025
+    normalization: none
+    notes: >-
+      Structural similarity (SSIM) across rendered views, passed through sigmoid(slope=35, shift=0.83),
+      weighted 0.025 in final score.
+  - name: lpips_similarity
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 0.025
+    normalization: none
+    notes: >-
+      1 - LPIPS perceptual distance across views, multiplied by sigmoid(slope=30, shift=0.7) of itself,
+      weighted 0.025 in final score.
+
+ground_truth_sources:
+  - kind: reference_model
+    description: >-
+      No labelled ground truth; correctness is judged by pretrained reference models (DINOv2 quality
+      classifier from HF repo 404-Gen/validation, CLIP alignment model) plus SSIM/LPIPS metrics.
+    source_identifier: "404-Gen/validation (quality_scorer.safetensors); open_clip CLIP; torchmetrics SSIM/LPIPS"
+    trust_model: oracle
+    notes: "Prompts come from synthetic datasets and organic public-API traffic."
+  - kind: organic_traffic
+    description: "Prompts sourced from organic traffic via public API in addition to synthetic prompt datasets."
+    source_identifier: "validator public API / prompt collector"
+    trust_model: unknown
+    notes: ""
+
+aggregation:
+  method: weighted_average
+  composition: gated
+  normalization: none
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "199"
+    fraction: 1.0
+    dynamic: false
+    notes: >-
+      `_burn_all` sets uids=[199], weights=[1.0]. All emission is directed to a single UID; the
+      documented score-based distribution (`_set_weights`) is not called.
+  notes: >-
+    Documented (dormant) per-asset aggregation: final_score = 0.75*iqa + 0.2*alignment +
+    0.025*sigmoid(ssim,35,0.83) + 0.025*lpips*sigmoid(lpips,30,0.7), gated to 0 if alignment < 0.3.
+    Per-miner reward (dormant) = number of in-window observations * glicko rating; weights then
+    distributed by a rank sigmoid (strip_sigmoid) over qualifying miners.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    Live: `_burn_all` calls subtensor.set_weights(uids=[199], weights=[1.0]) once per metagraph sync,
+    rate-limited by weight_set_interval blocks. Documented/dormant `_set_weights` would build rewards
+    from per-miner fidelity-EMA * glicko rating, mask rewards > 5.0, apply a rank sigmoid and
+    normalize to sum-to-one before emit.
+  on_chain_call: set_weights
+  tempo_or_interval: "100 blocks (weight_set_interval)"
+  smoothing:
+    kind: ema
+    alpha: 0.05
+    window: null
+    notes: >-
+      Per-miner fidelity_score is an EMA: fidelity = (1-alpha)*prev + alpha*new, with
+      moving_average_alpha default 0.05. Feeds the dormant reward calculation, not the live burn.
+
+anti_gaming:
+  - kind: rate_limit
+    enforcement: penalty
+    enforcement_other: ""
+    description: >-
+      Per-miner task cooldown (default 300s) and throttle period; repeated cooldown violations beyond
+      a threshold add extra cooldown penalty (cooldown_violation_penalty).
+  - kind: deterministic_check
+    enforcement: rejection
+    enforcement_other: ""
+    description: >-
+      Submissions below quality_threshold (default 0.6) are rejected via _process_task_failure and
+      incur a cooldown_penalty (default 600s); empty results rejected.
+  - kind: liveness_check
+    enforcement: rejection
+    enforcement_other: ""
+    description: >-
+      Miner must sign each submission (license-consent declaration + submit_time + prompt + hotkeys);
+      invalid signatures are rejected. Resubmissions arriving too quickly are dropped to prevent
+      double rewards.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: >-
+    A duels/glicko rating subsystem exists (DuelRatings, glicko2) feeding the dormant reward, but
+    duels are disabled by default (--duels.disabled default True).
+
+per_miner_state:
+  tracked: true
+  state_kinds: [performance_ledger, reputation, cooldown, cumulative_score]
+  status_values: []
+  reset_policy: >-
+    Per-miner observations expire after a 4h window; fidelity EMA resets to 1.0 and cooldowns clear
+    when a new hotkey replaces the previous one at a UID (reset_data).
+  notes: >-
+    MinerData tracks fidelity_score (EMA), a 4h deque of task-finish observations, cooldown_until,
+    cooldown_violations. Glicko2 ratings (rating/rd/vol) tracked per UID in DuelRatings.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs: ["README.md", "docs/running_validator.md"]
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract / Claude Opus 4.8"
+  confidence_overall: high
+  evidence:
+    - claim_field: /mechanism_status
+      source_path: neurons/validator/validator.py
+      line_ref: "459-463"
+      quote: "if self.metagraph_sync.should_sync(): ... self.metagraph_sync.sync(self.miners, self.ratings) self._burn_all()"
+      confidence: high
+    - claim_field: /aggregation/burn_allocation/address_or_uid
+      source_path: neurons/validator/validator.py
+      line_ref: "489-496"
+      quote: "result, msg = self.subtensor.set_weights( wallet=self.wallet, netuid=self.config.netuid, uids=[199,], weights=[1.0], ...)"
+      confidence: high
+    - claim_field: /subnet/netuid
+      source_path: README.md
+      line_ref: "3-3"
+      quote: "# 404—GEN | SUBNET 17"
+      confidence: high
+    - claim_field: /task/summary
+      source_path: validation/engine/validation_engine.py
+      line_ref: "71-106"
+      quote: "def validate_image_to_gs(...) / def validate_text_to_gs(...): Function that validates the input 3D data generated using provided prompt"
+      confidence: high
+    - claim_field: /scoring_signals/0/weight
+      source_path: validation/engine/validation_engine.py
+      line_ref: "54-59"
+      quote: "0.75 * validation_results.iqa + 0.2 * validation_results.alignment + 0.025 * sigmoid(torch.tensor(validation_results.ssim), 35, 0.83) + 0.025 * validation_results.lpips * sigmoid(torch.tensor(validation_results.lpips), 30, 0.7)"
+      confidence: high
+    - claim_field: /scoring_signals/1/notes
+      source_path: validation/engine/validation_engine.py
+      line_ref: "51-52"
+      quote: "if validation_results.alignment < 0.3: final_score = 0.0"
+      confidence: high
+    - claim_field: /scoring_signals/0/metric_kind
+      source_path: validation/engine/models/quality_model.py
+      line_ref: "16-18"
+      quote: "A quality classifier model that uses DinoNet for image quality assessment."
+      confidence: high
+    - claim_field: /ground_truth_sources/0/source_identifier
+      source_path: validation/engine/metrics/quality_scorer.py
+      line_ref: "20-20"
+      quote: 'self, repo_id: str = "404-Gen/validation", quality_scorer_model: str = "quality_scorer.safetensors"'
+      confidence: high
+    - claim_field: /weight_setting/smoothing/alpha
+      source_path: neurons/validator/config.py
+      line_ref: "127-132"
+      quote: '--validation.moving_average_alpha ... help="Alpha parameter for fidelity factor update." default=0.05'
+      confidence: high
+    - claim_field: /weight_setting/smoothing/notes
+      source_path: neurons/validator/miner_data.py
+      line_ref: "73-74"
+      quote: "self.fidelity_score = prev_fidelity_score * (1 - moving_average_alpha) + moving_average_alpha * fidelity_score"
+      confidence: high
+    - claim_field: /aggregation/notes
+      source_path: neurons/validator/miner_data.py
+      line_ref: "105-111"
+      quote: "Calculate the reward for the miner. It is calculated by multiplying fidelity score by the number of not-outdated observations. ... return len(self.observations) * rating"
+      confidence: high
+    - claim_field: /weight_setting/method
+      source_path: neurons/validator/validator.py
+      line_ref: "520-535"
+      quote: "def strip_sigmoid(x, n): return np.array(0.003 + 0.005 / (1 + np.exp(-0.06 * (x - n / 2))) ...) reward_mask = rewards > 5.0 ... processed_weights = final_probs / np.sum(final_probs)"
+      confidence: high
+    - claim_field: /weight_setting/tempo_or_interval
+      source_path: neurons/validator/config.py
+      line_ref: "45-50"
+      quote: '--neuron.weight_set_interval ... help="Weight set interval, measured in blocks." default=100,  # 100 * 12 seconds ~ 20 minutes'
+      confidence: high
+    - claim_field: /anti_gaming/1/description
+      source_path: neurons/validator/config.py
+      line_ref: "109-114"
+      quote: '--generation.quality_threshold ... help="Minimum score required for task results to be accepted by validator." default=0.6'
+      confidence: high
+    - claim_field: /anti_gaming/0/description
+      source_path: neurons/validator/config.py
+      line_ref: "84-108"
+      quote: '--generation.task_cooldown ... default=300 ... --generation.cooldown_violation_penalty ... default=10 ... --generation.cooldown_penalty ... default=600'
+      confidence: high
+    - claim_field: /anti_gaming/2/description
+      source_path: neurons/validator/validator.py
+      line_ref: "593-603"
+      quote: "message = (f\"{MINER_LICENSE_CONSENT_DECLARATION}\"...) ... if not keypair.verify(message, encoded_signature): ... submitted results with invalid signature"
+      confidence: high
+    - claim_field: /per_miner_state/notes
+      source_path: neurons/validator/miner_data.py
+      line_ref: "21-42"
+      quote: "observations: deque[int] ... Observation window ... last 4 hours. fidelity_score: float = 1.0 ... Exponential moving average (EMA) of the fidelity score."
+      confidence: high
+    - claim_field: /sub_competitions/notes
+      source_path: neurons/validator/config.py
+      line_ref: "306-311"
+      quote: '--duels.disabled ... help="Disable the duels rating system" default=True'
+      confidence: high
+    - claim_field: /ground_truth_sources/1/kind
+      source_path: README.md
+      line_ref: "48-51"
+      quote: "Our subnet supports prompt generation from two sources: - Organic Traffic via Public API. - Prompt Datasets"
+      confidence: high
+  unresolved:
+    - "Submission format: miners return generated 3D Gaussian Splatting data (.spz) inline in the SubmitResults synapse; classified as content_link as the closest enum but it is inline serialized data, not a link."
+    - "Exact rank-sigmoid weight distribution (strip_sigmoid) and reward>5.0 mask are in dead code (_set_weights not called); their live effect is null under the full burn."
+  extractor_notes: >-
+    Implementation language is Python. The dominant live behaviour is a full burn to UID 199. The
+    rich documented scoring pipeline (image-quality + CLIP alignment + SSIM/LPIPS, fidelity EMA,
+    glicko duel ratings, rank-sigmoid weights) is present but dormant in the active run loop.

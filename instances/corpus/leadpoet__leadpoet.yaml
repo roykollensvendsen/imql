@@ -1,0 +1,320 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  The live validator weight-setting in neurons/validator.py distributes a fixed
+  20% sourcing pool to miners by rolling-30-epoch rep score, a 5% qualification
+  champion share, a 71% fulfillment pool, and a 4% fulfillment leaderboard bonus,
+  with the remainder (unused sourcing under threshold, deregistered-miner shares,
+  unused fulfillment pool, unfilled leaderboard slots) burned to UID 0. With
+  fulfillment disabled (ENABLE_FULFILLMENT defaults to "false") the 71% + 4%
+  fulfillment-flavored allocation burns, so a large fraction of emission routes to
+  burn by default. A separate older reward.py module (45/45/10 K/S/C split) is
+  marked DEPRECATED in-code and is not the active path.
+
+subnet:
+  name: "Leadpoet"
+  owner_repo: "leadpoet__leadpoet"
+  netuid: 71
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners source high-quality sales prospect ("lead") records and submit them via
+    a TEE gateway; multiple validators run automated quality/reputation checks and
+    consensus-approve leads. Miners are rewarded proportional to the sum of the
+    reputation scores (0-48) of their approved leads over a rolling 30-epoch window.
+    Two additional sub-mechanisms exist: qualification models (AI models that curate
+    leads to ICPs, with a single "champion" earning a share) and fulfillment
+    (commit-reveal competition on client ICP requests, winning leads earn 0.1% of
+    emission for 30 epochs plus an all-time top-3 leaderboard bonus).
+  submission_format: [content_link, model_weights, commitment_hash]
+
+scoring_signals:
+  - name: lead_reputation_score
+    metric_kind: composite
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      Per-approved-lead reputation score, max 48 = Wayback(6) + SEC(12) +
+      WHOIS/DNSBL(10) + GDELT(10) + Companies House(10). Per-miner sourcing score is
+      the sum of effective_rep_score over approved leads; effective_rep_score =
+      base_rep_score + icp_adjustment, floored at 0.
+  - name: lead_validity_consensus
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Gating signal: only consensus-approved (VALID) leads contribute rep score.
+      Denied leads contribute 0 (early return in accumulate_miner_weights).
+  - name: qualification_model_score
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Qualification models scored against 100 ICPs; a single champion earns the 5%
+      champion share. A challenger must beat the champion by
+      CHAMPION_DETHRONING_THRESHOLD_POINTS (default 10 absolute points) to dethrone.
+  - name: fulfillment_intent_score
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Fulfillment leads scored through a 3-tier pipeline (ICP fit, data accuracy,
+      intent scoring with LLM relevance + time decay; min threshold 5.0). Top
+      num_leads winners per request each earn 0.1% of emission for 30 epochs.
+
+ground_truth_sources:
+  - kind: real_engagement
+    description: >-
+      Automated reputation/validity checks against external public services
+      (Wayback Machine, SEC EDGAR, GDELT, WHOIS/DNSBL, UK Companies House) plus
+      email (TrueList) and LinkedIn/company verification (ScrapingDog).
+    source_identifier: "validator_models/automated_checks.py; validator_models/checks_repscore.py"
+    trust_model: oracle
+    notes: "Multi-validator consensus weighted by stake and validator trust approves leads."
+  - kind: commit_reveal
+    description: >-
+      Fulfillment requests use a commit (hashed lead data) then reveal flow; hashes
+      must match the revealed lead JSON or the submission is rejected.
+    source_identifier: "Leadpoet/utils/hashing.py; POST /fulfillment/commit, /fulfillment/reveal"
+    trust_model: adversarial
+    notes: "Commit-reveal prevents miners copying each other's leads within an epoch."
+
+aggregation:
+  method: weighted_average
+  composition: gated
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "UID 0 (hotkey 5FNVgRnrxMibhcBGEAaajGrYjsaCn441a5HuGUBUNnxEBLo9)"
+    fraction: null
+    dynamic: true
+    notes: >-
+      total_burn_share = BASE_BURN_SHARE(0.0) + unused_sourcing_share +
+      dereg_burn + unused_fulfillment + leaderboard_burn. With fulfillment disabled
+      (default), the 71% fulfillment pool and 4% leaderboard bonus burn; sourcing
+      share below SOURCING_FLOOR_THRESHOLD (125000 leads/30 epochs) is proportionally
+      burned. Burn is assigned to UID 0.
+  notes: >-
+    Final per-UID weights: UID0=total_burn_share; champion=0.05 (if active and
+    registered); fulfillment miners=per-miner pct from 71% pool; leaderboard top-3
+    = 2.5%/1.0%/0.5%; sourcing miners split effective_sourcing_to_miners by
+    rep_score / registered_rolling_total. Weights must sum to 1.0.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    At block >=345 of each 360-block epoch the primary validator builds per-UID
+    weights from rolling-30-epoch rep scores plus champion/fulfillment/leaderboard
+    shares and burn, then calls subtensor.set_weights. Epoch length 360 blocks
+    (~72 min). MAX_SOURCING_SHARE = 1 - champion(0.05 if active) - 0.71 - 0.04.
+  on_chain_call: set_weights
+  tempo_or_interval: "360 blocks (submission at block 345)"
+  smoothing:
+    kind: sma
+    alpha: null
+    window: 30
+    notes: >-
+      Rewards weighted by a rolling 30-epoch (ROLLING_WINDOW=30) history of summed
+      rep scores and approved lead counts; not an EMA but a fixed-window rolling sum
+      over epochs [current-30, current-1].
+
+anti_gaming:
+  - kind: commit_reveal
+    enforcement: rejection
+    description: >-
+      Fulfillment uses commit (hashed leads) then reveal; revealed leads must match
+      committed hashes or are rejected. Consensus validation uses commit/reveal so
+      validators cannot copy each other's decisions.
+  - kind: deduplication
+    enforcement: rejection
+    description: >-
+      Fulfillment leads deduplicated by company before winner selection; sourcing
+      rejects duplicate submissions (counted against daily rejection limit).
+  - kind: rate_limit
+    enforcement: barrier
+    description: >-
+      Server-side daily limits: 1000 submission attempts/day and 200 rejections/day
+      (reset 12:00 AM UTC); exceeding the rejection limit blocks further submissions.
+  - kind: code_inspection
+    enforcement: elimination
+    description: >-
+      Qualification models scanned on upload and at runtime in a sandbox
+      (ALLOWED_LIBRARIES allowlist); blocked patterns (eval/exec/__import__,
+      stripping negative LLM assessments, fabricating dates/evidence, bypassing LLM
+      verification) lead to model ban and hotkey blacklist; banned hotkeys' sourcing
+      scores set to -100000.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      Lead approval consensus is weighted by validator stake and validator trust
+      (v_trust); majority agreement required.
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Automated checks (email format/deliverability, name-in-email match, domain
+      age >=7 days, MX/SPF/DMARC, DNSBL, source URL domain matches claimed source)
+      reject low-quality or fabricated leads before scoring.
+
+sub_competitions:
+  structure: multi_mechanism
+  stages:
+    - name: "sourcing"
+      role: "main"
+      advancement_rule: "rep-score weighted; 20% sourcing pool split by rolling-30-epoch rep score"
+    - name: "qualification"
+      role: "other"
+      advancement_rule: "single champion model earns 5% share; challenger must beat by 10 points to dethrone"
+    - name: "fulfillment"
+      role: "other"
+      advancement_rule: "commit-reveal ICP requests; top num_leads winners earn 0.1%/30 epochs from 71% pool + 4% top-3 leaderboard bonus"
+  count: 3
+  notes: >-
+    Three parallel incentive mechanisms share the emission via the fixed split in
+    the weight-setting code. Fulfillment leaderboard awards all-time top-3 winners
+    2.5%/1.0%/0.5%.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, reputation, status_enum]
+  status_values: ["approve", "deny", "banned", "champion"]
+  reset_policy: >-
+    Per-epoch miner_scores tracked in validator_weights file; weight calculation
+    uses a rolling 30-epoch sum from validator_weights_history (pruned, default keep
+    50 epochs). Banned hotkeys penalized to -100000.
+  notes: >-
+    miner_scores = sum of effective_rep_score per miner per epoch;
+    approved_lead_count tracked per epoch for threshold scaling. Champion status
+    persisted in a local qualification champion JSON.
+
+documentation:
+  status: docs_and_code
+  source_version: "Subnet 71 (netuid 71)"
+  primary_docs: ["README.md"]
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "leadpoet_canonical/constants.py"
+      line_ref: "46"
+      quote: "DEFAULT_NETUID = 71"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "neurons/validator.py"
+      line_ref: "3614-3620"
+      quote: "result = self.subtensor.set_weights(\n                netuid=self.config.netuid,\n                wallet=self.wallet,\n                uids=uids,\n                weights=normalized_weights,"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "203-210"
+      quote: "Miners earn rewards based on the quality and validity of leads they submit, with rewards weighted entirely by a rolling 30-epoch history ... Formula: miner_reward ∝ Σ(rep_score for all approved leads from that miner)"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "validator_models/automated_checks.py"
+      line_ref: "54"
+      quote: "MAX_REP_SCORE = 48  # Wayback (6) + SEC (12) + WHOIS/DNSBL (10) + GDELT (10) + Companies House (10) = 48"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "2958-2961"
+      quote: "# NEW FORMAT: Use addition with floor at 0 (for normal leads)\n                icp_adjustment = int(is_icp_multiplier)\n                effective_rep_score = max(0, rep_score + icp_adjustment)"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "2943-2944"
+      quote: "if decision != \"approve\":\n                return"
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "README.md"
+      line_ref: "614-616"
+      quote: "Tier 3 (Intent Scoring) ... Minimum threshold: 5.0 ... Each winning lead earns 0.1% of emission for 30 epochs."
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "neurons/validator.py"
+      line_ref: "3114-3115"
+      quote: "UID_ZERO = 0  # LeadPoet revenue UID\n            EXPECTED_UID_ZERO_HOTKEY = \"5FNVgRnrxMibhcBGEAaajGrYjsaCn441a5HuGUBUNnxEBLo9\""
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "3476-3482"
+      quote: "total_burn_share = (\n                BASE_BURN_SHARE\n                + unused_sourcing_share\n                + dereg_burn\n                + unused_fulfillment\n                + leaderboard_burn\n            )"
+    - claim_field: "/aggregation/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "3556-3558"
+      quote: "miner_proportion = rep_score / registered_rolling_total\n                    miner_weight = effective_sourcing_to_miners * miner_proportion"
+    - claim_field: "/aggregation/composition"
+      source_path: "neurons/validator.py"
+      line_ref: "3121-3138"
+      quote: "BASE_BURN_SHARE = 0.0 ... CHAMPION_SHARE = 0.05 ... FULFILLMENT_POOL_SHARE = 0.71 ... LEADERBOARD_BONUS_SHARE = 0.04 ... Both active → 20% sourcing, 5% champion, 71% fulfillment pool, 4% leaderboard bonus"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "leadpoet_canonical/constants.py"
+      line_ref: "20-24"
+      quote: "EPOCH_LENGTH = 360\n...\nWEIGHT_SUBMISSION_BLOCK = 345"
+    - claim_field: "/weight_setting/method"
+      source_path: "neurons/validator.py"
+      line_ref: "3079-3080"
+      quote: "if blocks_into_epoch < 345:\n                return False"
+    - claim_field: "/weight_setting/method"
+      source_path: "neurons/validator.py"
+      line_ref: "3288-3293"
+      quote: "MAX_SOURCING_SHARE = (\n                1.0\n                - (CHAMPION_SHARE if champion_active else 0.0)\n                - FULFILLMENT_POOL_SHARE\n                - LEADERBOARD_BONUS_SHARE\n            )"
+    - claim_field: "/weight_setting/smoothing/window"
+      source_path: "neurons/validator.py"
+      line_ref: "3156"
+      quote: "ROLLING_WINDOW = 30"
+    - claim_field: "/weight_setting/smoothing/window"
+      source_path: "neurons/validator.py"
+      line_ref: "3980-3981"
+      quote: "start_epoch = current_epoch - window\n            end_epoch = current_epoch - 1"
+    - claim_field: "/mechanism_status"
+      source_path: "neurons/validator.py"
+      line_ref: "3282"
+      quote: "ff_enabled = os.environ.get(\"ENABLE_FULFILLMENT\", \"false\").lower() == \"true\""
+    - claim_field: "/mechanism_status_notes"
+      source_path: "neurons/validator.py"
+      line_ref: "3284-3286"
+      quote: "when\n            # fulfillment is disabled, the full 4% burns rather than rerouting\n            # to sourcing, mirroring how the 71% fulfillment pool itself burns."
+    - claim_field: "/aggregation/burn_allocation/dynamic"
+      source_path: "neurons/validator.py"
+      line_ref: "3362-3369"
+      quote: "if rolling_lead_count >= SOURCING_FLOOR_THRESHOLD:\n                effective_sourcing_share = MAX_SOURCING_SHARE\n            else:\n                effective_sourcing_share = (rolling_lead_count / SOURCING_FLOOR_THRESHOLD) * MAX_SOURCING_SHARE"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "README.md"
+      line_ref: "607-609"
+      quote: "Miners source leads matching the ICP, then submit hashed lead data (commit). This prevents other miners from copying your leads. ... Hashes must match or the submission is rejected."
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "README.md"
+      line_ref: "237-239"
+      quote: "Daily Limits (Reset at 12:00 AM UTC): 1000 submission attempts per day ... 200 rejections per day"
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "neurons/validator.py"
+      line_ref: "3164-3169"
+      quote: "BANNED HOTKEY SOURCING PENALTY\n            # Fetch banned hotkeys from Supabase and set their scores to -100,000"
+    - claim_field: "/anti_gaming/4/description"
+      source_path: "README.md"
+      line_ref: "858"
+      quote: "Consensus requirement: Majority validator agreement, weighted by stake and v_trust, is required for lead approval"
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "gateway/qualification/config.py"
+      line_ref: "18"
+      quote: "_DEFAULT_CHAMPION_DETHRONING_THRESHOLD_POINTS = 10  # Must score 10+ absolute points higher to dethrone"
+    - claim_field: "/sub_competitions/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "3132-3135"
+      quote: "LEADERBOARD_BONUS_SHARE = 0.04   # 4% total: 2.5 + 1.0 + 0.5\n            LEADERBOARD_TOP1_PCT     = 0.025 # 2.5% to all-time #1\n            LEADERBOARD_TOP2_PCT     = 0.010 # 1.0% to all-time #2\n            LEADERBOARD_TOP3_PCT     = 0.005 # 0.5% to all-time #3"
+    - claim_field: "/per_miner_state/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "2891-2892"
+      quote: "- miner_scores: Sum of effective_rep_score per miner (for weight distribution)"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "3149"
+      quote: "SOURCING_FLOOR_THRESHOLD = 125_000  # EASILY ADJUSTABLE"
+  unresolved:
+    - "Sourcing-floor proportional burn fraction is dynamic (rolling_lead_count/125000); no single fixed burn fraction exists."
+    - "Exact qualification model scoring formula (how the 100-ICP score is computed) not read in detail; only the champion share (5%) and dethroning threshold (10 pts) captured."
+    - "Per-validator emission (calculate_emissions in reward.py, reputation>15 gated) appears to belong to the deprecated reward.py path, not the active validator.py weight-setting; not modeled."

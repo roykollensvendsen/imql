@@ -1,0 +1,470 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Validators evaluate committed models with a multi-axis composite evaluator,
+  select a single "king" by composite worst/weighted score, and set one-hot
+  on-chain weights (king = 1.0, all others = 0.0). No burn UID or emission-burn
+  fraction is present in the scoring/weight-setting code.
+
+subnet:
+  name: "Quasar"
+  owner_repo: "SILX-LABS__QUASAR-SUBNET"
+  netuid: 24
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners train Quasar-architecture small language models (3B total / ~1B
+    active MoE), publish them as public Hugging Face repos, and commit the
+    pinned model revision on-chain. Validators verify each commitment, score
+    it on a multi-axis composite evaluator (teacher-distillation KL/on-policy
+    RKL plus capability/benchmark/generation-discipline axes), and set one-hot
+    weights to the current king (strongest valid model).
+  submission_format: [model_weights, commitment_hash]
+
+scoring_signals:
+  - name: on_policy_rkl
+    metric_kind: similarity
+    direction: lower_is_better
+    weight: 0.35
+    normalization: none
+    notes: >-
+      On-policy reverse KL on the student's own rollouts vs the teacher;
+      primary distillation axis. Normalized to [0,1] higher-is-better against
+      the king's RKL inside the composite. Weight 0.35 in AXIS_WEIGHTS.
+  - name: kl
+    metric_kind: similarity
+    direction: lower_is_better
+    weight: 0.15
+    normalization: none
+    notes: >-
+      Off-policy forward-KL vs the teacher's top-128 support; retained as a
+      distillation/transparency axis. Weight 0.15. Normalized king_kl/kl.
+  - name: capability
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.25
+    normalization: none
+    notes: >-
+      Verifiable-rewards pass fraction blended absolute + teacher-relative.
+      Weight 0.25.
+  - name: length
+    metric_kind: other
+    metric_kind_other: length_penalty
+    direction: higher_is_better
+    weight: 0.10
+    normalization: none
+    notes: "Length-discipline penalty axis in [0,1]. Weight 0.10."
+  - name: degeneracy
+    metric_kind: other
+    metric_kind_other: generation_discipline
+    direction: higher_is_better
+    weight: 0.15
+    normalization: none
+    notes: >-
+      Think-probe terminates + non-degenerate + self-bleu combined score.
+      Weight 0.15.
+  - name: judge_probe
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: 0.15
+    normalization: none
+    notes: >-
+      Teacher-as-judge rubric (1-5) on rotated prompts, normalized to [0,1].
+      JUDGE_AXIS_WEIGHT default 0.15.
+  - name: chat_turns_probe
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: 0.08
+    normalization: none
+    notes: "Teacher-graded 3-turn dialogue coherence. CHAT_TURNS_AXIS_WEIGHT default 0.08."
+  - name: math_bench
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.14
+    normalization: none
+    notes: "Procedural math pass_frac. BENCH_MATH_WEIGHT default 0.14."
+  - name: code_bench
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.14
+    normalization: none
+    notes: "Procedural code pass_frac. BENCH_CODE_WEIGHT default 0.14."
+  - name: reasoning_bench
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.10
+    normalization: none
+    notes: "BENCH_REASONING_WEIGHT default 0.10."
+  - name: ifeval_bench
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.07
+    normalization: none
+    notes: "BENCH_IFEVAL_WEIGHT default 0.07."
+  - name: aime_bench
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.10
+    normalization: none
+    notes: "Olympiad math pass_frac. BENCH_AIME_WEIGHT default 0.10."
+  - name: mbpp_bench
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.08
+    normalization: none
+    notes: "BENCH_MBPP_WEIGHT default 0.08."
+  - name: tool_use_bench
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.06
+    normalization: none
+    notes: "Agentic Python tool use. BENCH_TOOL_USE_WEIGHT default 0.06."
+  - name: long_context_bench
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.04
+    normalization: none
+    notes: "Block-seeded procedural needle-in-haystack. BENCH_LC_WEIGHT default 0.04."
+  - name: robustness_bench
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.07
+    normalization: none
+    notes: "Math items under paraphrase+noise wrappers. BENCH_ROBUSTNESS_WEIGHT default 0.07."
+  - name: reasoning_density
+    metric_kind: other
+    metric_kind_other: efficiency
+    direction: higher_is_better
+    weight: 0.05
+    normalization: none
+    notes: >-
+      pass_frac x length_bonus per bench, penalizing over-thinking on trivia.
+      REASONING_DENSITY_WEIGHT default 0.05.
+  - name: knowledge_bench
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.0
+    normalization: none
+    notes: >-
+      Muted to weight 0 in v28 (eval-setup-fragile MC); kept for telemetry.
+      BENCH_KNOWLEDGE_WEIGHT default 0.0.
+
+ground_truth_sources:
+  - kind: reference_model
+    description: >-
+      Distillation teacher (Qwen3.5-4B). Teacher continuations / logprobs and
+      teacher-as-judge rubric scores are the reference for the KL, on-policy
+      RKL, judge, and chat-turn axes.
+    source_identifier: "Qwen/Qwen3.5-4B"
+    trust_model: trusted
+    notes: >-
+      Teacher generation cached once per epoch; KL computed over shared top-128
+      support. A teacher-sanity gate drops axes where the teacher itself scores
+      below TEACHER_SANITY_FLOOR.
+  - kind: deterministic_dataset
+    description: >-
+      Per-round benchmark items generated procedurally from the chain block
+      seed (math/aime/code/mbpp/tool_use/long_context/robustness), graded
+      against fresh (params, gold) pairs that exist nowhere on disk.
+    source_identifier: "pod_eval_vllm.py procedural generators (block_seed)"
+    trust_model: trusted
+    notes: >-
+      Public datasets (GSM8K/MATH-500/HumanEval/MBPP/BBH/MMLU-Pro/IFEval/AIME/
+      ARC/TruthfulQA) named in code history but validator grades against
+      block-seeded procedural items, not the static pools (v27+).
+  - kind: reference_model
+    description: >-
+      Undistilled base/reference model at REFERENCE_UID = -1, run through the
+      same bench probes; axes where the reference scores pass_frac == 0 are
+      treated as eval-setup-broken and dropped from the worst() gate.
+    source_identifier: "Qwen/Qwen3.5-4B (UID -1)"
+    trust_model: trusted
+    notes: "REFERENCE_BROKEN_BENCH_FLOOR = 0.0."
+
+aggregation:
+  method: winner_take_all
+  composition: hybrid
+  normalization: none
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: "No burn UID/fraction in scoring or weight-setting code."
+  notes: >-
+    Per student, the composite emits two aggregations: worst = min over present
+    (non-broken) axes (anti-gaming rule); weighted = convex combination with
+    AXIS_WEIGHTS over present axes (total renormalized over surviving axes).
+    King selection sorts candidates by (worst desc, weighted desc, prior_bonus,
+    uid). The selected king receives ALL validator weight (one-hot), so the
+    network-level allocation is winner_take_all even though per-miner scoring is
+    a hybrid worst/weighted composite. A challenger must beat the prior king by
+    SINGLE_EVAL_DETHRONE_MARGIN (default 0.03) on worst or weighted to dethrone.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    build_winner_take_all_weights(n_uids, winner_uid): a one-hot vector with
+    weights[winner_uid] = 1.0, everyone else 0.0, then subtensor.set_weights.
+  on_chain_call: set_weights
+  tempo_or_interval: "360 blocks"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA: "No EMA - models are permanently committed, scores converge
+      naturally" (eval/scoring.py module docstring).
+
+anti_gaming:
+  - kind: deduplication
+    enforcement: rejection
+    description: >-
+      Weight-hash and content-hash duplicate detection (check_duplicate_hash,
+      check_duplicate_content_hash, compute_content_hash). The earlier on-chain
+      commitment owns an identical weight hash; re-sharded copies caught via
+      content hashing. Activation-fingerprint cosine similarity >=
+      ACTIVATION_COPY_THRESHOLD flags COPY.
+  - kind: code_inspection
+    enforcement: rejection
+    description: >-
+      Prechecks before GPU eval: architecture compliance, tokenizer
+      compatibility, public-revision integrity, safetensors availability, and
+      rejection of quantized formats (GPTQ/AWQ/GGUF/FP8). DQ reasons: COPY /
+      REMOVED / INVALID / EVAL_ERROR, scoped per hotkey+commit_block.
+  - kind: data_augmentation
+    enforcement: barrier
+    description: >-
+      Prompt sets are block-seeded and not known before evaluation; bench items
+      are generated fresh per round from block_seed and benchmark prompts are
+      paraphrased / MC-options shuffled per round so canonical-wording lookups
+      cannot saturate an axis.
+  - kind: deterministic_check
+    enforcement: barrier
+    description: >-
+      Multi-axis composite worst-case rule: a model that games one axis (e.g.
+      low KL) but fails a core capability/generation-discipline axis is floored
+      by min over axes, preventing single-axis Goodhart wins. Pareto majority
+      dominance gate also blocks a challenger that wins KL but loses a majority
+      of axes (PARETO_DOMINANCE_GATE).
+  - kind: commit_reveal
+    enforcement: barrier
+    description: >-
+      Private prompt holdout (axis A7) uses a sha256 commit-reveal: the commit
+      root is published before eval and per-prompt hashes after, so auditors can
+      verify the validator did not retro-fit the holdout to results.
+
+sub_competitions:
+  structure: single
+  stages: []
+  count: null
+  notes: >-
+    Single king-of-the-hill competition; one king holds all weight. KL is one
+    axis, not a separate sub-competition.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [status_enum, cumulative_score, reputation]
+  status_values: [king, queued, tested, stale, untested, disqualified]
+  reset_policy: >-
+    Disqualification is per hotkey + commit_block; a miner re-registering on a
+    new hotkey (or committing a new model) gets a fresh chance. Failure counts
+    reset on a successful eval (reset_failures); a UID with >= max_failures
+    (default 3) is treated as stale.
+  notes: >-
+    Persisted to disk: scores.json (KL), composite_scores.json,
+    cumulative_scores.json, disqualified.json, failures.json, score_history.
+    King regression streak tracked per king_uid.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/QUASAR_SYSTEM_REPORT.md"
+    - "miner/README.md"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "config/quasar.json"
+      line_ref: "2"
+      quote: '"netuid": 24,'
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "miner/constants.py"
+      line_ref: "100-103"
+      quote: 'MIN_BITTENSOR_VERSION = "9.5.0"\nDEFAULT_NETUID = 24'
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "5-9"
+      quote: >-
+        Miners train Quasar-compatible language models, publish them as public
+        Hugging Face repositories, and commit the pinned model revision
+        on-chain. Validators verify each valid commitment, score it with the
+        production composite evaluator, and set weights to the current king.
+    - claim_field: "/aggregation/method"
+      source_path: "eval/scoring.py"
+      line_ref: "1-7"
+      quote: >-
+        Winner-take-all: best KL miner gets ALL the weight (1.0), everyone else
+        gets 0.0
+    - claim_field: "/weight_setting/method"
+      source_path: "eval/chain.py"
+      line_ref: "89-93"
+      quote: >-
+        def build_winner_take_all_weights(n_uids, winner_uid): weights =
+        [0.0] * max(n_uids, winner_uid + 1); weights[winner_uid] = 1.0
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "eval/chain.py"
+      line_ref: "133-138"
+      quote: >-
+        result = subtensor.set_weights(wallet=wallet, netuid=netuid,
+        uids=uids, weights=weights, wait_for_inclusion=True,
+        wait_for_finalization=True,)
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "api/config.py"
+      line_ref: "27"
+      quote: "EPOCH_BLOCKS = 360"
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "eval/scoring.py"
+      line_ref: "5"
+      quote: "No EMA — models are permanently committed, scores converge naturally"
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "scripts/validator/composite.py"
+      line_ref: "93-103"
+      quote: >-
+        AXIS_WEIGHTS = { "on_policy_rkl": 0.35, "kl": 0.15, "capability": 0.25,
+        "length": 0.10, "degeneracy": 0.15, }
+    - claim_field: "/scoring_signals/5/weight"
+      source_path: "scripts/validator/composite.py"
+      line_ref: "110"
+      quote: 'JUDGE_AXIS_WEIGHT = float(os.environ.get("JUDGE_AXIS_WEIGHT", "0.15"))'
+    - claim_field: "/scoring_signals/6/weight"
+      source_path: "scripts/validator/composite.py"
+      line_ref: "271"
+      quote: 'CHAT_TURNS_AXIS_WEIGHT = float(os.environ.get("CHAT_TURNS_AXIS_WEIGHT", "0.08"))'
+    - claim_field: "/scoring_signals/7/weight"
+      source_path: "scripts/validator/composite.py"
+      line_ref: "135-140"
+      quote: >-
+        "math_bench": float(os.environ.get("BENCH_MATH_WEIGHT", "0.14")),
+        "code_bench": float(os.environ.get("BENCH_CODE_WEIGHT", "0.14")),
+        "reasoning_bench": ...("0.10"), "knowledge_bench": ...("0.0"),
+        "ifeval_bench": ...("0.07")
+    - claim_field: "/scoring_signals/11/weight"
+      source_path: "scripts/validator/composite.py"
+      line_ref: "192-207"
+      quote: >-
+        "aime_bench": ...("0.10"), "mbpp_bench": ...("0.08"),
+        "tool_use_bench": ...("0.06"), "long_context_bench": ...("0.04"),
+        "robustness_bench": ...("0.07")
+    - claim_field: "/scoring_signals/16/weight"
+      source_path: "scripts/validator/composite.py"
+      line_ref: "256"
+      quote: 'REASONING_DENSITY_WEIGHT = float(os.environ.get("REASONING_DENSITY_WEIGHT", "0.05"))'
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "scripts/validator/composite.py"
+      line_ref: "682-711"
+      quote: >-
+        On-policy RKL is the primary distillation signal ... We normalize
+        against the king's RKL: a student tied with the king scores 1.0
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "eval/kl_divergence.py"
+      line_ref: "3-6"
+      quote: >-
+        Prod path (sparse): teacher runs on vLLM with --max-logprobs 128, so
+        compute_kl_from_sparse renormalizes both teacher and student over the
+        shared top-128 support.
+    - claim_field: "/aggregation/notes"
+      source_path: "scripts/validator/composite.py"
+      line_ref: "937-942"
+      quote: >-
+        worst = min(ranked.values()); total_w = sum(...); weighted =
+        sum(effective_weights[k] * v for k, v in weighted_axes.items()) / total_w
+    - claim_field: "/aggregation/notes"
+      source_path: "scripts/validator/single_eval.py"
+      line_ref: "43-44"
+      quote: >-
+        SINGLE_EVAL_DETHRONE_MARGIN = float(os.environ.get(
+        "SINGLE_EVAL_DETHRONE_MARGIN", "0.03"))
+    - claim_field: "/aggregation/method"
+      source_path: "scripts/validator/service.py"
+      line_ref: "190-192"
+      quote: >-
+        _safe_set_weights(... build_winner_take_all_weights(n_uids, king_uid),
+        king_uid, state_dir,)
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "README.md"
+      line_ref: "17"
+      quote: "Launch teacher: [`Qwen/Qwen3.5-4B`]"
+    - claim_field: "/ground_truth_sources/1/description"
+      source_path: "scripts/validator/composite.py"
+      line_ref: "318"
+      quote: >-
+        v27 generates the bench items per round directly from block_seed via 6
+        new procedural generators ... The (parameters, gold) pair is fresh every
+        round and exists nowhere on disk — there is no dataset to memorise.
+    - claim_field: "/ground_truth_sources/2/source_identifier"
+      source_path: "scripts/validator/composite.py"
+      line_ref: "759"
+      quote: "The reference model (``REFERENCE_UID = -1``) is the configured ... base model"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "README.md"
+      line_ref: "196-199"
+      quote: >-
+        Weight hashes and content hashes are tracked for duplicate detection.
+        Earlier on-chain commitment owns an identical weight hash. Re-sharded
+        copies are checked through content hashing.
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "README.md"
+      line_ref: "181-189"
+      quote: >-
+        COPY: identical or near-identical weights ... REMOVED ... INVALID:
+        incompatible architecture, tokenizer, custom code, parameter cap,
+        format, or quantization. EVAL_ERROR: repeated non-transient failure
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "README.md"
+      line_ref: "201"
+      quote: "Prompt sets are block-seeded and not known before evaluation."
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "scripts/validator/composite.py"
+      line_ref: "861-863"
+      quote: >-
+        worst (Coste 2024, Pan 2025 min-form): the minimum of present axes.
+        This is the anti-gaming rule — you win only if all axes are competitive.
+    - claim_field: "/anti_gaming/4/description"
+      source_path: "api/routes/evaluation.py"
+      line_ref: "646-654"
+      quote: >-
+        Returns the validator's commit-reveal record for the private prompt
+        holdout (axis A7) ... sha256 commit root over the private subset ...
+        Published BEFORE eval runs.
+    - claim_field: "/per_miner_state/status_values"
+      source_path: "api/routes/evaluation.py"
+      line_ref: "562-564"
+      quote: "Statuses: king, queued, tested, stale, untested, disqualified."
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "eval/scoring.py"
+      line_ref: "82-95"
+      quote: >-
+        DQ is per-commitment: if a miner re-registers with a new commit, the old
+        DQ doesn't carry over (they get a fresh chance). Key format:
+        "hotkey:block" when commit_block is provided.
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "eval/scoring.py"
+      line_ref: "182-184"
+      quote: >-
+        def is_stale(uid, failures, max_failures=3): return
+        failures.get(str(uid), 0) >= max_failures
+  unresolved:
+    - "Exact teacher-relative normalization constants per bench axis beyond the cited AXIS_WEIGHTS/BENCH weights."
+    - "Whether any validator-side emission burn occurs at the chain/subnet-owner level (not visible in repo code; weight-setting is pure one-hot to king)."

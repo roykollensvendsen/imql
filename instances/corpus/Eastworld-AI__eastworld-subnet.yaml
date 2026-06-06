@@ -1,0 +1,245 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: unknown
+mechanism_status_notes: >-
+  The miner-scoring logic is NOT in this repo. The validator fetches per-UID scores from the
+  Eastworld server's Leaderboard API (GET /sn/score) and emits them as L1-normalized chain
+  weights. The actual reward computation (how an agent's actions in the virtual world become a
+  numeric score) lives server-side and is not visible in the source tree, so the operative
+  on-chain reality (active distribution vs. burn) cannot be confirmed from code. The on-chain
+  weight-setting path itself is a straightforward proportional distribution of server scores,
+  not a burn, but the upstream scoring is opaque.
+
+subnet:
+  name: "Eastworld"
+  owner_repo: "Eastworld-AI__eastworld-subnet"
+  netuid: 94
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners run embodied AI agents in Eastworld's virtual world (SN94). Each validator step the
+    validator fetches an observation/context for one miner UID from the Eastworld server,
+    builds a Synapse (sensor + LLM-summarized perception + inventory + action space), queries
+    the miner's axon for an action (a function call), and submits that action back to the
+    Eastworld server. Agents must perceive, remember, ground goals, plan, and reflect to
+    complete quests (e.g. collecting ship components, delivering batteries, multi-NPC missions).
+    Scoring is computed server-side; the validator only retrieves cumulative per-miner scores
+    from the Eastworld Leaderboard API and turns them into chain weights.
+  submission_format: [api_response]
+
+scoring_signals:
+  - name: server_score
+    metric_kind: reward
+    direction: higher_is_better
+    weight: 1.0
+    normalization: other
+    normalization_other: l1
+    notes: >-
+      A single opaque per-UID score returned by the Eastworld server (GET /sn/score, field
+      "score" per UID). The validator does not compute it; it only fetches it. The validator
+      L1-normalizes the score vector before setting weights. The Synapse context also carries a
+      per-agent "reward: float" field (EWContext.reward) passed through to the miner, described
+      as the "Agent's weighted score", but this is informational input to the miner, not a
+      validator-side scoring computation.
+
+ground_truth_sources:
+  - kind: other
+    kind_other: server_side_leaderboard_api
+    description: >-
+      The Eastworld server (mainnet.eastworld.ai / testnet.eastworld.ai) is the sole authority
+      for miner scores. It runs the virtual-world simulation, evaluates agent actions, and
+      exposes cumulative scores via the /sn/score Leaderboard endpoint. Authentication is HTTP
+      Basic Auth signed with the validator hotkey.
+    source_identifier: "https://mainnet.eastworld.ai (/sn/score)"
+    trust_model: oracle
+    notes: >-
+      Trusted centralized oracle; the scoring algorithm is not in the open-source repo.
+
+aggregation:
+  method: proportional
+  composition: weighted_sum
+  normalization: l1
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: >-
+      No burn logic in the repo. Weights are the server scores divided by their L1 norm.
+  notes: >-
+    raw_weights = self.scores / ||self.scores||_1, where self.scores is the per-UID score vector
+    fetched from the Eastworld server (scattered by UID). If the L1 norm is 0 or NaN it is
+    replaced by 1 to avoid division by zero. The result is passed to
+    process_weights_for_netuid / convert_weights_and_uids_for_emit (standard bittensor subnet
+    limit processing) and emitted via subtensor.set_weights. There is a single signal, so
+    aggregation is just proportional normalization of one server score per miner.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Every epoch (block - last_set_weights_block > neuron.epoch_length) the validator L1-normalizes
+    the fetched server-score vector and calls subtensor.set_weights with version_key=spec_version.
+    Scores themselves are refreshed each concurrent_forward via fetch_and_update_scores (GET
+    /sn/score), which OVERWRITES self.scores wholesale (no smoothing applied in the live path).
+  on_chain_call: set_weights
+  tempo_or_interval: "neuron.epoch_length blocks (default 100)"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      The BaseValidatorNeuron.update_scores method implements an EMA with
+      neuron.moving_average_alpha (default 0.1), but the Eastworld Validator does NOT call it.
+      Instead fetch_and_update_scores replaces self.scores directly with the server-provided
+      scores each step, so no EMA smoothing is applied to the final weights in this subnet.
+
+anti_gaming:
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      Before a miner UID returned by the server is queried, check_uid_availability validates the
+      UID against the metagraph and the vpermit_tao_limit (neuron.vpermit_tao_limit, default
+      409600), and the validator verifies the API-provided hotkey matches the metagraph hotkey
+      for that UID before sending the synapse.
+  - kind: liveness_check
+    enforcement: penalty
+    description: >-
+      On test/local networks, miners that fail or return no action are added to inactive_miners
+      and skipped for an increasing interval (interval += 180s up to 1800s). This is a
+      validator-local skip, not a chain-weight penalty, and is gated to test/local networks only.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: >-
+    Multiple quest scenarios exist in the virtual world (docs/agent_quest.md) but they are not
+    modeled as separate on-chain competitions; all resolve into a single server score per miner.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score]
+  status_values: []
+  reset_policy: >-
+    self.scores for a UID is zeroed when its metagraph hotkey changes (resync_metagraph). The
+    server-side cumulative score reset policy is not visible in the repo.
+  notes: >-
+    The validator keeps self.scores (a per-UID vector) but overwrites it each step from the
+    server. It is the server that maintains cumulative per-miner achievement; the docs describe
+    a "longitudinal, multidimensional" evaluation and "cumulative miner achievements".
+
+documentation:
+  status: docs_and_code
+  source_version: "0.1.0"
+  primary_docs:
+    - "README.md"
+    - "docs/guide_for_validator.md"
+    - "docs/agent_quest.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "docs/guide_for_validator.md"
+      line_ref: "83-84"
+      quote: "python neurons/validator.py --netuid 94 --wallet.name YOUR_WALLET_NAME ... --eastworld.endpoint_url=\"https://mainnet.eastworld.ai\""
+    - claim_field: "/subnet/name"
+      source_path: "README.md"
+      line_ref: "3-4"
+      quote: "# **Eastworld**  Next-Generation Gyms for Embodied AI Agents, on Bittensor (SN94)"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "neurons/validator.py"
+      line_ref: "27-31"
+      quote: "import bittensor as bt\nimport httpx\nimport numpy as np"
+    - claim_field: "/task/submission_format"
+      source_path: "neurons/validator.py"
+      line_ref: "151-157"
+      quote: "responses = await self.dendrite(axons=[axon], synapse=synapse, deserialize=False, timeout=timeout,)"
+    - claim_field: "/scoring_signals/0/name"
+      source_path: "neurons/validator.py"
+      line_ref: "383-385"
+      quote: "data = r.json()\n        uids = [d[\"uid\"] for d in data[\"scores\"]]\n        new_scores = [d[\"score\"] for d in data[\"scores\"]]"
+    - claim_field: "/scoring_signals/0/normalization"
+      source_path: "eastworld/base/validator.py"
+      line_ref: "238-245"
+      quote: "norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True)\n        ... raw_weights = self.scores / norm"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "eastworld/validator/models.py"
+      line_ref: "54-55"
+      quote: "# Agent's weighted score.\n    reward: float = 0.0"
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "neurons/validator.py"
+      line_ref: "371-381"
+      quote: "\"\"\"Fetch latest miners' scores from Eastworld server\"\"\"\n        endpoint_url = urlparse(self.config.eastworld.endpoint_url)\n        endpoint = f\"{endpoint_url.scheme}://{endpoint_url.netloc}/sn/score\""
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "eastworld/utils/config.py"
+      line_ref: "256-261"
+      quote: "--eastworld.endpoint_url ... help=\"Url endpoint of Eastworld server to fetch tasks and submit actions.\""
+    - claim_field: "/ground_truth_sources/0/notes"
+      source_path: "docs/guide_for_validator.md"
+      line_ref: "23"
+      quote: "The weighting and incentive mechanism derives from aggregated performance metrics accessed via Eastworld's Leaderboard API, ensuring dynamic score calibration based on cumulative miner achievements."
+    - claim_field: "/aggregation/notes"
+      source_path: "eastworld/base/validator.py"
+      line_ref: "238-259"
+      quote: "norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True)\n        if np.any(norm == 0) or np.isnan(norm).any():\n            norm = np.ones_like(norm)\n        raw_weights = self.scores / norm ... process_weights_for_netuid(...)"
+    - claim_field: "/aggregation/normalization"
+      source_path: "eastworld/base/validator.py"
+      line_ref: "238"
+      quote: "norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True)"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "eastworld/base/validator.py"
+      line_ref: "274-282"
+      quote: "result, msg = self.subtensor.set_weights(wallet=self.wallet, netuid=self.config.netuid, uids=uint_uids, weights=uint_weights, ... version_key=self.spec_version,)"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "eastworld/base/neuron.py"
+      line_ref: "161-163"
+      quote: "return (self.block - self.last_set_weights_block) > self.config.neuron.epoch_length and self.neuron_type != \"MinerNeuron\""
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "eastworld/utils/config.py"
+      line_ref: "85-90"
+      quote: "--neuron.epoch_length ... help=\"The default epoch length (how often we set weights, measured in 12 second blocks).\", default=100,"
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "418-423"
+      quote: "scattered_scores: np.ndarray = np.zeros_like(self.scores)\n        scattered_scores[uids_array] = new_scores\n        ... self.scores: np.ndarray = scattered_scores"
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "eastworld/base/validator.py"
+      line_ref: "367-368"
+      quote: "alpha: float = self.config.neuron.moving_average_alpha\n        self.scores: np.ndarray = alpha * scattered_rewards + (1 - alpha) * self.scores"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "neurons/validator.py"
+      line_ref: "96-111"
+      quote: "uid_is_available = check_uid_availability(self.metagraph, res.uid, self.config.neuron.vpermit_tao_limit) ... if res.key != self.metagraph.axons[res.uid].hotkey:"
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "neurons/validator.py"
+      line_ref: "164-174"
+      quote: "if synapse.is_failure or not len(synapse.action): ... interval = min(interval + 180, 1800)\n                    self.inactive_miners[res.uid] = (notuntil + interval, interval)"
+    - claim_field: "/per_miner_state/state_kinds"
+      source_path: "eastworld/base/validator.py"
+      line_ref: "307-310"
+      quote: "for uid, hotkey in enumerate(self.hotkeys):\n                if hotkey != self.metagraph.hotkeys[uid]:\n                    self.scores[uid] = 0  # hotkey has been replaced"
+    - claim_field: "/per_miner_state/notes"
+      source_path: "docs/guide_for_validator.md"
+      line_ref: "13"
+      quote: "Eastworld's miner evaluation framework constitutes a longitudinal, multidimensional process requiring strategic oversight."
+    - claim_field: "/documentation/source_version"
+      source_path: "eastworld/__init__.py"
+      line_ref: "19"
+      quote: "__version__ = \"0.1.0\""
+    - claim_field: "/mechanism_status"
+      source_path: "neurons/validator.py"
+      line_ref: "371-385"
+      quote: "\"\"\"Fetch latest miners' scores from Eastworld server\"\"\" ... uids = [d[\"uid\"] for d in data[\"scores\"]]; new_scores = [d[\"score\"] for d in data[\"scores\"]]"
+  unresolved:
+    - "Server-side scoring algorithm: how agent actions in the virtual world become the numeric per-UID 'score' returned by /sn/score is not in this repo."
+    - "Whether the operative on-chain emission is active distribution or burn cannot be confirmed (depends on server-supplied scores, which we cannot observe)."
+    - "Server-side cumulative-score reset / decay policy is not visible."
+    - "Any temperature, decay, or floor constants used in the server's scoring are not in source."

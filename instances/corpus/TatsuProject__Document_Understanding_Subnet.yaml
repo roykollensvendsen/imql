@@ -1,0 +1,295 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: mixed
+mechanism_status_notes: >-
+  set_weights() always allocates a fixed 1.0 weight to UID 0 (subnet/burn) plus a
+  remaining_weight = 1.0 - subnet_weight which evaluates to 0.0 (subnet_weight is
+  hard-coded 1.0). With remaining_weight == 0.0, the documented proportional /
+  winner-take-all miner reward distribution produces zero effective miner weight, so
+  in practice all emission is routed to UID 0. The scoring pipeline (reward.py) is
+  fully implemented and runs, but its output cannot reach miners given the constants.
+
+subnet:
+  name: "Docs-Insights (Document Understanding Subnet)"
+  owner_repo: "TatsuProject__Document_Understanding_Subnet"
+  netuid: 84
+  implementation_lang: python
+
+task:
+  summary: >-
+    The validator synthetically generates a document image and its ground-truth label
+    for one of five rotating sub-task types (checkbox, doc-class, doc-parse, encircle,
+    highlight) and sends the image to miners. Miners run vision models, OCR engines and
+    LLMs/VLMs to detect checkboxes+associated text, classify the document, parse it into
+    NER sections, or detect highlighted/encircled text, returning structured output. The
+    validator rewards each miner by comparing its output to ground truth via bounding-box
+    overlap and text-similarity scoring.
+  submission_format: [api_response]
+  submission_format_other: ""
+
+scoring_signals:
+  - name: bounding_box_overlap
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 0.5
+    normalization: none
+    notes: >-
+      calculate_overlap() computes intersection / max(area1,area2) polygon overlap,
+      returns 0 if detected box >= 2x ground-truth area. Thresholded into a box score
+      (CBS/HBS/EBS): >0.95 -> 1.0, >0.7 -> graded, else 0. For checkbox/highlight/encircle
+      the box score is averaged 50/50 with text similarity.
+  - name: text_similarity
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 0.5
+    normalization: none
+    notes: >-
+      hard_match_strings / hard_match_strings_2 do strict per-character match percentage
+      with a 75.0 minimum-match floor; result graded ts>=100 -> 1.0, ts>=30 -> (ts-30)/70,
+      else 0. Averaged 50/50 with box score for checkbox/highlight/encircle; used directly
+      (/100) for doc-class.
+  - name: time_score
+    metric_kind: latency
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      time_score_calculation() is computed (1 - linear ramp between 0.01*Tn and 10*Tn,
+      Tn=2.0) but final_score_calculation (0.3*time + 0.7*accuracy) is commented out in
+      every reward function; the returned score is accuracy only, so time has zero effect.
+  - name: doc_parse_composite
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      For the doc-parse sub-task only, the final per-miner reward is
+      0.3*classification_score + 0.7*parsing_score, where parsing_score is a recursive
+      per-section average (doc_parse_reward / compute_section_score) of basic-unit rewards
+      (50/50 text match + bbox overlap).
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Synthetic document images with paired ground-truth JSON generated on the fly by the
+      validator (checkbox, document, encircled-text, highlighted-text generators). A task
+      type is chosen by cycling through available_tasks; an image+label is produced and the
+      label is withheld from the miner.
+    source_identifier: "template/validator/data_generation/*"
+    trust_model: trusted
+    notes: >-
+      available_tasks = ["checkbox","doc-class","doc-parse","encircle","highlight"] cycled
+      via itertools.cycle in forward.py.
+
+aggregation:
+  method: winner_take_all
+  composition: hybrid
+  normalization: none
+  normalization_other: ""
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: 1.0
+    dynamic: false
+    notes: >-
+      subnet_weight is hard-coded to 1.0 and always assigned to UID 0; remaining_weight =
+      1.0 - subnet_weight = 0.0 is what the miner-distribution branches divide up. In the
+      winner-take-all fallback, if no miner's score gap exceeds the threshold (or the top
+      miner has been top for max_consecutive_rewards tempos) the remaining_weight is also
+      added back to UID 0.
+  notes: >-
+    Per-miner scores feed two branches: (1) if >=2 miners have score >= 0.8, distribute
+    remaining_weight proportionally to their scores; (2) otherwise winner-take-all to the
+    top miner only if its score gap over second >= top_reward_threshold (0.05). UID 0
+    always receives the fixed subnet_weight first.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    set_weights(): allocate fixed subnet_weight=1.0 to UID 0, then distribute
+    remaining_weight (=0.0) either proportionally among miners scoring >=0.8 (if 2+) or
+    winner-take-all to the top miner when its score gap over the second-best exceeds
+    top_reward_threshold=0.05; a top miner that stays top for max_consecutive_rewards=18
+    tempos has the remaining weight redirected to UID 0. Weights then pass through
+    process_weights_for_netuid and convert_weights_and_uids_for_emit before emit.
+  on_chain_call: set_weights
+  tempo_or_interval: "100"
+  smoothing:
+    kind: ema
+    alpha: 0.1
+    window: null
+    notes: >-
+      update_scores() applies self.scores = alpha*scattered_rewards + (1-alpha)*self.scores
+      with alpha = config.neuron.moving_average_alpha (default 0.1).
+
+anti_gaming:
+  - kind: rate_limit
+    enforcement: barrier
+    description: >-
+      vpermit_tao_limit default 12000 limits TAO allowed to query a validator with a
+      vpermit; sample_size default 50 miners queried per step.
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      Strictness rules in scoring: calculate_overlap returns 0 if detected box >= 2x
+      ground-truth area; accuracy functions return 0 if abs(len(detected)-len(gt)) > 1;
+      doc-parse returns 0 if NER section keys differ from ground truth.
+  - kind: rate_limit
+    enforcement: barrier
+    description: >-
+      top_miner_history caps consecutive rewards: a miner that is top for
+      max_consecutive_rewards=18 consecutive tempos has its remaining emission redirected
+      to the subnet (UID 0) and its history reset, preventing indefinite single-miner capture.
+
+sub_competitions:
+  structure: per_task_type
+  stages: []
+  count: 5
+  notes: >-
+    Five sub-task types rotate via itertools.cycle: checkbox, doc-class, doc-parse,
+    encircle, highlight. Each has its own reward function but all feed the same single
+    moving-average score array and one set_weights pipeline.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, status_enum]
+  status_values: []
+  reset_policy: >-
+    Moving-average scores reset to 0 for a UID whose hotkey is replaced (resync_metagraph).
+    top_miner_history is truncated to the last max_consecutive_rewards+1 entries and cleared
+    when a miner hits the 18-tempo cap.
+  notes: >-
+    self.scores holds the EMA score per UID; self.top_miner_history is a list tracking which
+    UID was top in recent tempos to enforce the consecutive-reward cap.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/Technical_Guide.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "98-100"
+      quote: "python3 neurons/validator.py --netuid 84 --subtensor.network finney"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "template/validator/reward.py"
+      line_ref: "19-23"
+      quote: "import numpy as np\nfrom typing import List\nimport bittensor as bt\nfrom template.protocol import ProfileSynapse"
+    - claim_field: "/task/summary"
+      source_path: "template/validator/forward.py"
+      line_ref: "47-95"
+      quote: "available_tasks = [\"checkbox\", \"doc-class\", \"doc-parse\", \"encircle\", \"highlight\"]"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "template/validator/reward.py"
+      line_ref: "151-168"
+      quote: "if box1_area >= 2 * box2_area:\n            return 0.0\n        ... denominator = max(box1_area, box2_area) ... overlap_ratio = intersection_area / denominator"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "template/validator/reward.py"
+      line_ref: "206-211"
+      quote: "if overlap > 0.95:\n                    cbs = 1.0\n                elif overlap > 0.7:\n                    cbs = 1.0 - (0.95 - overlap) / (0.95 - 0.7) * 0.5\n                else:\n                    cbs = 0.0"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "template/validator/reward.py"
+      line_ref: "216-222"
+      quote: "ts = hard_match_strings(detected_text, ground_truth_text, 75.0)\n                if ts >= 100:\n                    ts_score = 1.0\n                elif ts >= 30:\n                    ts_score = (ts - 30) / 70"
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "template/validator/reward.py"
+      line_ref: "225"
+      quote: "score = (cbs + ts_score) / 2"
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "template/validator/reward.py"
+      line_ref: "404-407"
+      quote: "tim_score = time_score_calculation(Tt)\n        acc_score = accuracy_score_calculation(checkboxes_detected, ground_truth)\n        # score = final_score_calculation(tim_score, acc_score)\n        score = acc_score"
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "template/validator/reward.py"
+      line_ref: "93-100"
+      quote: "if time_taken >= 10 * Tn:\n            return 0.0\n        elif time_taken <= 0.01 * Tn:\n            return 1.0"
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "template/validator/reward.py"
+      line_ref: "646-649"
+      quote: "classification_score = doc_class_reward(...)\n                parsing_score = doc_parse_reward(ground_truth, each_resp, Tt)\n                weighted_avg_score = 0.3*classification_score + 0.7*parsing_score"
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "template/validator/forward.py"
+      line_ref: "110-115"
+      quote: "ground_truth, task = get_random_image()"
+    - claim_field: "/aggregation/method"
+      source_path: "template/base/validator.py"
+      line_ref: "331-336"
+      quote: "# === Fallback to Winner-Take-All Logic ===\n            sorted_indices = np.argsort(scores_flat)[::-1]\n            top_uid = uids[sorted_indices[0]]"
+    - claim_field: "/aggregation/notes"
+      source_path: "template/base/validator.py"
+      line_ref: "320-326"
+      quote: "if len(high_score_indices) >= 2:\n            # Proportional reward among high performers\n            total = np.sum(high_scores)\n            ... weight = (scores_flat[idx] / total) * remaining_weight"
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "template/base/validator.py"
+      line_ref: "286"
+      quote: "subnet_weight = 1.0  # Fixed weight for subnet (UID 0)"
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "template/base/validator.py"
+      line_ref: "311-313"
+      quote: "if 0 in uids:\n            final_weights[uids.index(0)] = subnet_weight\n            bt.logging.info(f\"Allocating {subnet_weight} weight to UID 0 (subnet)\")"
+    - claim_field: "/mechanism_status"
+      source_path: "template/base/validator.py"
+      line_ref: "318"
+      quote: "remaining_weight = 1.0 - subnet_weight  # Remaining weight to distribute (0.5 or 1.0)"
+    - claim_field: "/weight_setting/method"
+      source_path: "template/base/validator.py"
+      line_ref: "284-285"
+      quote: "top_reward_threshold = 0.05\n        max_consecutive_rewards = 18"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "template/base/validator.py"
+      line_ref: "407-415"
+      quote: "result, msg = self.subtensor.set_weights(\n            wallet=self.wallet,\n            netuid=self.config.netuid,\n            uids=uint_uids,\n            weights=uint_weights,"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "template/utils/config.py"
+      line_ref: "81-85"
+      quote: "\"--neuron.epoch_length\" ... \"The default epoch length (how often we set weights, measured in 12 second blocks).\" ... default=100"
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "template/utils/config.py"
+      line_ref: "207-212"
+      quote: "\"--neuron.moving_average_alpha\" ... default=0.1"
+    - claim_field: "/weight_setting/smoothing/kind"
+      source_path: "template/base/validator.py"
+      line_ref: "599-600"
+      quote: "alpha: float = self.config.neuron.moving_average_alpha\n        self.scores: np.ndarray = alpha * scattered_rewards + (1 - alpha) * self.scores"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "template/utils/config.py"
+      line_ref: "224-229"
+      quote: "\"--neuron.vpermit_tao_limit\" ... \"The maximum number of TAO allowed to query a validator with a vpermit.\" ... default=12000"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "template/base/validator.py"
+      line_ref: "358-364"
+      quote: "if len(self.top_miner_history) >= max_consecutive_rewards:\n                    if all(uid == top_uid for uid in self.top_miner_history[-max_consecutive_rewards:]):\n                        ... send_to_subnet = True"
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "template/validator/reward.py"
+      line_ref: "192-193"
+      quote: "if abs(len(detected_checkboxes) - len(ground_truths))>1:\n            return 0.0"
+    - claim_field: "/sub_competitions/structure"
+      source_path: "template/validator/forward.py"
+      line_ref: "47-48"
+      quote: "available_tasks = [\"checkbox\", \"doc-class\", \"doc-parse\", \"encircle\", \"highlight\"]\ntask_generator = cycle(available_tasks)"
+    - claim_field: "/per_miner_state/notes"
+      source_path: "template/base/validator.py"
+      line_ref: "355-356"
+      quote: "self.top_miner_history.append(top_uid)\n                self.top_miner_history = self.top_miner_history[-(max_consecutive_rewards + 1):]"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "template/base/validator.py"
+      line_ref: "442-444"
+      quote: "for uid, hotkey in enumerate(self.hotkeys):\n            if hotkey != self.metagraph.hotkeys[uid]:\n                self.scores[uid] = 0  # hotkey has been replaced"
+    - claim_field: "/documentation/primary_docs"
+      source_path: "README.md"
+      line_ref: "44-52"
+      quote: "## Reward Mechanism ... Validator then rewards top performing miner when it is 5% better than the second best miner."
+  unresolved:
+    - "doc-parse parsing_score weighting 0.3/0.7 vs single-task accuracy-only: time_score is fully dead code (final_score_calculation commented out everywhere), so the time signal weight is effectively 0 but not removed."
+    - "Whether validators on mainnet run a patched set_weights that gives non-zero remaining_weight; the in-repo code hard-codes subnet_weight=1.0 making remaining_weight=0.0 (full burn to UID 0). README documents 50/50 subnet split, contradicting the code."

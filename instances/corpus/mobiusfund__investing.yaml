@@ -1,0 +1,318 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Live validator (neurons/validator.py::Validator.score) overrides the template loop and computes
+  scores every 30 minutes from the subnet API (pnl/dist/days/ratio), via Investing/core/etc.score.
+  A Dynamic Emission Control (DEC) routes a dynamic fraction of emission to UID 0 when the network is
+  inactive, and assigns UID 0 the entire weight when no miner has a positive score — a conditional
+  burn-like behavior, not a fixed full burn.
+
+subnet:
+  name: "Investing - Decentralized AUM"
+  owner_repo: "mobiusfund__investing"
+  netuid: 88
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners submit investment/portfolio allocation strategies (asset weight dictionaries) filed under
+    Investing/strat/, which are submitted to the subnet API. The subnet simulates daily PnL of each
+    strategy over a rolling window (50 days) across asset classes (Tao/Alpha staking and US stocks)
+    and rewards risk-adjusted performance. The composite score combines MAR (return/drawdown), an
+    lsr term (~Sharpe), Kelly-normalized winning odds, and daily compounded return, with further
+    multiplicative adjustments for direction, deduplication/similarity, inactivity, and cash
+    allocation, then partitions emissions across asset classes by an asset ratio.
+  submission_format: [signals]
+
+scoring_signals:
+  - name: composite_strategy_score
+    metric_kind: composite
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      simst.score() returns score = mar * lsr * odds * daily; clamped to 0 when <= 0. See
+      Investing/core/simst.py score().
+  - name: mar
+    metric_kind: risk_adjusted_ratio
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      mar = gain / max(risk, risk_init / days**0.5); risk = drawdown of pnl%. Multiplicative factor of
+      the composite. risk_init constant RISK_INIT_DTAO/STK = 5 (const.py).
+  - name: lsr
+    metric_kind: risk_adjusted_ratio
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      lsr = sum(pnl) / sum(|pnl|); documented as >0.99 correlated to Sharpe ratio (README Scoring).
+  - name: odds
+    metric_kind: win_rate
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      odds = 50 + kelly(prob, pavg/lavg)/2*100; Kelly-normalized winning odds. Clamped to 0 if <=0.
+  - name: daily_return
+    metric_kind: pnl
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      daily = ((1 + gain/100)**(1/days) - 1)*100; daily compounded return percentage.
+
+ground_truth_sources:
+  - kind: market_data
+    description: >-
+      Daily price / PnL data for Tao/Alpha (dtao) and US stocks pulled from the subnet API and an
+      auto-updated local market database (SimSt.fetchda / fetchdb). Score calculation runs daily at
+      00:00 UTC (Tao/Alpha) and 06:00 UTC (US stocks) per README.
+    source_identifier: "http://api.investing88.ai (API_ROOT)"
+    trust_model: trusted
+    notes: >-
+      Validator fetches pnl/dist/days/ratio from the API endpoints (Investing/core/api.py). The API
+      server is operated by the subnet owner (Mobius Fund).
+
+aggregation:
+  method: proportional
+  composition: multiplicative
+  normalization: l1
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: null
+    dynamic: true
+    notes: >-
+      DEC (Dynamic Emission Control): dec = (sc['last'].sum()/(sc['days']+1).sum())**DEC_DECAY with
+      DEC_DECAY=3; if dec > DEC_CUTOFF (0.03), score[DEC_UID]=sum(score)*dec/(1-dec) routed to
+      DEC_UID=0. If no miner has a positive score, score[DEC_UID]=1 (UID 0 gets all weight). Constants
+      in const.py; logic in etc.score().
+  notes: >-
+    Final per-asset-class scaling: for each asset a, score *= ra[a] * total_score / asset_total,
+    partitioning emissions by the asset ratio ra fetched from the API. Raw scores are L1-normalized
+    into weights by the template set_weights (raw_weights = self.scores / ||scores||_1). Multiple
+    multiplicative gates applied in etc.score(): close-direction flag c, dedupe factor, DEC1 inactivity
+    decay, cash-allocation factor.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    Validator.score() (neurons/validator.py) runs every 30 min (waits for minute in [25,55] plus a
+    random delay), fetches API data, and assigns self.scores = etc.score(pl, ab, da, ra, n). The
+    template BaseValidatorNeuron.set_weights L1-normalizes self.scores and calls subtensor.set_weights.
+  on_chain_call: set_weights
+  tempo_or_interval: "every 30 min (minutes 25 and 55)"
+  smoothing:
+    kind: none
+    alpha: null
+    window: 50
+    notes: >-
+      The live validator overrides the loop and overwrites self.scores wholesale from etc.score()
+      each cycle, so the template EMA (moving_average_alpha default 0.1 in update_scores) is NOT
+      applied to the final score. Instead, temporal smoothing is built into the metric: pl2sc applies
+      a rolling window of WIN_SIZE_DTAO/STK = 50 days over daily PnL before scoring.
+
+anti_gaming:
+  - kind: deduplication
+    enforcement: penalty
+    description: >-
+      dedupe() penalizes strategies overly similar to pre-existing ones using allocation distance and
+      block timing. A new/revised strategy too similar to an existing one receives a reduced score.
+      dd = min((du.min()/bb[i]/DAYS_FINAL)**DD_POWER, 1) with DD_POWER=1, DAYS_FINAL=30,
+      DD_TRIGGER=0.01 (const.py); score *= dedupe (etc.score).
+  - kind: liveness_check
+    enforcement: penalty
+    description: >-
+      DEC1 inactivity decay: dec1 = (sc['last']/DEC1_CLIFF)**DEC1_DECAY with DEC1_CLIFF=20,
+      DEC1_DECAY=2; for miners with days > DEC1_START (5), score *= 1 - clip(dec1, 0, 1). Encourages
+      active rebalancing. README: dec = (last_active/20)**2.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      Each miner requires a certain amount of alpha token stake to curb UID spam (README Mining).
+  - kind: risk_limit
+    enforcement: penalty
+    description: >-
+      Daily profit outliers are clipped (CLIP_OUTLIERS=2 days) in pl2sc to reduce short-term random
+      effects, and a new miner's score is limited: score *= (days/DAYS_FINAL)**DAYS_DELAY for
+      days < DAYS_FINAL (30), DAYS_DELAY=1 (const.py / simst.pl2sc).
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      Cash-allocation factor: score *= ((1 - cash)**CASH_DECAY).clip(CASH_RESIDUE, 1), CASH_DECAY=1,
+      CASH_RESIDUE=0.01, to discourage holding cash (etc.score / const.py).
+
+sub_competitions:
+  structure: multi_asset
+  stages: []
+  count: 2
+  notes: >-
+    UID space and subnet emissions are partitioned by asset class (asset ratio ra). Two asset classes
+    are implemented: Tao/Alpha staking (a=0) and US stocks (a=1), with separate risk_init and window
+    constants (RISK_INIT_DTAO/STK, WIN_SIZE_DTAO/STK) and separate daily score timing. README Roadmap
+    describes phased expansion to more asset classes.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [performance_ledger, registration_age]
+  status_values: []
+  reset_policy: >-
+    Template resets scores for replaced hotkeys (resync_metagraph zeroes scores when a hotkey changes).
+    A newly registered miner goes live after day 1 with a 3-day immunity period (README Mining).
+  notes: >-
+    Daily PnL history is accumulated per miner (pl/sc tables) and a rolling 50-day window is scored.
+    'days' (registration/active age) gates DEC1, the new-miner score limit, and the immunity period.
+
+documentation:
+  status: docs_and_code
+  source_version: "simst version 1.4.0 (Investing/core/simst.py info string)"
+  primary_docs: ["README.md", "Investing/strat/README.md"]
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "69"
+      quote: "--netuid 88 #339 --subtensor.network test"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "Investing/core/simst.py"
+      line_ref: "55-60"
+      quote: "import os, sys, time\nimport json, requests\nimport numpy as np\nimport pandas as pd\nimport sqlalchemy as sql"
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "87"
+      quote: "When a strategy is filed under the `Investing/strat/` directory, it will be automatically submitted by the miner."
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "Investing/core/simst.py"
+      line_ref: "502-503"
+      quote: "score = mar * lsr * odds * daily\n    if score <= 0: score = 0"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "Investing/core/simst.py"
+      line_ref: "497"
+      quote: "mar = gain / max(risk, risk_init / days ** 0.5)"
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "Investing/core/simst.py"
+      line_ref: "498"
+      quote: "lsr = dd['pnl'].sum() / (dd['pnl'].abs().sum() or 1e18)"
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "Investing/core/simst.py"
+      line_ref: "499-500"
+      quote: "odds = 50 + kelly(prob, pavg / lavg) / 2 * 100\n    if odds <= 0: odds = 0"
+    - claim_field: "/scoring_signals/4/notes"
+      source_path: "Investing/core/simst.py"
+      line_ref: "495"
+      quote: "daily = ((1 + gain / 100) ** (1 / days) - 1) * 100"
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "Investing/core/const.py"
+      line_ref: "2"
+      quote: "API_ROOT = 'http://api.investing88.ai'"
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "README.md"
+      line_ref: "95"
+      quote: "Daily score calculation takes place at 00:00 UTC for Tao/Alpha, and 06:00 UTC for US stocks."
+    - claim_field: "/aggregation/composition"
+      source_path: "Investing/core/etc.py"
+      line_ref: "79-93"
+      quote: "sc['score'] *= sc['c']\n...\n    sc.loc[~sc['dedupe'].isna(), 'score'] *= sc['dedupe']\n...\n    sc['score'] *= ((1 - sc['cash']) ** CASH_DECAY).clip(CASH_RESIDUE, 1)"
+    - claim_field: "/aggregation/notes"
+      source_path: "Investing/core/etc.py"
+      line_ref: "96-99"
+      quote: "scz = sc['score'].sum()\n    for a in range(len(ra)):\n        sca = sc[sc['a'] == a]['score'].sum()\n        if sca: sc.loc[sc['a'] == a, 'score'] *= ra[a] * scz / sca"
+    - claim_field: "/aggregation/normalization"
+      source_path: "neurons/template/base/validator.py"
+      line_ref: "234-241"
+      quote: "norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True)\n...\n        raw_weights = self.scores / norm"
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "Investing/core/const.py"
+      line_ref: "13"
+      quote: "DEC_UID = 0"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "Investing/core/etc.py"
+      line_ref: "102-104"
+      quote: "dec = (sc['last'].sum() / (sc['days'] + 1).sum()) ** DEC_DECAY\n    if dec > DEC_CUTOFF: score[DEC_UID] = sum(score) * dec / (1 - dec)\n    if not any(score): score[DEC_UID] = 1"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "Investing/core/const.py"
+      line_ref: "13-15"
+      quote: "DEC_UID = 0\nDEC_DECAY = 3\nDEC_CUTOFF = 0.03"
+    - claim_field: "/weight_setting/method"
+      source_path: "neurons/validator.py"
+      line_ref: "61-76"
+      quote: "def score(self, _):\n        time.sleep(60)\n        while True:\n            if int(time.strftime('%M')) in [25, 55]: break\n...\n            self.scores, uid, dec = etc.score(pl, ab, da, ra, self.metagraph.n)"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "neurons/template/base/validator.py"
+      line_ref: "270-278"
+      quote: "result, msg = self.subtensor.set_weights(\n            wallet=self.wallet,\n            netuid=self.config.netuid,\n            uids=uint_uids,\n            weights=uint_weights,"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "neurons/validator.py"
+      line_ref: "63-66"
+      quote: "while True:\n            if int(time.strftime('%M')) in [25, 55]: break\n            time.sleep(1)\n        time.sleep(random.randint(25, 55))"
+    - claim_field: "/weight_setting/smoothing/window"
+      source_path: "Investing/core/const.py"
+      line_ref: "33-34"
+      quote: "WIN_SIZE_DTAO = 50\nWIN_SIZE_STK = 50"
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "Investing/core/simst.py"
+      line_ref: "430"
+      quote: "dd = dd[-self.win_size[a]:].reset_index(drop=True)"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "Investing/core/etc.py"
+      line_ref: "61"
+      quote: "dd.loc[uid] = min((du[du >= 0].min() / bb[i] / DAYS_FINAL) ** DD_POWER, 1)"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "README.md"
+      line_ref: "97"
+      quote: "a new or revised strategy that is overly similar to a pre-existing one will receive a reduced score."
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "Investing/core/etc.py"
+      line_ref: "88-89"
+      quote: "dec1 = (sc['last'] / DEC1_CLIFF) ** DEC1_DECAY\n    sc.loc[~sc['last'].isna() & (sc['days'] > DEC1_START), 'score'] *= 1 - dec1.clip(0, 1)"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "README.md"
+      line_ref: "99"
+      quote: "To curb UID spam, each miner requires a certain amount of alpha token stake."
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "Investing/core/simst.py"
+      line_ref: "437-448"
+      quote: "ii = dd[dd['pnl%'] > 0].sort_values('pnl%')[::-1][:self.clip_outliers + 1].index\n...\n    sc.loc[sc['days'] < DAYS_FINAL, 'score'] *= (sc['days'] / DAYS_FINAL) ** DAYS_DELAY"
+    - claim_field: "/anti_gaming/4/description"
+      source_path: "Investing/core/etc.py"
+      line_ref: "93"
+      quote: "sc['score'] *= ((1 - sc['cash']) ** CASH_DECAY).clip(CASH_RESIDUE, 1)"
+    - claim_field: "/sub_competitions/notes"
+      source_path: "README.md"
+      line_ref: "93"
+      quote: "the UID space and subnet emissions are partitioned based on asset ratio, which will be adjusted over time as the subnet evolves."
+    - claim_field: "/sub_competitions/count"
+      source_path: "Investing/core/simst.py"
+      line_ref: "66"
+      quote: "an = 2"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "README.md"
+      line_ref: "101"
+      quote: "A newly registered miner goes live on the dashboard after day 1, with an immunity period of 3 days."
+    - claim_field: "/per_miner_state/state_kinds"
+      source_path: "Investing/core/simst.py"
+      line_ref: "446"
+      quote: "sc.loc[len(sc)] = *gg, date, a, days, *score(dd, self.risk_init[a])[1:]"
+    - claim_field: "/documentation/source_version"
+      source_path: "Investing/core/simst.py"
+      line_ref: "2"
+      quote: "simst - Sim Strat, version 1.4.0"
+    - claim_field: "/mechanism_status_notes"
+      source_path: "neurons/validator.py"
+      line_ref: "82-84"
+      quote: "with Validator() as validator:\n        validator.loop.run_until_complete = validator.score\n        validator.concurrent_forward = lambda: ..."
+  unresolved:
+    - "Exact required alpha-token stake amount to register a miner (described qualitatively in README, no literal in source)."
+    - "Whether the template moving_average_alpha (0.1) is ever effective on-chain; the live validator overwrites self.scores wholesale each cycle, but the exact set_weights cadence/path under the overridden loop is not fully shown in this repo."
+    - "Asset ratio values ra are fetched live from the API (/ratio endpoint); no literal split in source."

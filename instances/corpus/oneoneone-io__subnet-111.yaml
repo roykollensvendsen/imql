@@ -1,0 +1,243 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  Validator hard-codes a 25% emission burn to UID 0 (burner_uid=0, burner_weight=0.25)
+  before distributing the remaining 75% proportionally to miner scores. The documented
+  three-component scoring (speed/volume/recency) is delegated to an out-of-repo Node.js
+  scoring endpoint and is active for the non-burned 75%.
+
+subnet:
+  name: "oneoneone (subnet 111)"
+  owner_repo: "oneoneone-io__subnet-111"
+  netuid: 111
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners scrape user-generated content (reviews from platforms like Google Maps/Yelp,
+    and X/tweets) in response to synthetic validation tasks issued every ~20 minutes.
+    Validators query up to MAX_MINER_COUNT miners with a GenericSynapse carrying a
+    type_id/metadata task, measure per-miner response time, and reward each miner's
+    returned data on a composite of volume (50%), speed (30%) and recency (20%);
+    miners that fail structural validation or spot-check verification get zero.
+  submission_format: [api_response]
+
+scoring_signals:
+  - name: volume_score
+    metric_kind: volume
+    direction: higher_is_better
+    weight: 0.5
+    normalization: min_max
+    notes: >-
+      "Volume Score (50%) - Number of items returned: volume_score = miner_item_count /
+      max_item_count_across_miners". Normalized against the maximum item count across all
+      miners.
+  - name: speed_score
+    metric_kind: latency
+    direction: higher_is_better
+    weight: 0.3
+    normalization: min_max
+    notes: >-
+      "Speed Score (30%) - Processing efficiency: speed_score = fastest_response_time /
+      miner_response_time". Rewards faster response times.
+  - name: recency_score
+    metric_kind: other
+    metric_kind_other: data_freshness
+    direction: higher_is_better
+    weight: 0.2
+    normalization: min_max
+    notes: >-
+      "Recency Score (20%) - Freshness of most recent item: recency_score =
+      (miner_most_recent_date - oldest_most_recent_date) / date_range".
+
+ground_truth_sources:
+  - kind: organic_traffic
+    description: >-
+      Spot-check verification: randomly selects 3 items from each miner's response and
+      verifies them against live platform data (Google Maps live data, Desearch/Gravity
+      for X tweets), checking exact matches of key fields. Actual scoring/validation logic
+      runs in an out-of-repo Node.js endpoint (/score-responses).
+    source_identifier: "http://{VALIDATOR_NODE_HOST}:{VALIDATOR_NODE_PORT}/score-responses"
+    trust_model: oracle
+    notes: >-
+      Python reward.py merely POSTs miner responses to the Node.js scoring endpoint and
+      returns its scores; the scoring math itself is not in this repo (only documented in
+      README).
+
+aggregation:
+  method: weighted_average
+  composition: weighted_sum
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: 0.25
+    dynamic: false
+    notes: >-
+      burner_uid=0, burner_weight=0.25 (25%). In _calculate_weights_with_burner the burner
+      UID receives burner_weight and the remaining 1.0 - burner_weight is split across
+      miners proportional to score.
+  notes: >-
+    Final per-miner score is the weighted sum 0.5*volume + 0.3*speed + 0.2*recency
+    (composite computed by the Node.js endpoint), then EMA-smoothed across rounds, then
+    normalized so non-burner weights share the remaining 75%.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Scores (EMA moving average of composite rewards) are normalized with a fixed 25% burn
+    to UID 0; the remaining 75% is allocated proportional to each miner's score via
+    _calculate_weights_with_burner, then process_weights_for_netuid and
+    convert_weights_and_uids_for_emit before subtensor.set_weights.
+  on_chain_call: set_weights
+  tempo_or_interval: "100 blocks"
+  smoothing:
+    kind: ema
+    alpha: 0.1
+    window: null
+    notes: >-
+      update_scores: "alpha: float = self.config.neuron.moving_average_alpha;
+      self.scores = alpha * scattered_rewards + (1 - alpha) * self.scores".
+      moving_average_alpha default 0.1.
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Spot-check verification randomly selects 3 items per miner response and verifies them
+      against live platform data, checking exact matches of key fields; spot-check failures
+      and failed structural validation cause zero score / disqualification.
+  - kind: liveness_check
+    enforcement: elimination
+    description: >-
+      Disqualification when response time >= synapse timeout (120 seconds); timed-out or
+      empty responses yield zero score.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      Validators require a minimum stake / vpermit (VALIDATOR_MIN_STAKE = 1.024e3 * 25;
+      --neuron.vpermit_tao_limit default 4096) to participate.
+
+sub_competitions:
+  structure: per_task_type
+  stages: []
+  count: null
+  notes: >-
+    Synthetic tasks have a type_id (e.g. Google Maps reviews, X/tweets); a random job type
+    is chosen per round. The same speed/volume/recency scoring is applied per task type;
+    no separately-weighted competition tracks are defined in this repo.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score]
+  status_values: []
+  reset_policy: >-
+    On hotkey replacement the corresponding score is zeroed (resync_metagraph sets
+    self.scores[uid] = 0 when a hotkey changes); state persisted to state.npz.
+  notes: >-
+    EMA moving-average scores per UID are kept across rounds in self.scores and saved/loaded
+    via save_state/load_state (state.npz).
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "232-239"
+      quote: "Mainnet (Subnet 111) ... btcli subnet register --no_prompt --wallet.name \"miner\" --wallet.hotkey \"default\" --netuid \"111\""
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "oneoneone/validator/reward.py"
+      line_ref: "37-44"
+      quote: "def get_rewards(self, type_id: str, metadata: Dict[str, Any], responses: List[List[Dict[str, Any]]], ...) -> np.ndarray:"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "390-394"
+      quote: "Challenge Generation: Validator selects job type (e.g., Google Maps reviews, Yelp reviews) ... Miner Selection: Up to 50 miners randomly chosen ... Response Window: Miners have 120 seconds to complete the task"
+    - claim_field: "/task/submission_format"
+      source_path: "oneoneone/validator/forward.py"
+      line_ref: "126-142"
+      quote: "response = await self.dendrite(axons=[axon], synapse=GenericSynapse(type_id=type_id, metadata=metadata, timeout=timeout), deserialize=True, timeout=timeout,)"
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "README.md"
+      line_ref: "427-428"
+      quote: "# Volume Score (50%) - Number of items returned\n    volume_score = miner_item_count / max_item_count_across_miners"
+    - claim_field: "/scoring_signals/1/weight"
+      source_path: "README.md"
+      line_ref: "430-431"
+      quote: "# Speed Score (30%) - Processing efficiency\n    speed_score = fastest_response_time / miner_response_time"
+    - claim_field: "/scoring_signals/2/weight"
+      source_path: "README.md"
+      line_ref: "433-434"
+      quote: "# Recency Score (20%) - Freshness of most recent item\n    recency_score = (miner_most_recent_date - oldest_most_recent_date) / date_range"
+    - claim_field: "/aggregation/composition"
+      source_path: "README.md"
+      line_ref: "436-437"
+      quote: "# Final composite score\n    final_score = (0.5 * volume_score) + (0.3 * speed_score) + (0.2 * recency_score)"
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "oneoneone/base/validator.py"
+      line_ref: "65-66"
+      quote: "self.burner_uid = 0  # UID to burn emissions to\n        self.burner_weight = 0.25  # Percentage of weight to burn (25%)"
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "oneoneone/base/validator.py"
+      line_ref: "298-320"
+      quote: "remaining_weight = 1.0 - self.burner_weight ... if uid == self.burner_uid: weights.append(self.burner_weight) elif total_other_scores > 0: weights.append((score / total_other_scores) * remaining_weight)"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "oneoneone/base/validator.py"
+      line_ref: "284-292"
+      quote: "result, msg = self.subtensor.set_weights(wallet=self.wallet, netuid=self.config.netuid, uids=uint_uids, weights=uint_weights, ...)"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "oneoneone/utils/config.py"
+      line_ref: "70-75"
+      quote: "--neuron.epoch_length ... help=\"The default epoch length (how often we set weights, measured in 12 second blocks).\", default=100,"
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "oneoneone/utils/config.py"
+      line_ref: "197-202"
+      quote: "--neuron.moving_average_alpha ... help=\"Moving average alpha parameter, how much to add of the new observation.\", default=0.1,"
+    - claim_field: "/weight_setting/smoothing/kind"
+      source_path: "oneoneone/base/validator.py"
+      line_ref: "396-397"
+      quote: "alpha: float = self.config.neuron.moving_average_alpha\n        self.scores: np.ndarray = alpha * scattered_rewards + (1 - alpha) * self.scores"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "README.md"
+      line_ref: "483-487"
+      quote: "Spot Check System: Randomly selects 3 items from each miner's response - Verifies against live data depending on the type - Checks for exact matches of key data fields"
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "README.md"
+      line_ref: "476-477"
+      quote: "Disqualification Conditions: ... Response time ≥ synapse timeout (120 seconds)"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "oneoneone/config.py"
+      line_ref: "32-33"
+      quote: "# Validator minimum stake\nVALIDATOR_MIN_STAKE = 1.024e3 * 25"
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "oneoneone/validator/reward.py"
+      line_ref: "67-69"
+      quote: "validator_url = (f\"http://{VALIDATOR_NODE_HOST}:{VALIDATOR_NODE_PORT}/score-responses\")"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "oneoneone/base/validator.py"
+      line_ref: "339-341"
+      quote: "for uid, hotkey in enumerate(self.hotkeys): if hotkey != self.metagraph.hotkeys[uid]: self.scores[uid] = 0  # hotkey has been replaced"
+    - claim_field: "/sub_competitions/structure"
+      source_path: "oneoneone/validator/forward.py"
+      line_ref: "96-98"
+      quote: "type_id = task[\"typeId\"]\n    metadata = task[\"metadata\"]\n    timeout = task[\"timeout\"]"
+    - claim_field: "/mechanism_status"
+      source_path: "oneoneone/base/validator.py"
+      line_ref: "254-255"
+      quote: "# Calculate weights with burner control\n        raw_weights = self._calculate_weights_with_burner(uids, scores)"
+  unresolved:
+    - "Actual scoring math (speed/volume/recency computation, spot-check, structural validation, disqualification) lives in an out-of-repo Node.js endpoint (/score-responses); only the README documents the formula. The literal constants 0.5/0.3/0.2 are quoted from README pseudocode, not from executed code in this repo."
+    - "No explicit softmax/temperature/decay; aggregation is plain weighted sum + EMA + proportional renormalization. min_weight_floor and decay_rate not present."

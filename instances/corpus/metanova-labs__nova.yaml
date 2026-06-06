@@ -1,0 +1,318 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  A fixed burn_rate of 0.722 is assigned to UID 0 every epoch; the remaining
+  ~0.278 of emission is split between the molecule winner and nanobody winner
+  (nanobody_weight = 0.6). When no valid winner exists for a category, that
+  category's incentive is also routed to the burn UID 0. An emission-override
+  path can instead route the non-burn weight entirely to a configured UID
+  (override_uid = 61) while paying winners off-chain via bounty payouts.
+
+subnet:
+  name: "NOVA"
+  owner_repo: "metanova-labs__nova"
+  netuid: 68
+  implementation_lang: python
+
+task:
+  summary: >-
+    NOVA (SN68) is an ML-driven drug-discovery competition. Each epoch the
+    validator derives a small-molecule protein target and a nanobody protein
+    target from the start block hash. Miners submit (via GitHub commitments,
+    timelock-encrypted) candidate small molecules (SMILES) and/or nanobody
+    sequences. Validators validate submissions against physicochemical/structural
+    requirements, then score molecules with the Boltz2 model (binding affinity
+    metrics) and nanobodies with the BoltzGen model (confidence / physical
+    interaction / developability metrics). For each of the two categories the
+    rank-1 (best) UID is the winner and receives that category's share of the
+    non-burned emission; everything else and any empty category goes to burn.
+  submission_format: [commitment_hash, source_code]
+  extensions:
+    notes: >-
+      Submissions are GitHub repos referenced by encrypted on-chain commitments
+      (gather_and_decrypt_commitments); content is SMILES strings (molecules)
+      and amino-acid sequences (nanobodies).
+
+scoring_signals:
+  - name: boltz_affinity
+    metric_kind: regression_error
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Small-molecule score. boltz_metric = ["affinity_probability_binary",
+      "affinity_pred_value"], combination_strategy = "heavy_atom_normalization",
+      boltz_mode = "max". Per-target scores are averaged then summed into
+      final_molecule_score; ranking uses boltz_mode (max = higher is better).
+  - name: boltzgen_nanobody_score
+    metric_kind: composite
+    direction: lower_is_better
+    weight: null
+    normalization: rank
+    notes: >-
+      Nanobody score from BoltzGen, ranked with boltzgen_rank_mode = "min" and
+      boltzgen_rank_by = "rank_sum". Built from category metrics: confidence
+      (design_iiptm, design_ptm, design_to_target_iptm, min_design_to_target_pae,
+      interaction_pae), physical_interaction (plip_hbonds_refolded,
+      plip_saltbridge_refolded, delta_sasa_refolded) and developability
+      (liability_score, liability_num_violations). Tie-breaks: confidence ->
+      physical_interaction -> developability rank sums -> block_submitted ->
+      push_time -> uid.
+
+ground_truth_sources:
+  - kind: reference_model
+    description: >-
+      Boltz2 structure/affinity prediction model used to score small-molecule
+      binding to the epoch's protein target.
+    source_identifier: "boltz (external_tools/boltz)"
+    trust_model: trusted
+    notes: "boltz_metric affinity_probability_binary / affinity_pred_value."
+  - kind: reference_model
+    description: >-
+      BoltzGen model used to fold/analyze nanobody designs against the target
+      and produce confidence / physical-interaction / developability metrics.
+    source_identifier: "boltzgen (external_tools/boltzgen)"
+    trust_model: trusted
+    notes: "per_nanobody_components rank sums per category."
+
+aggregation:
+  method: winner_take_all
+  composition: hybrid
+  normalization: none
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: 0.722
+    dynamic: false
+    notes: >-
+      weights[0] = burn_rate = 0.722 set unconditionally each epoch. The
+      remaining 1.0 - burn_rate is split: molecule_incentive =
+      (1.0-burn_rate)*(1.0-nanobody_weight); nanobody_incentive =
+      (1.0-burn_rate)*nanobody_weight, with nanobody_weight = 0.6. A category's
+      incentive is added back to weights[0] (burn) if that category has no
+      winner.
+  notes: >-
+    Two independent winner-take-all competitions (molecule, nanobody). Only the
+    rank-1 UID per category receives weight; no gradient over runners-up. Ranking
+    per category is by summed/averaged model scores with deterministic tie-breaks.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    At each epoch boundary (current_block % epoch_length == 0) the validator
+    scores submissions, picks rank-1 winners for molecules and nanobodies, builds
+    a weight vector with weights[0]=0.722 and the per-category incentives on the
+    winning UIDs, and calls subtensor.set_weights with retry (max 10 attempts,
+    12s apart).
+  on_chain_call: set_weights
+  tempo_or_interval: "epoch_length blocks (config.epoch_length, default 361)"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: "Weights recomputed fresh each epoch; no EMA/SMA over the final reward."
+  extensions:
+    emission_override: >-
+      If emission_override_enabled (payout.enabled), the entire 1.0-burn_rate is
+      assigned to emission_override_uid (override_uid = 61) and the actual
+      winners are paid off-chain via dispatch_bounty_payouts instead of on-chain
+      weight.
+
+anti_gaming:
+  - kind: commit_reveal
+    enforcement: barrier
+    description: >-
+      Submissions are timelock-encrypted GitHub commitments decrypted by the
+      validator (QuicknetBittensorDrandTimelock / gather_and_decrypt_commitments),
+      preventing copying before reveal.
+  - kind: rate_limit
+    enforcement: rejection
+    description: >-
+      no_submission_blocks = 10: submissions within the last no_submission_blocks
+      before epoch end are excluded (max_block = current_block -
+      config.no_submission_blocks).
+  - kind: deduplication
+    enforcement: rejection
+    description: >-
+      Duplicate molecules within a submission and chemically identical molecules
+      (same InChIKey) are rejected; nanobody submissions are checked for duplicate
+      sequences and near-identical prior submissions (whole-sequence / CDR3
+      identity tiers via is_duplicate). max_similarity_score = 0.95 vs top
+      sequences.
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Molecule requirements (min_heavy_atoms=10, rotatable bonds 1..10,
+      banned_atom_types Se/Na/Fe/Zn, allowed reaction per epoch) and nanobody
+      requirements (length 90..150, cysteine pairing, homopolymer/di-repeat
+      limits, signal-peptide rejection, nativeness>=0.45, human framework>=0.75,
+      VHH hallmark residues) gate validity before scoring.
+
+sub_competitions:
+  structure: multi_mechanism
+  stages:
+    - name: small_molecule
+      role: main
+      advancement_rule: "rank-1 by Boltz2 affinity (boltz_mode=max) wins molecule share"
+    - name: nanobody
+      role: main
+      advancement_rule: "rank-1 by BoltzGen rank_sum (rank_mode=min) wins nanobody share"
+  count: 2
+  notes: >-
+    Two parallel categories run each epoch with split incentive: molecule share
+    = 1 - nanobody_weight = 0.4 of the non-burn pool, nanobody share =
+    nanobody_weight = 0.6.
+
+per_miner_state:
+  tracked: false
+  state_kinds: []
+  status_values: []
+  reset_policy: ""
+  notes: >-
+    Scoring is recomputed per epoch from current submissions; no persistent
+    per-miner ledger/reputation observed in the weight path. block_submitted /
+    push_time are used only as within-epoch tie-breakers.
+
+documentation:
+  status: code_authoritative
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/VALIDATOR.md"
+    - "docs/nanobody_stragegy_guide.md"
+    - "config/config.yaml"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8"
+  extracted_at: "2026-06-06"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "1"
+      quote: "# NOVA - SN68"
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "neurons/validator/validator.py"
+      line_ref: "1-6"
+      quote: "import bittensor as bt\nimport torch"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "neurons/validator/validator.py"
+      line_ref: "85-102"
+      quote: "challenge_params = get_challenge_params_from_blockhash(block_hash=start_block_hash, small_molecule_target=config.small_molecule_target, nanobody_target=config.nanobody_target ...)"
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "neurons/validator/validator.py"
+      line_ref: "105-107"
+      quote: "uid_to_data, current_commitments, decrypted_submissions, push_timestamps = await gather_and_decrypt_commitments(subtensor, metagraph, config.netuid, ...)"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "neurons/validator/weights.py"
+      line_ref: "23"
+      quote: "burn_rate = 0.722"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "neurons/validator/weights.py"
+      line_ref: "56"
+      quote: "weights[0] = burn_rate"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "neurons/validator/weights.py"
+      line_ref: "41-44"
+      quote: "molecule_proportion = 1.0 - config.nanobody_weight ... molecule_incentive = (1.0 - burn_rate) * molecule_proportion; nanobody_incentive = (1.0 - burn_rate) * nanobody_proportion"
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "neurons/validator/validator.py"
+      line_ref: "200-209"
+      quote: "winner_molecules = next((uid for uid, r in molecule_ranks.items() if r == 1), None); winner_nanobodies = next((uid for uid, r in nanobody_ranks.items() if r == 1), None)"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "neurons/validator/weights.py"
+      line_ref: "79-87"
+      quote: "if winner_molecules is not None: weights[winner_molecules] += molecule_incentive else: weights[0] += molecule_incentive"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "config/config.yaml"
+      line_ref: "boltz2_config"
+      quote: "boltz_metric: [\"affinity_probability_binary\", \"affinity_pred_value\"]  combination_strategy: \"heavy_atom_normalization\"  boltz_mode: max"
+      confidence: high
+    - claim_field: "/scoring_signals/0/direction"
+      source_path: "neurons/validator/ranking.py"
+      line_ref: "164,191"
+      quote: "mode = _config_get(config, 'boltz_mode', 'max') ... primary = -score if mode == \"max\" else score"
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "neurons/validator/ranking.py"
+      line_ref: "8,156-161"
+      quote: "NANOBODY_TIEBREAK_CATEGORIES = (\"confidence\", \"physical_interaction\", \"developability\")"
+      confidence: high
+    - claim_field: "/scoring_signals/1/normalization"
+      source_path: "config/config.yaml"
+      line_ref: "boltzgen_config"
+      quote: "boltzgen_rank_mode: min  boltzgen_rank_by: rank_sum"
+      confidence: high
+    - claim_field: "/aggregation/composition"
+      source_path: "neurons/validator/ranking.py"
+      line_ref: "60-61"
+      quote: "score_dict[uid][f\"combined_{item_type}_scores\"] = combined_item_scores; score_dict[uid][f\"final_{item_type}_score\"] = sum(combined_item_scores)"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "neurons/validator/weights.py"
+      line_ref: "95-101"
+      quote: "result = subtensor.set_weights(netuid=netuid, wallet=wallet, uids=metagraph.uids, weights=weights, wait_for_inclusion=True)"
+      confidence: high
+    - claim_field: "/weight_setting/cadence"
+      source_path: "neurons/validator/validator.py"
+      line_ref: "316-329"
+      quote: "if local_input or current_block % config.epoch_length == 0: ... payouts = await set_weights(winner_molecules, winner_nanobodies, config)"
+      confidence: high
+    - claim_field: "/weight_setting/extensions/emission_override"
+      source_path: "neurons/validator/weights.py"
+      line_ref: "58-77"
+      quote: "if config.emission_override_enabled: ... weights[override_uid] = 1.0 - burn_rate ... payouts.append((\"molecule\", winner_molecules, molecule_proportion))"
+      confidence: high
+    - claim_field: "/sub_competitions/notes"
+      source_path: "config/config.yaml"
+      line_ref: "competition"
+      quote: "nanobody_weight: 0.6 # proportion of incentive to give to nanobody winner"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "neurons/validator/validator.py"
+      line_ref: "20,105-107"
+      quote: "from utils import ... QuicknetBittensorDrandTimelock ... await gather_and_decrypt_commitments(...)"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "neurons/validator/commitments.py"
+      line_ref: "236"
+      quote: "max_block=current_block - config.no_submission_blocks"
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "neurons/validator/molecule_validity.py"
+      line_ref: "44-117"
+      quote: "UID={uid}: submission contains chemically identical molecules"
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "config/config.yaml"
+      line_ref: "molecule_requirements,nanobody_requirements"
+      quote: "min_heavy_atoms: 10 ... banned_atom_types: [\"Se\", \"Na\", \"Fe\", \"Zn\"] ... min_nativeness_score: 0.45  min_human_framework_score: 0.75"
+      confidence: high
+    - claim_field: "/per_miner_state/tracked"
+      source_path: "neurons/validator/ranking.py"
+      line_ref: "188-207"
+      quote: "_block_or_inf(data.get('block_submitted')), _parse_timestamp(data.get('push_time', '') or '', uid), uid"
+      confidence: high
+  unresolved:
+    - "/aggregation/temperature — no softmax/temperature; winner-take-all only."
+    - "Exact Boltz2 / BoltzGen internal score formulas (heavy_atom_normalization, rank_sum) live in external_tools submodules not fully read; signal-level metrics captured but not their numeric weighting."
+    - "epoch_length default 361 is a fallback in ranking.py; the live epoch_length comes from runtime config not present as a literal in config/config.yaml."
+  extractor_notes: >-
+    Active mechanism with a large fixed burn (0.722). Two parallel winner-take-all
+    competitions. burn_rate, nanobody_weight, override_uid, and all validity
+    thresholds are literals in source/config and cited verbatim.

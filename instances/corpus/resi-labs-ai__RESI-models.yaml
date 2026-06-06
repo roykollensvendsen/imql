@@ -1,0 +1,293 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Live scoring is active: a daily evaluation runs models on fresh unseen data, scores by
+  1 - MAPE, picks a winner (threshold + earliest commit), and distributes 99% winner /
+  1% non-winners / 0% cheaters. A burn path exists (_apply_burn) but burn_amount is
+  hardcoded to 0.0 in validator.py, so no emissions are burned in this revision.
+
+subnet:
+  name: "RESI (Real Estate AI) — RESI-models"
+  owner_repo: "resi-labs-ai__RESI-models"
+  netuid: 46
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners train and submit ONNX real-estate price-prediction models (committed on-chain and
+    uploaded to HuggingFace). Validators download the models, run them in sandboxed Docker
+    inference against fresh validation data (properties listed/sold within the last 30 days,
+    and committed at least ~30 days prior), and reward the single best-generalizing model.
+    Score = 1 - MAPE (Mean Absolute Percentage Error) on predicted vs actual sale prices.
+  submission_format: [model_weights, commitment_hash]
+
+scoring_signals:
+  - name: mape_score
+    metric_kind: regression_error
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      Score = 1 - MAPE, clamped to [0,1] via max(0.0, 1.0 - mape). MAPE = mean(|y_true - y_pred|/y_true).
+      Lower error => higher score. Score is the sole ranking metric (mape_to_score in metrics.py).
+
+ground_truth_sources:
+  - kind: market_data
+    description: >-
+      Fresh real-estate validation data (recently listed/sold property sale prices) fetched daily
+      from the RESI validator dashboard API. Used as y_true for MAPE scoring against model predictions.
+    source_identifier: "https://resi-validator-api.vercel.app"
+    trust_model: trusted
+    notes: >-
+      Temporal separation enforced: models must be committed on-chain ~30 days before evaluation,
+      and evaluation uses properties listed/sold within the last 30 days (data that did not exist
+      at submission time).
+
+aggregation:
+  method: winner_take_all
+  composition: gated
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: "238"
+    fraction: 0.0
+    dynamic: false
+    notes: >-
+      _apply_burn() supports allocating a fraction of emissions to burn_uid (default 238), but
+      burn_amount is hardcoded to 0.0 in validator.py ("Hardcoded: 0% burn"), so no burn is applied.
+  notes: >-
+    Winner-takes-most. Winner set = all valid models within score_threshold (0.005) of best score;
+    within that set the earliest on-chain commit wins (innovation/pioneer reward). Distribution:
+    winner_share=0.99 to winner, remaining 0.01 split proportionally by score among valid non-winners,
+    cheaters (copiers, memorizers, rejected) get 0. Validator normalizes scores so weights sum to 1.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Daily evaluation produces an IncentiveWeights mapping (hotkey -> weight); validator writes it
+    into self.scores, normalizes by total, and submits via Pylon. A separate weight-setting loop
+    fires once elapsed blocks exceed epoch_length.
+  on_chain_call: set_weights
+  tempo_or_interval: "361 blocks"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA/SMA smoothing of the final reward. Scores are overwritten each evaluation
+      (self.scores.fill(0.0) then set). Weight setting gated by epoch_length (361 blocks).
+
+anti_gaming:
+  - kind: deduplication
+    enforcement: elimination
+    description: >-
+      Duplicate prediction detection: models producing identical predictions (within
+      similarity_threshold=1e-6) are grouped; the earliest committer is the "pioneer", later
+      committers are "copiers" and receive 0 weight.
+  - kind: data_augmentation
+    enforcement: elimination
+    description: >-
+      Generalization (memorization) detection via perturbation. Models re-evaluated on globally
+      perturbed features (global_noise_pct=0.01) and spatially perturbed coords
+      (spatial_noise_std=0.005). Flagged as memorizer if global_ratio < global_threshold (0.70) or
+      spatial_ratio < spatial_threshold (0.95); memorizers get 0 weight. Perturbation seed is the
+      decentralized commit-reveal randomness seed.
+  - kind: code_inspection
+    enforcement: rejection
+    description: >-
+      ModelInspector inspects submitted ONNX models; rejects models with too many price-like
+      constants (price_count_threshold=50000, i.e. lookup/memorization) and, when configured,
+      models with unused initializers (reject_unused_initializers=True).
+  - kind: commit_reveal
+    enforcement: barrier
+    description: >-
+      Decentralized randomness: validators timelock-commit a random value (~360 blocks reveal) and
+      harvest a shared seed used for perturbation, with a mid-epoch snapshot of committers to reject
+      late commits (min_quorum=2). Also a temporal commit-cutoff: commitments must be at least
+      min_commitment_age_blocks (216000, ~30d) old to be eligible.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: true
+  state_kinds: [registration_age]
+  status_values: []
+  reset_policy: >-
+    Score zeroed when a UID's hotkey changes (deregistration/replacement). Winner selection uses
+    on-chain commit block_number; minimum commitment age (~30d) gates eligibility.
+  notes: >-
+    No persistent per-miner ledger; per-cycle scores are recomputed and overwritten. Commit
+    block/age is the main per-miner state used (earliest-commit tie-break + eligibility gate).
+    An optional ATH (all-time-high) mode (ath_enabled, default false) would reward the persisted
+    ATH winner 99% / 1% to others until beaten, but it is disabled by default in this revision.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/VALIDATOR.md"
+    - "docs/MINER.md"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "real_estate/validator/config.py"
+      line_ref: "23-28"
+      quote: 'default=int(os.environ.get("NETUID", "46")),'
+      confidence: high
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "3"
+      quote: "**Subnet 46** on Bittensor Mainnet"
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "real_estate/validator/validator.py"
+      line_ref: "20-21"
+      quote: "import bittensor as bt\nimport numpy as np"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "70-79"
+      quote: "Upload to HF / Commit hash ... Run inference / Score & rank ... Validators: Download models, run sandboxed inference, calculate scores, set weights"
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "real_estate/validator/config.py"
+      line_ref: "384-390"
+      quote: 'help="Load models from local dir ({dir}/{hotkey}/model.onnx). Bypasses HF + chain."'
+      confidence: high
+    - claim_field: "/scoring_signals/0/metric_kind"
+      source_path: "real_estate/evaluation/metrics.py"
+      line_ref: "13-15"
+      quote: "Scoring convention:\n    Score = 1 - MAPE, so lower error = higher score."
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "real_estate/evaluation/metrics.py"
+      line_ref: "183-185"
+      quote: "def mape_to_score(mape: float) -> float:\n    ...\n    return max(0.0, 1.0 - mape)"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "real_estate/validator/config.py"
+      line_ref: "75-78"
+      quote: 'default=os.environ.get(\n            "VALIDATION_DATA_URL", "https://resi-validator-api.vercel.app"\n        ),'
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/notes"
+      source_path: "README.md"
+      line_ref: "25-27"
+      quote: "Commit Cutoff: Models must be committed on-chain ~30 days before evaluation - Fresh Data: Evaluation uses properties listed and sold within the last 30 days"
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "README.md"
+      line_ref: "15"
+      quote: "**Winner-Takes-All**: Best performing model receives 99% of emissions"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "real_estate/incentives/scorer.py"
+      line_ref: "75-77"
+      quote: "threshold_cutoff = best_score - self._threshold\n        winner_set_results = [r for r in sorted_results if r.score >= threshold_cutoff]"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "real_estate/incentives/scorer.py"
+      line_ref: "105-106"
+      quote: "# Within winner set, pick earliest commit\n        winner = min(candidates, key=lambda c: (c.block_number, c.hotkey))"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "real_estate/incentives/distributor.py"
+      line_ref: "85-96"
+      quote: "weights[winner_hotkey] = self._config.winner_share\n        ... share = (result.score / total_score) * self._config.non_winner_share"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "real_estate/validator/validator.py"
+      line_ref: "377"
+      quote: "burn_amount: float = 0.0  # Hardcoded: 0% burn. Autoupdater picks this up."
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "real_estate/validator/config.py"
+      line_ref: "417-422"
+      quote: 'help="UID of subnet owner to receive burn allocation (protocol burns this emission).",\n        default=int(os.environ.get("BURN_UID", "238")),'
+      confidence: high
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "real_estate/incentives/models.py"
+      line_ref: "13"
+      quote: "winner_share: float = 0.99"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "real_estate/validator/validator.py"
+      line_ref: "341-342"
+      quote: "await self._ensure_chain().set_weights(weights)\n            logger.info(\"Weights submitted to Pylon\")"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "real_estate/validator/config.py"
+      line_ref: "147-152"
+      quote: 'help="Number of blocks between metagraph syncs and weight setting.",\n        default=int(os.environ.get("EPOCH_LENGTH", "361")),'
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "real_estate/validator/validator.py"
+      line_ref: "355-357"
+      quote: "elapsed = self.block - self._last_weight_set_block\n        epoch_length: int = self.config.epoch_length\n        return elapsed > epoch_length"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "real_estate/duplicate_detector/grouper.py"
+      line_ref: "20"
+      quote: "similarity_threshold: float = 1e-6"
+      confidence: high
+    - claim_field: "/anti_gaming/0/enforcement"
+      source_path: "real_estate/incentives/distributor.py"
+      line_ref: "98-100"
+      quote: "# Cheaters explicitly get 0\n        for cheater in cheaters:\n            weights[cheater] = 0.0"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "real_estate/generalization_detector/models.py"
+      line_ref: "13-26"
+      quote: "global_noise_pct: float = 0.01 ... global_threshold: float = 0.70 ... spatial_noise_std: float = 0.005 ... spatial_threshold: float = 0.95"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "real_estate/generalization_detector/detector.py"
+      line_ref: "97-100"
+      quote: "is_memorizer = global_ratio < self._config.global_threshold ... or spatial_ratio < self._config.spatial_threshold"
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "real_estate/orchestration/orchestrator.py"
+      line_ref: "133-134"
+      quote: "inspection_price_threshold: int = 50_000,\n        inspection_reject_unused: bool = True,"
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "real_estate/validator/config.py"
+      line_ref: "250-256"
+      quote: 'help="Minimum age in blocks for commitments to be eligible (~30d = 216000 blocks at 12s/block).",\n        default=int(os.environ.get("MODEL_MIN_COMMITMENT_AGE_BLOCKS", "216000")),'
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "real_estate/validator/config.py"
+      line_ref: "359-365"
+      quote: 'help="Minimum validator reveals for a valid seed. Default 2. Set to 1 for localnet testing.",\n        default=int(os.environ.get("RANDOMNESS_MIN_QUORUM", "2")),'
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "real_estate/validator/validator.py"
+      line_ref: "259-260"
+      quote: 'logger.debug(f"UID {uid} hotkey changed, zeroing score")\n                self.scores[uid] = 0'
+      confidence: high
+    - claim_field: "/per_miner_state/notes"
+      source_path: "real_estate/validator/config.py"
+      line_ref: "400-407"
+      quote: 'help="Enable ATH-based incentive: reward ATH winner until beaten. When disabled, reward daily evaluation winner.",\n        default=os.environ.get("ATH_ENABLED", "false").lower() == "true",'
+      confidence: high
+    - claim_field: "/documentation/primary_docs"
+      source_path: "README.md"
+      line_ref: "3"
+      quote: "[Validator Guide](docs/VALIDATOR.md) | [Miner Guide](docs/MINER.md)"
+      confidence: high
+  unresolved:
+    - "Exact final on-chain normalization/clipping applied by Pylon's set_weights (delegated to Pylon service, not in this repo)."
+    - "Whether burn is enabled in production via the autoupdater (code default is 0.0); cannot confirm live value from source."

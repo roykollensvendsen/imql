@@ -1,0 +1,155 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: full_burn
+mechanism_status_notes: >-
+  The only validator implementation (validator.py) sets 100% weight on UID 0 every tempo and
+  contains no miner scoring, querying, or reward logic at all. Its own docstring describes it as
+  "Simplest possible Bittensor subnet validator. Simply burns everything to UID 0." Chi is a
+  vibe-coding subnet template, not a live incentive mechanism: the repo ships a knowledge/ corpus
+  of reference YAML for an agent to author a mechanism from, but no scoring is implemented.
+
+subnet:
+  name: "Chi"
+  owner_repo: "helionlink__Chi"
+  netuid: null
+  implementation_lang: python
+
+task:
+  summary: >-
+    Chi is "A Vibe-Codable Bittensor Subnet Template" (README) intended to be cloned into Cursor and
+    extended by an AI agent against a knowledge/ corpus. As shipped there is no defined miner task and
+    no scoring: the validator queries nothing and rewards nothing. It simply sets 100% of weight on
+    UID 0 (burn) once per tempo. Any actual incentive task is left to the user to vibe-code.
+  submission_format: [other]
+  submission_format_other: >-
+    None defined. The shipped validator performs no miner query or submission collection; there is
+    no submission format in the implemented code.
+
+scoring_signals:
+  - name: none_implemented
+    metric_kind: other
+    metric_kind_other: "No scoring signal — validator sets a fixed weight of 1.0 on UID 0 with no miner evaluation"
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      No metric is computed. validator.py hardcodes uids = [0] and weights = [1.0]; there is no
+      reward function, no miner querying, and no per-miner state.
+
+ground_truth_sources: []
+
+aggregation:
+  method: winner_take_all
+  composition: other
+  composition_other: "No composition — a single fixed weight of 1.0 is assigned to UID 0; no signals are combined"
+  normalization: none
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: 1.0
+    dynamic: false
+    notes: >-
+      validator.py sets uids = [0] and weights = [1.0] each tempo, routing 100% of emission to
+      UID 0. The module docstring states it "Simply burns everything to UID 0."
+  notes: >-
+    Not an aggregation of signals — the validator unconditionally assigns full weight to UID 0.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Once per subnet tempo the validator calls subtensor.set_weights with uids=[0], weights=[1.0].
+    Tempo is read from subtensor.get_subnet_hyperparameters(netuid).tempo; weights are reset when
+    current_block - last_weight_block >= tempo.
+  on_chain_call: set_weights
+  tempo_or_interval: "tempo blocks (read from subnet hyperparameters at runtime)"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: "No smoothing; a constant weight vector [1.0] on UID 0 is set each tempo."
+
+anti_gaming: []
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: false
+  state_kinds: []
+  status_values: []
+  reset_policy: ""
+  notes: "No per-miner state is tracked; the validator evaluates no miners."
+
+documentation:
+  status: sparse
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "validator.py (module docstring)"
+  completeness: low
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: low
+  evidence:
+    - claim_field: "/mechanism_status"
+      source_path: "validator.py"
+      line_ref: "1-3"
+      quote: "Simplest possible Bittensor subnet validator. Simply burns everything to UID 0."
+      confidence: high
+    - claim_field: "/subnet/name"
+      source_path: "README.md"
+      line_ref: "5"
+      quote: "# Chi: A Vibe-Codable Bittensor Subnet Template."
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "validator.py"
+      line_ref: "9"
+      quote: "import bittensor as bt"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "5-8"
+      quote: "# Chi: A Vibe-Codable Bittensor Subnet Template.\n1. Clone this repo into Cursor\n2. Ask your agent: \"How do I make: [your subnet idea]? @knowledge\""
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/enabled"
+      source_path: "validator.py"
+      line_ref: "110-112"
+      quote: "# Set 100% weight on UID 0\n                    uids = [0]\n                    weights = [1.0]"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "validator.py"
+      line_ref: "111"
+      quote: "uids = [0]"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "validator.py"
+      line_ref: "112"
+      quote: "weights = [1.0]"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "validator.py"
+      line_ref: "115-122"
+      quote: "success = subtensor.set_weights(\n                        wallet=wallet,\n                        netuid=netuid,\n                        uids=uids,\n                        weights=weights,"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "validator.py"
+      line_ref: "106-108"
+      quote: "blocks_since_last = current_block - last_weight_block\n                if blocks_since_last >= tempo:\n                    logger.info(f\"Block {current_block}: Setting weights (tempo={tempo})\")"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "validator.py"
+      line_ref: "90"
+      quote: "tempo = subtensor.get_subnet_hyperparameters(netuid).tempo"
+      confidence: high
+  unresolved:
+    - "/subnet/netuid — not pinned in source; NETUID env var defaults to \"1\" (validator.py:39) but this is a generic template default, not the deployed subnet's netuid."
+    - "scoring_signals / ground_truth_sources / anti_gaming — none implemented; the shipped validator performs no miner evaluation. Any future mechanism is to be vibe-coded by the user against the knowledge/ corpus."
+    - "task.submission_format — undefined; no miner query path exists in the code."

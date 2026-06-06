@@ -1,0 +1,352 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  Live scoring is active but heavily burn-weighted. A configurable burn_fraction (default 0.65)
+  is sent to hardcoded burn UID 59 whenever miners qualify; if no miner clears the quality
+  threshold, 100% of emissions burn to UID 59. With UAV_grading enabled (default True), kept
+  emissions are split 10% KAV / 90% UAV reputation, so most reward flows through an off-chain
+  reputation snapshot rather than the documented online name-variation quality scoring.
+
+subnet:
+  name: "MIID Subnet 54 - Identity Testing Network"
+  owner_repo: "yanez-compliance__MIID-subnet"
+  netuid: 54
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners receive seed identities (name, date of birth, address) plus a threat-scenario spec and
+    must generate name variations (and DOB/address variations) that simulate identity-evasion
+    techniques used to bypass KYC/sanctions screening. Validators grade variations on phonetic and
+    orthographic similarity, count/uniqueness/length, rule-compliance, and address/DOB validity.
+  submission_format: [signals]
+
+scoring_signals:
+  - name: phonetic_orthographic_similarity
+    metric_kind: similarity
+    direction: target_band
+    weight: 0.60
+    normalization: none
+    notes: >-
+      Combined phonetic (Soundex/Metaphone/NYSIIS) and orthographic (Levenshtein) similarity scored
+      against target distribution bands (Light/Medium/Far). similarity_weight=0.60 in
+      MIID_REWARD_WEIGHTS, applied per-part in calculate_part_score.
+  - name: count_match
+    metric_kind: composite
+    direction: target_band
+    weight: 0.15
+    normalization: none
+    notes: >-
+      Score for producing the expected number of variations within an adaptive tolerance;
+      exponential-decay penalty for deviation. count_weight=0.15.
+  - name: uniqueness
+    metric_kind: composite
+    direction: higher_is_better
+    weight: 0.10
+    normalization: none
+    notes: "uniqueness_weight=0.10; ratio of sufficiently-distinct variations after clustering."
+  - name: length_reasonableness
+    metric_kind: composite
+    direction: target_band
+    weight: 0.15
+    normalization: none
+    notes: "length_weight=0.15; adaptive length-ratio score vs original name."
+  - name: rule_compliance
+    metric_kind: composite
+    direction: higher_is_better
+    weight: 0.20
+    normalization: none
+    notes: >-
+      rule_compliance_weight=0.20 in MIID_REWARD_WEIGHTS; final per-name score is
+      base_weight*base_score + rule_compliance_weight*rule_compliance_score with
+      base_weight = 1.0 - rule_compliance_weight.
+  - name: address_validity
+    metric_kind: composite
+    direction: higher_is_better
+    weight: 0.7
+    normalization: none
+    notes: >-
+      In final per-miner reward, components are weighted quality_weight=0.2, dob_weight=0.1,
+      address_weight=0.7. Address scored via Nominatim bounding-box area buckets (1.0/0.9/0.8/0.7/0.3).
+  - name: dob_validity
+    metric_kind: composite
+    direction: higher_is_better
+    weight: 0.1
+    normalization: none
+    notes: "dob_weight=0.1 in final reward composition (_grade_dob_variations)."
+  - name: name_variation_quality
+    metric_kind: composite
+    direction: higher_is_better
+    weight: 0.2
+    normalization: none
+    notes: >-
+      quality_weight=0.2; the average per-name variation quality score (the similarity/count/
+      uniqueness/length/rule composite from calculate_variation_quality) folded into the final
+      per-miner reward alongside DOB and address.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Seed names with phonetic algorithms (jellyfish Soundex/Metaphone/NYSIIS) and Levenshtein
+      distance used as deterministic reference for similarity scoring.
+    source_identifier: "jellyfish, Levenshtein (MIID/validator/reward.py)"
+    trust_model: trusted
+    notes: ""
+  - kind: hardware_probe
+    description: >-
+      External geocoding APIs used to validate generated addresses: Nominatim (OpenStreetMap) for
+      bounding-box-area scoring and Photon (komoot) as an address-existence check; geonamescache for
+      city-in-country validation.
+    source_identifier: "nominatim.openstreetmap.org, photon.komoot.io, geonamescache"
+    trust_model: oracle
+    notes: "Used as external oracle for address realism; results LRU-cached."
+  - kind: reference_model
+    description: >-
+      Off-chain reputation snapshot (rep_data: rep_score + rep_tier) fetched from a Flask service,
+      used to compute UAV rewards that dominate emissions when UAV_grading is enabled.
+    source_identifier: "rep_data from Flask (apply_reputation_rewards)"
+    trust_model: unknown
+    notes: "Reputation source is off-chain and not in this repo; trust model not establishable."
+
+aggregation:
+  method: rank_based
+  composition: hybrid
+  normalization: l1
+  temperature: null
+  decay_rate: 0.05
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "59"
+    fraction: 0.65
+    dynamic: true
+    notes: >-
+      burn_fraction default 0.65 to hardcoded burn_uid 59 when miners qualify; kept rewards rescaled
+      to keep_fraction (1 - burn_fraction). 100% burn (fraction 1.0) when no miner clears the quality
+      threshold. With reputation pipeline, residual after KAV/UAV proportions also burns.
+  notes: >-
+    Per-name quality is a weighted_sum of similarity/count/uniqueness/length plus a separate
+    rule-compliance term; per-miner reward is weighted_sum of quality(0.2)/dob(0.1)/address(0.7) times
+    a completeness multiplier and minus similarity/collusion penalties. Final emission stage:
+    top_miner_cap (50) ranks miners, quality_threshold (0.6) gates them, qualified miners get
+    exp(-decay_rate*rank) blended with original reward via blend_factor (0.7), then burn split, then
+    optional KAV(0.10)/UAV(0.90) reputation reweighting.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    self.scores L1-normalized into raw_weights, passed through process_weights_for_netuid and
+    convert_weights_and_uids_for_emit, then subtensor.set_weights.
+  on_chain_call: set_weights
+  tempo_or_interval: null
+  smoothing:
+    kind: ema
+    alpha: 0.15
+    window: null
+    notes: >-
+      update_scores: self.scores = alpha*scattered_rewards + (1-alpha)*self.scores, with
+      moving_average_alpha default 0.15.
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      Phonetic algorithm subset and weights are randomized (deterministically seeded per name) to
+      reduce overfitting to a single encoding; variations with >2 consecutive identical letters are
+      filtered with up-to-20% penalty; very-low-similarity scores (<0.2) reduced to 10%.
+  - kind: deduplication
+    enforcement: penalty
+    description: >-
+      Address-duplication penalty (normalized, capped at 0.2) and DOB/address normalization-based
+      duplicate counting in cheat_detection / get_name_variation_rewards.
+  - kind: plagiarism_detection
+    enforcement: penalty
+    description: >-
+      detect_cheating_patterns computes pairwise overlap/Jaccard similarity between miners; large
+      collusion groups (members with score < 0.95) get a direct penalty (penalty_value = 0.75); high
+      cross-miner overlap penalized via overlap/Jaccard.
+  - kind: rate_limit
+    enforcement: barrier
+    description: >-
+      Quality threshold (0.6) plus top_miner_cap (50) gate which miners receive any ranking reward;
+      non-qualifying miners get 0 and emissions burn.
+
+sub_competitions:
+  structure: multi_mechanism
+  stages:
+    - name: "KAV (Known Address Variation) online quality scoring"
+      role: main
+      advancement_rule: "quality_score >= quality_threshold (0.6) and global_rank < top_miner_cap (50)"
+      multipliers:
+        kav_weight: 0.10
+    - name: "UAV (Unknown Attack Vectors) reputation-weighted rewards"
+      role: other
+      advancement_rule: "rep_score > 0 in off-chain rep_data snapshot"
+      multipliers:
+        uav_weight: 0.90
+  count: 2
+  notes: >-
+    UAV_grading config flag (default True) enables the two-track KAV+UAV pipeline; when disabled,
+    KAV-only scoring with burn applied directly.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [reputation, cumulative_score]
+  status_values: ["Platinum", "Diamond", "Gold", "Silver", "Bronze", "Neutral", "Watch"]
+  reset_policy: >-
+    rep_score decays over time toward 0; when it reaches 0 the miner gets zero UAV reward. New miners
+    not in rep_data snapshot get zero UAV (KAV-only) until they build reputation.
+  notes: >-
+    TIER_MULTIPLIERS: Platinum 1.25, Diamond 1.15, Gold 1.10, Silver 1.05, Bronze 1.02, Neutral 1.00,
+    Watch 0.90. Validator also keeps an EMA of self.scores across epochs.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/validator.md"
+    - "docs/Yanez Identity Generation Bittensor Subnet.pdf"
+    - "docs/Unknown Attack Vectors (UAV) Reward System-updates.pdf"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: medium
+  evidence:
+    - claim_field: /subnet/name
+      source_path: README.md
+      line_ref: "8"
+      quote: "# **MIID Subnet 54 - Identity Testing Network**"
+    - claim_field: /subnet/netuid
+      source_path: README.md
+      line_ref: "90"
+      quote: "neurons/validator.py --netuid 54 --wallet.name your_wallet"
+    - claim_field: /task/summary
+      source_path: README.md
+      line_ref: "21"
+      quote: >-
+        a robust dataset of **name variations, transliterations, and identity attributes** that help
+        identify identity fraud and evasion techniques.
+    - claim_field: /scoring_signals/0/weight
+      source_path: MIID/validator/reward.py
+      line_ref: "115"
+      quote: '"similarity_weight": 0.60,       # Combined weight for phonetic and orthographic similarity'
+    - claim_field: /scoring_signals/1/weight
+      source_path: MIID/validator/reward.py
+      line_ref: "116"
+      quote: '"count_weight": 0.15,            # Weight for having the correct number of variations'
+    - claim_field: /scoring_signals/2/weight
+      source_path: MIID/validator/reward.py
+      line_ref: "117"
+      quote: '"uniqueness_weight": 0.10,       # Weight for having unique variations'
+    - claim_field: /scoring_signals/3/weight
+      source_path: MIID/validator/reward.py
+      line_ref: "118"
+      quote: '"length_weight": 0.15,           # Weight for reasonable length variations'
+    - claim_field: /scoring_signals/4/weight
+      source_path: MIID/validator/reward.py
+      line_ref: "120"
+      quote: '"rule_compliance_weight": 0.20,  # NEW: Weight for rule-based compliance'
+    - claim_field: /scoring_signals/4/notes
+      source_path: MIID/validator/reward.py
+      line_ref: "1598-1602"
+      quote: "base_weight = 1.0 - rule_compliance_weight ... final_score = (base_weight * base_score) + (rule_compliance_weight * rule_compliance_score)"
+    - claim_field: /scoring_signals/5/weight
+      source_path: MIID/validator/reward.py
+      line_ref: "3125-3127"
+      quote: "quality_weight = 0.2 / dob_weight = 0.1 / address_weight = 0.7"
+    - claim_field: /scoring_signals/5/notes
+      source_path: MIID/validator/reward.py
+      line_ref: "476-485"
+      quote: "if total_area < 100: score = 1.0 elif total_area < 1000: score = 0.9 ... else: score = 0.3"
+    - claim_field: /ground_truth_sources/0/source_identifier
+      source_path: MIID/validator/reward.py
+      line_ref: "160-200"
+      quote: '"soundex": ... "metaphone": ... "nysiis": ...  distance = Levenshtein.distance(original_name, variation)'
+    - claim_field: /ground_truth_sources/1/source_identifier
+      source_path: MIID/validator/reward.py
+      line_ref: "382-540"
+      quote: 'url = "https://nominatim.openstreetmap.org/search" ... url = "https://photon.komoot.io/api/"'
+    - claim_field: /ground_truth_sources/2/description
+      source_path: MIID/validator/reward.py
+      line_ref: "3587"
+      quote: "rep_data: Dict mapping hotkey -> {rep_score, rep_tier} from Flask"
+    - claim_field: /aggregation/decay_rate
+      source_path: MIID/utils/config.py
+      line_ref: "441-445"
+      quote: "'--neuron.decay_rate', ... default=0.05"
+    - claim_field: /aggregation/method
+      source_path: MIID/validator/reward.py
+      line_ref: "2530-2534"
+      quote: "ranked_rewards_component = np.exp(-decay_rate * qualified_ranks) ... blended_rewards = (blend_factor * ranked_rewards_component + (1 - blend_factor) * qualified_original_rewards)"
+    - claim_field: /aggregation/burn_allocation/fraction
+      source_path: MIID/validator/reward.py
+      line_ref: "3208-3210"
+      quote: "burn_fraction = getattr(self.config.neuron, 'burn_fraction', 0.65) burn_uid = 59  # Hardcoded: burn UID is always 59 and never configurable keep_fraction = 1.0 - burn_fraction"
+    - claim_field: /aggregation/burn_allocation/address_or_uid
+      source_path: MIID/validator/reward.py
+      line_ref: "3209"
+      quote: "burn_uid = 59  # Hardcoded: burn UID is always 59 and never configurable"
+    - claim_field: /aggregation/burn_allocation/dynamic
+      source_path: MIID/validator/reward.py
+      line_ref: "2559-2563"
+      quote: "All emissions will be burned to UID {burn_uid} ... extended_rewards = np.append(final_rewards, 1.0)  # All zeros except burn UID gets 1.0"
+    - claim_field: /aggregation/notes
+      source_path: MIID/validator/reward.py
+      line_ref: "3219-3222"
+      quote: "top_miner_cap=self.config.neuron.top_miner_cap, quality_threshold=self.config.neuron.quality_threshold, decay_rate=self.config.neuron.decay_rate, blend_factor=self.config.neuron.blend_factor,"
+    - claim_field: /weight_setting/on_chain_call
+      source_path: MIID/base/validator.py
+      line_ref: "303-310"
+      quote: "response = self.subtensor.set_weights(wallet=self.wallet, netuid=self.config.netuid, uids=uint_uids, weights=uint_weights,"
+    - claim_field: /weight_setting/method
+      source_path: MIID/base/validator.py
+      line_ref: "265-280"
+      quote: "norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True) ... raw_weights = self.scores / norm ... process_weights_for_netuid("
+    - claim_field: /weight_setting/smoothing/alpha
+      source_path: MIID/base/validator.py
+      line_ref: "414-417"
+      quote: "alpha: float = self.config.neuron.moving_average_alpha self.scores: np.ndarray = (alpha * scattered_rewards + (1 - alpha) * self.scores"
+    - claim_field: /weight_setting/smoothing/alpha
+      source_path: MIID/utils/config.py
+      line_ref: "256-259"
+      quote: '"--neuron.moving_average_alpha", ... default=0.15,'
+    - claim_field: /anti_gaming/0/description
+      source_path: MIID/validator/reward.py
+      line_ref: "999-1022"
+      quote: "if has_excessive_letter_repetition(var, max_repetition=2): ... filter_penalty = min(0.2, filtered_count * 0.05)  # Up to 20% penalty"
+    - claim_field: /anti_gaming/2/description
+      source_path: MIID/validator/cheat_detection.py
+      line_ref: "521-524"
+      quote: "Large collusion group detected with {len(bucket_indices)} members with score < 0.95. Applying direct penalty. penalty_value = 0.75"
+    - claim_field: /anti_gaming/3/description
+      source_path: MIID/validator/reward.py
+      line_ref: "2501-2504"
+      quote: "within_cap_mask = global_ranks < top_miner_cap ... qualified_mask = (within_cap_mask) & (quality_scores >= quality_threshold)"
+    - claim_field: /sub_competitions/notes
+      source_path: MIID/utils/config.py
+      line_ref: "464-481"
+      quote: "'--neuron.UAV_grading', ... 'kav_weight', ... default=0.10 ... 'uav_weight', ... default=0.90"
+    - claim_field: /sub_competitions/structure
+      source_path: MIID/validator/reward.py
+      line_ref: "3575-3582"
+      quote: "Calculate UAV rewards (R × T) from rep_data and KAV portions (Q) separately ... KAV portions scaled to sum to keep_fraction * kav_weight ... UAV portions scaled to sum to keep_fraction * uav_weight"
+    - claim_field: /per_miner_state/status_values
+      source_path: MIID/validator/reward.py
+      line_ref: "3481-3489"
+      quote: 'TIER_MULTIPLIERS = {"Platinum": 1.25, "Diamond": 1.15, "Gold": 1.10, "Silver": 1.05, "Bronze": 1.02, "Neutral": 1.00, "Watch": 0.90,}'
+    - claim_field: /per_miner_state/reset_policy
+      source_path: MIID/validator/reward.py
+      line_ref: "3521-3523"
+      quote: "Zero or negative score = zero normalized (zero UAV) if rep_score <= 0: return 0.0"
+    - claim_field: /mechanism_status
+      source_path: MIID/validator/forward.py
+      line_ref: "568"
+      quote: "uav_grading_enabled = getattr(self.config.neuron, 'UAV_grading', False)"
+  unresolved:
+    - "Exact on-chain weight-setting cadence/tempo (tempo_or_interval) not specified in repo constants; set_weights call uses wait_for_finalization=False."
+    - "Whether UAV_grading default is True (config.py) or False (forward.py getattr fallback) at runtime is ambiguous between config default=True and the getattr default in forward.py."
+    - "Trust model and integrity of the off-chain Flask reputation source (rep_data) cannot be established from this repo."

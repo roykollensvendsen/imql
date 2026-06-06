@@ -1,0 +1,244 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: mixed
+mechanism_status_notes: >-
+  The platform computes a live consensus score and assigns 100% of weight to the single
+  top approved agent (winner-take-all). However, a runtime BURN env flag, when set, routes
+  100% of emissions to the owner hotkey instead, and if no eligible weight-receiving agent
+  exists the validator also falls back to burning to the owner hotkey. Burn is a toggle/fallback,
+  scoring is otherwise active.
+
+subnet:
+  name: "Ridges"
+  owner_repo: "ridgesai__ridges"
+  netuid: null
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners submit an agent.py (source code) coding agent to the Ridges platform. Each agent is
+    run against software-engineering problems (SWE-bench-style fail_to_pass / pass_to_pass test
+    suites) inside the Harbor execution sandbox by screeners and validators. An agent's score is
+    the fraction of problems it solves under validator consensus; the single highest-scoring
+    approved agent receives 100% of the subnet weight (winner-take-all).
+  submission_format: [source_code]
+
+scoring_signals:
+  - name: consensus_solve_fraction
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      final_score = (count of validator-set problems where every validator agreed the agent
+      solved them) / total problem count in the set. Computed in SQL function
+      refresh_agent_scores_for_agent / populate_agent_scores.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      SWE-bench-style coding problems with fail_to_pass and pass_to_pass test suites; an agent's
+      patch is run in the Harbor sandbox and marked 'solved' when tests pass.
+    source_identifier: "evaluation_sets / problems (set_group='validator')"
+    trust_model: trusted
+    notes: >-
+      Multiple independent validators each evaluate; a problem counts toward score only when
+      solved by all validators (consensus per problem).
+
+aggregation:
+  method: winner_take_all
+  composition: weighted_sum
+  normalization: none
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "OWNER_HOTKEY"
+    fraction: 1.0
+    dynamic: false
+    notes: >-
+      Burn is conditional, not always-on: when config.BURN is true OR when no registered
+      weight-receiving agent exists, 100% of weight is assigned to the owner hotkey. The
+      fraction of 1.0 applies in the burn branch only.
+  notes: >-
+    The /scoring/weights endpoint returns a single {hotkey: 1.0} mapping. The validator
+    set_weights_from_mapping asserts exactly one hotkey with weight 1 and sets uids=[uid],
+    weights=[1] on-chain. Pure winner-take-all; the top agent is ranked by final_score DESC,
+    then lowest avg running seconds, then earliest created_at.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    Validator polls the platform's /scoring/weights endpoint every SET_WEIGHTS_INTERVAL_SECONDS
+    and calls subtensor.set_weights with uids=[top_uid], weights=[1] (single non-zero weight).
+  on_chain_call: set_weights
+  tempo_or_interval: "SET_WEIGHTS_INTERVAL_SECONDS (env-configured, value not in source)"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No on-chain EMA smoothing in the repo; weight is set directly to the current leader.
+      The leader query restricts to agents approved within the last 12 hours.
+
+anti_gaming:
+  - kind: code_inspection
+    enforcement: rejection
+    description: >-
+      Pre-screening LLM judge (pre_screening_jobs / pre_screening_results) returns a verdict of
+      pass, fail, or needs_review on a submitted agent before it can be scored.
+  - kind: stake_weighting
+    enforcement: elimination
+    description: >-
+      Banned hotkeys table: get_banned_hotkey looks up a miner_hotkey in banned_hotkeys; banned
+      miners are excluded.
+  - kind: challenge_period
+    enforcement: barrier
+    description: >-
+      Multi-tier screening pipeline: agents must clear screener-1 and screener-2 thresholds
+      (SCREENER_1_THRESHOLD, SCREENER_2_THRESHOLD) and avoid the PRUNE_THRESHOLD before reaching
+      validator evaluation; thresholds are env-configured (literal values not in source).
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      Consensus requirement: a problem only counts toward an agent's final_score when solved by
+      ALL validators (solved_validator_count = validator_count), and at least 2 validators must
+      have evaluated (validator_count >= 2).
+
+sub_competitions:
+  structure: tiered
+  stages:
+    - name: "screener_1"
+      role: qualifier
+      advancement_rule: "score >= SCREENER_1_THRESHOLD (env-configured)"
+    - name: "screener_2"
+      role: qualifier
+      advancement_rule: "score >= SCREENER_2_THRESHOLD (env-configured)"
+    - name: "validator"
+      role: main
+      advancement_rule: "consensus final_score; top agent wins all weight"
+  count: 3
+  notes: >-
+    EvaluationSetGroup has screener_1, screener_2, and validator groups; agents progress through
+    screener tiers before validator scoring. Only the validator group feeds the consensus
+    final_score and weight assignment.
+
+per_miner_state:
+  tracked: true
+  state_kinds:
+    - status_enum
+    - cumulative_score
+  status_values:
+    - "approved"
+    - "pass"
+    - "fail"
+    - "needs_review"
+  reset_policy: >-
+    Weight eligibility requires approval within a rolling 12-hour window (approved_at between
+    NOW()-12h and NOW()) and the latest evaluation set.
+  notes: >-
+    agent_scores table tracks per-agent final_score, approved flag, approved_at, validator_count
+    and set_id. Pre-screening verdicts are pass/fail/needs_review.
+
+documentation:
+  status: code_authoritative
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "miners/README.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "validator/set_weights.py"
+      line_ref: "1-9"
+      quote: "from bittensor.core.async_subtensor import AsyncSubtensor"
+    - claim_field: "/task/submission_format"
+      source_path: "miners/README.md"
+      line_ref: "1-9"
+      quote: "ridges/ is the CLI + Python toolkit for testing agent.py ... ridges upload --file agent.py"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "alembic/versions/2026_05_07_consensus_agent_scores.py"
+      line_ref: "100-103"
+      quote: "( COUNT(*) FILTER (WHERE cbp.solved_validator_count = vc.validator_count)::float / spc.problem_count ) AS final_score"
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "models/problem.py"
+      line_ref: "9-19"
+      quote: "pass_to_pass = \"pass_to_pass\" ... fail_to_pass = \"fail_to_pass\" ... PASS = \"pass\""
+    - claim_field: "/ground_truth_sources/0/notes"
+      source_path: "alembic/versions/2026_05_07_consensus_agent_scores.py"
+      line_ref: "80"
+      quote: "COUNT(DISTINCT ve.validator_hotkey) FILTER (WHERE erh.solved IS TRUE) AS solved_validator_count"
+    - claim_field: "/aggregation/method"
+      source_path: "api/endpoints/scoring.py"
+      line_ref: "31-34"
+      quote: "weight_receiving_hotkey = await get_weight_receiving_agent_hotkey() ... return {weight_receiving_hotkey: 1.0}"
+    - claim_field: "/aggregation/notes"
+      source_path: "queries/scores.py"
+      line_ref: "28"
+      quote: "ORDER BY ass.final_score DESC, rt.avg_running_secs ASC NULLS LAST, ass.created_at ASC"
+    - claim_field: "/aggregation/burn_allocation/enabled"
+      source_path: "api/endpoints/scoring.py"
+      line_ref: "24-26"
+      quote: "if config.BURN: # When burning, we assign 100% of emissions to the owner hotkey. return {config.OWNER_HOTKEY: 1.0}"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "api/endpoints/scoring.py"
+      line_ref: "36-38"
+      quote: "# If no weight-receiving agent is found, assign 100% of emissions to the # owner hotkey (to burn). return {config.OWNER_HOTKEY: 1.0}"
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "api/config.py"
+      line_ref: "37-39"
+      quote: "OWNER_HOTKEY = os.getenv(\"OWNER_HOTKEY\")"
+    - claim_field: "/mechanism_status_notes"
+      source_path: "api/config.py"
+      line_ref: "45-48"
+      quote: "BURN = os.getenv(\"BURN\") ... BURN = BURN.lower() == \"true\""
+    - claim_field: "/weight_setting/method"
+      source_path: "validator/set_weights.py"
+      line_ref: "31-38"
+      quote: "success, message = await subtensor.set_weights( wallet=config.VALIDATOR_WALLET, netuid=config.NETUID, uids=[weight_receiving_uid], weights=[1], ... )"
+    - claim_field: "/weight_setting/cadence"
+      source_path: "validator/main.py"
+      line_ref: "95-104"
+      quote: "weights_mapping = await get_ridges_platform(\"/scoring/weights\", quiet=1) ... await asyncio.sleep(config.SET_WEIGHTS_INTERVAL_SECONDS)"
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "queries/scores.py"
+      line_ref: "24-25"
+      quote: "AND ass.approved_at <= NOW() AND ass.approved_at >= NOW() - INTERVAL '12 hours'"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "db/models/pre_screening_judge.py"
+      line_ref: "14"
+      quote: "PRE_SCREENING_VERDICTS = (\"pass\", \"fail\", \"needs_review\")"
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "queries/banned_hotkey.py"
+      line_ref: "10-12"
+      quote: "SELECT * FROM banned_hotkeys WHERE miner_hotkey = $1"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "api/endpoints/scoring.py"
+      line_ref: "63-65"
+      quote: "screener_1_threshold=config.SCREENER_1_THRESHOLD, screener_2_threshold=config.SCREENER_2_THRESHOLD, prune_threshold=config.PRUNE_THRESHOLD,"
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "alembic/versions/2026_05_07_consensus_agent_scores.py"
+      line_ref: "111-113"
+      quote: "HAVING vc.validator_count >= 2 AND COUNT(*) FILTER (WHERE cbp.solved_validator_count = vc.validator_count) > 0"
+    - claim_field: "/sub_competitions/stages"
+      source_path: "api/endpoints/scoring.py"
+      line_ref: "66-68"
+      quote: "EvaluationSetGroup.screener_1 ... EvaluationSetGroup.screener_2 ... EvaluationSetGroup.validator"
+    - claim_field: "/per_miner_state/state_kinds"
+      source_path: "db/models/agent.py"
+      line_ref: "89-93"
+      quote: "final_score: Mapped[float] = mapped_column(sa.Float, nullable=False) ... sa.Index(\"idx_agent_scores_final_score\", \"final_score\")"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "queries/scores.py"
+      line_ref: "23-26"
+      quote: "ass.approved AND ass.approved_at <= NOW() AND ass.approved_at >= NOW() - INTERVAL '12 hours' AND ass.set_id = (SELECT MAX(set_id) FROM evaluation_sets)"
+  unresolved:
+    - "Numeric values of SCREENER_1_THRESHOLD, SCREENER_2_THRESHOLD, PRUNE_THRESHOLD, SET_WEIGHTS_INTERVAL_SECONDS, and NETUID are env-configured and not present as literals in the source."
+    - "Whether BURN is currently enabled in production (runtime env state) cannot be determined from the repo."
+    - "Exact problem dataset identity/origin (e.g. SWE-bench version) is not pinned in the read files."

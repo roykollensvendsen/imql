@@ -1,0 +1,260 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Validators compute per-miner rewards from a crown-time event replay each scoring
+  window; any undistributed pool is recycled to RECYCLE_UID (subnet owner UID 53).
+  Recycling is a residual-of-distribution, not a fixed burn fraction; during a
+  contract halt the full pool recycles. So this is "active" scoring with a
+  dynamic owner-recycle residual rather than a fixed burn.
+
+subnet:
+  name: "Allways"
+  owner_repo: "entrius__allways"
+  netuid: 7
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners are cross-chain swap market-makers. They post exchange-rate pairs
+    (currently BTC <-> TAO) and collateral, then fulfill swap orders natively on
+    each chain. Per direction, the miner posting the best rate for the swapper
+    (highest TAO/BTC in the canonical btc->tao direction, lowest in the reverse)
+    holds the "crown" for that interval and earns reward proportional to how many
+    blocks they held the crown over the scoring window, scaled by their all-time
+    swap success rate. Validators independently verify fulfillments and vote
+    outcomes through a smart contract that enforces collateral and slashing.
+  submission_format: [signals, commitment_hash]
+
+scoring_signals:
+  - name: crown_time_share
+    metric_kind: volume
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      Per direction-pool, a miner's share = (crown blocks held) / (total crown
+      blocks). Crown is held by the miner posting the best rate at each instant,
+      provided they are on the metagraph, active, not busy, and rate > 0; ties at
+      the same rate split credit evenly. reward[uid] += pool * share *
+      success_rate**SUCCESS_EXPONENT. (scoring.py:120-122)
+  - name: success_rate
+    metric_kind: win_rate
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      All-time completed/(completed+timed_out) over the credibility window
+      (~30 days). Zero-outcome miners default to 1.0 (optimistic). Applied
+      multiplicatively as success_rate ** SUCCESS_EXPONENT (exponent literal = 3),
+      a gating/penalty factor not an additive weight. (scoring.py:136-144)
+
+ground_truth_sources:
+  - kind: market_data
+    description: >-
+      Miner-committed exchange rate pairs (rate_events) posted on chain and stored
+      by the validator; the best rate per direction determines crown holding.
+    source_identifier: "rate_events (validator state.db); commitments on chain"
+    trust_model: adversarial
+    notes: >-
+      Rates are normalized to RATE_SIG_FIGS=5 significant figures at post and parse
+      so scoring buckets and consensus hashes agree. (constants.py:28-30)
+  - kind: commit_reveal
+    description: >-
+      Swap fulfillment outcomes (completed vs timed_out) verified end-to-end by
+      validators against both chains and voted through the smart contract; these
+      form the swap_outcomes credibility ledger feeding success_rate.
+    source_identifier: "swap_outcomes (validator state.db); contract votes"
+    trust_model: adversarial
+    notes: >-
+      Validators verify FULFILLED swaps and vote confirm_swap; the contract
+      enforces collateral and slashing. (forward.py:76-80; README Architecture)
+
+aggregation:
+  method: proportional
+  composition: multiplicative
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "53"
+    fraction: null
+    dynamic: true
+    notes: >-
+      Undistributed pool recycles to RECYCLE_UID (53, "Subnet owner UID"):
+      rewards[recycle_uid] += max(0.0, 1.0 - distributed). On a contract halt the
+      full pool recycles (build_halted_rewards sets rewards[recycle_uid]=1.0).
+      Not a fixed fraction — it is the residual of what crown-time scoring
+      distributed. (scoring.py:124-126, 55-64; constants.py:63)
+  notes: >-
+    Per direction-pool reward = pool * share * success_rate**SUCCESS_EXPONENT,
+    summed across both direction pools (DIRECTION_POOLS each 0.04). pool and share
+    combine multiplicatively with the success_rate gate; shares sum to the pool,
+    and the residual recycles to the owner UID. (scoring.py:102-126; constants.py:55-60)
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Final self.scores (built from crown-time rewards) are L1-normalized
+    (scores / ||scores||_1), then process_weights_for_netuid + emit. If scores are
+    empty/NaN (cold start, RPC failure, all dereg'd) the full pool is routed to
+    RECYCLE_UID instead of bittensor's uniform 1/n fallback. set_weights is called
+    from neuron.sync() when should_set_weights() is true.
+  on_chain_call: set_weights
+  tempo_or_interval: "epoch_length blocks (config.neuron.epoch_length)"
+  smoothing:
+    kind: ema
+    alpha: 1.0
+    window: null
+    notes: >-
+      update_scores does scores = alpha*new + (1-alpha)*old with alpha =
+      config.neuron.moving_average_alpha, defaulting to SCORING_EMA_ALPHA = 1.0
+      (instantaneous, no smoothing across passes). (validator.py:275-276;
+      config.py:94-99; constants.py:53). Note scoring itself runs every
+      SCORING_WINDOW_BLOCKS=1200 (~4h) inside forward (forward.py:85-86).
+
+anti_gaming:
+  - kind: collateral
+    enforcement: barrier
+    description: >-
+      Miners post collateral; the smart contract manages collateral and slashing.
+      Below-floor miners get auto-deactivated on chain (fee/slash paths) or kicked
+      via vote_deactivate; collateral-floor invariants are trusted to the contract's
+      active flag. (scoring.py:90-94, 322-325; README Architecture)
+  - kind: liveness_check
+    enforcement: penalty
+    description: >-
+      Crown is only credited while a miner is active and not busy per the
+      per-block event replay; busy (reserved) miners do not earn a new interval.
+      Failed swaps reduce success_rate, which is cubed (exponent 3) into reward.
+      (scoring.py:231-247, 136-144)
+  - kind: rate_limit
+    enforcement: penalty
+    description: >-
+      Failed reservations trigger a cooldown (RESERVATION_COOLDOWN_BLOCKS=150,
+      multiplier 2) and MAX_RESERVATIONS_PER_ADDRESS=1. (constants.py:66-68)
+
+sub_competitions:
+  structure: multi_asset
+  stages: []
+  count: 2
+  notes: >-
+    Two direction pools scored independently then summed: ('tao','btc') and
+    ('btc','tao'), each with pool fraction 0.04. Crown direction sort flips
+    (lower_rate_wins) for the reverse direction. (constants.py:55-58;
+    scoring.py:102-122, 253-257)
+
+per_miner_state:
+  tracked: true
+  state_kinds: [performance_ledger, status_enum]
+  status_values: ["active", "busy", "halted"]
+  reset_policy: >-
+    rate_events pruned older than SCORING_WINDOW_BLOCKS; swap_outcomes (all-time
+    credibility ledger) pruned older than CREDIBILITY_WINDOW_BLOCKS (~30 days) and
+    persisted across restarts. (scoring.py:67-76; constants.py:52-54; README)
+  notes: >-
+    swap_outcomes is the all-time credibility ledger driving success_rate; active
+    and busy flags are reconstructed per-block from contract events during replay.
+    (scoring.py:99-100, 182-201; README Validator Storage Layout)
+
+documentation:
+  status: code_authoritative
+  source_version: null
+  primary_docs: ["README.md"]
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "allways/constants.py"
+      line_ref: "4"
+      quote: "NETUID_FINNEY = 7"
+    - claim_field: "/subnet/name"
+      source_path: "README.md"
+      line_ref: "1-9"
+      quote: "# Allways ... Trustless native transactions across independent assets — Bittensor Subnet 7 (SN7)."
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "50-53"
+      quote: "Miners: Post exchange rate pairs and collateral, fulfill swap orders; Validators: Monitor swaps, verify on-chain transactions, vote on outcomes"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "allways/validator/scoring.py"
+      line_ref: "120-122"
+      quote: "share = blocks / total; sr = success_rate(...); rewards[uid] += pool * share * (sr**SUCCESS_EXPONENT)"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "allways/validator/scoring.py"
+      line_ref: "136-144"
+      quote: "All-time success rate. Zero-outcome miners default to 1.0 (optimistic). ... return completed / total"
+    - claim_field: "/aggregation/method"
+      source_path: "allways/validator/scoring.py"
+      line_ref: "1-5"
+      quote: "Reward per miner is ``pool * share * success_rate ** SUCCESS_EXPONENT``; unclaimed pool recycles to ``RECYCLE_UID``."
+    - claim_field: "/aggregation/burn_allocation/dynamic"
+      source_path: "allways/validator/scoring.py"
+      line_ref: "124-126"
+      quote: "recycle_uid = RECYCLE_UID if RECYCLE_UID < n_uids else 0; distributed = float(rewards.sum()); rewards[recycle_uid] += max(0.0, 1.0 - distributed)"
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "allways/constants.py"
+      line_ref: "63"
+      quote: "RECYCLE_UID = 53  # Subnet owner UID"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "allways/validator/scoring.py"
+      line_ref: "55-64"
+      quote: "During a halt, no miner earns crown; the full pool recycles. ... rewards[recycle_uid] = 1.0"
+    - claim_field: "/aggregation/notes"
+      source_path: "allways/constants.py"
+      line_ref: "55-60"
+      quote: "DIRECTION_POOLS: dict[tuple[str, str], float] = { ('tao', 'btc'): 0.04, ('btc', 'tao'): 0.04, } ... SUCCESS_EXPONENT: int = 3"
+    - claim_field: "/weight_setting/method"
+      source_path: "neurons/base/validator.py"
+      line_ref: "172-185"
+      quote: "norm = np.linalg.norm(self.scores, ord=1, ...); ... raw_weights[recycle_uid] = 1.0 ... else: raw_weights = self.scores / norm"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "neurons/base/validator.py"
+      line_ref: "209-217"
+      quote: "result, msg = self.subtensor.set_weights( wallet=self.wallet, netuid=self.config.netuid, uids=uint_uids, weights=uint_weights, ...)"
+    - claim_field: "/weight_setting/cadence"
+      source_path: "neurons/base/neuron.py"
+      line_ref: "152-161"
+      quote: "def should_set_weights(self): ... return (self.block - self.metagraph.last_update[self.uid]) > self.config.neuron.epoch_length and self.neuron_type != 'MinerNeuron'"
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "allways/constants.py"
+      line_ref: "53"
+      quote: "SCORING_EMA_ALPHA = 1.0  # Instantaneous — no smoothing across passes"
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "neurons/base/validator.py"
+      line_ref: "275-276"
+      quote: "alpha: float = self.config.neuron.moving_average_alpha; self.scores = alpha * scattered_rewards + (1 - alpha) * self.scores"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "allways/validator/scoring.py"
+      line_ref: "322-325"
+      quote: "Collateral-floor gating is trusted to the contract's active flag — miners who drop below the floor get auto-deactivated on-chain (fee / slash paths) or kicked via ``vote_deactivate``"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "allways/constants.py"
+      line_ref: "66-68"
+      quote: "RESERVATION_COOLDOWN_BLOCKS = 150 ... RESERVATION_COOLDOWN_MULTIPLIER = 2 ... MAX_RESERVATIONS_PER_ADDRESS = 1"
+    - claim_field: "/sub_competitions/notes"
+      source_path: "allways/validator/scoring.py"
+      line_ref: "102-103"
+      quote: "for (from_chain, to_chain), pool in DIRECTION_POOLS.items():"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "allways/validator/scoring.py"
+      line_ref: "67-76"
+      quote: "cutoff = self.block - SCORING_WINDOW_BLOCKS ... prune_swap_outcomes ... cutoff = self.block - CREDIBILITY_WINDOW_BLOCKS"
+    - claim_field: "/per_miner_state/notes"
+      source_path: "README.md"
+      line_ref: "55-61"
+      quote: "only `swap_outcomes` (the all-time credibility ledger) needs to persist across restarts."
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "allways/validator/forward.py"
+      line_ref: "85-86"
+      quote: "if self.step % SCORING_WINDOW_BLOCKS == 0: score_and_reward_miners(self)"
+  unresolved:
+    - "epoch_length value (weight-setting tempo) is config.neuron.epoch_length from the bittensor base config; no literal default found in repo constants."
+    - "Exact relationship between SCORING_WINDOW_BLOCKS=1200 (~4h) scoring cadence and epoch_length weight-set cadence not reconciled to one numeric tempo in source."
+    - "min_allowed_weights / max_weight_limit are read from subtensor at runtime; no literal floor/cap in repo."

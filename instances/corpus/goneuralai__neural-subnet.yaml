@@ -1,0 +1,288 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Validators score miner 3D outputs via an external validation endpoint and set weights
+  on chain. No burn UID or burn fraction is present in the source. Weight emphasis is
+  steep: per-miner moving-average scores are raised to the 8th power and gated at >0.4
+  before normalization, so emission concentrates heavily on the top miners.
+
+subnet:
+  name: "NeuralAI (3D Asset Generator)"
+  owner_repo: "goneuralai__neural-subnet"
+  netuid: 46
+  implementation_lang: python
+
+task:
+  summary: >-
+    A miner receives a text prompt and generates a 3D mesh object, returning it (plus a
+    preview image) to the validator. The validator renders the mesh from multiple axes
+    and scores it on how well the rendered images and preview match the prompt (semantic
+    similarity), how well the rendered views match the preview (CLIP image similarity),
+    and overall image quality. Generation quality is rewarded; generation speed can be
+    optionally weighted in.
+  submission_format: [content_link, api_response]
+
+scoring_signals:
+  - name: preview_prompt_semantic_similarity
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 0.25
+    normalization: none
+    notes: >-
+      S0 = semantic similarity between prompt vector and preview-image description vector
+      (only computed if quality Q0 > 0.15). Contributes 0.25 to total_score. Acts as a
+      gate too: if S0 < 0.23 the score is 0.
+  - name: render_prompt_semantic_similarity
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 0.5
+    normalization: none
+    notes: >-
+      S_geo = geometric mean of outlier-filtered semantic similarities between the prompt
+      and the rendered-image descriptions. Contributes 0.5 to total_score.
+  - name: render_preview_clip_similarity
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 0.3
+    normalization: none
+    notes: >-
+      R_geo = geometric mean of outlier-filtered CLIP similarities between the preview
+      image and each rendered image. Contributes 0.3 to total_score.
+  - name: image_quality
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 0.1
+    normalization: none
+    notes: >-
+      Q_geo = geometric mean of outlier-filtered per-image quality scores of the
+      pre-render ('before') images. Contributes 0.1 to total_score.
+  - name: generation_time
+    metric_kind: latency
+    direction: lower_is_better
+    weight: null
+    normalization: min_max
+    notes: >-
+      Process time per miner is normalized (x/max)^2 across miners; final score blends
+      validation score with (1 - time_score) using validator.time_rate. Default time_rate
+      is 0, so by default speed has no effect.
+
+ground_truth_sources:
+  - kind: llm_judgment
+    description: >-
+      External validation endpoint that renders the miner mesh, uses CLIP/text-similarity
+      models and an image-vision model, and gates on whether the output looks like a real
+      object. Image-to-text descriptions are produced via Anthropic Claude 3.5 Haiku.
+    source_identifier: "validation/validation_endpoint.py (http endpoint, default http://127.0.0.1:8094)"
+    trust_model: oracle
+    notes: >-
+      Uses CLIP (image), text-similarity, quality, and image-vision (Claude) models.
+      README: 'Claude API key is utilized for generating image-to-text outputs through
+      Anthropic Claude 3.5 Haiku service.'
+
+aggregation:
+  method: weighted_average
+  composition: hybrid
+  normalization: l1
+  normalization_other: ""
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: "No burn UID or burn fraction present in source."
+  notes: >-
+    Per-response total_score = S0*0.25 + S_geo*0.5 + R_geo*0.3 + Q_geo*0.1 (note weights
+    sum to 1.15, not 1). Hard gates zero the score: image not a real object => 0; S0<0.23
+    => 0; total_score<0.35 => 0. Across miners, validation scores are normalized by
+    (x/max)^2 (normalize()). final = s*(1-time_rate) + time_rate*(1-t) when a time score
+    exists. EMA-updated base_scores are then transformed in set_weights as score**8 if
+    score>0.4 else 0, and L1-normalized (raw_weights = scores / ||scores||_1).
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    base_scores (EMA of per-step rewards) are gated and steepened (score**8 if >0.4 else 0),
+    then L1-normalized, processed via process_weights_for_netuid, converted to uint16 and
+    emitted with set_weights.
+  on_chain_call: set_weights
+  tempo_or_interval: "100 blocks (neuron.epoch_length default 100, ~12s blocks)"
+  smoothing:
+    kind: ema
+    alpha: 0.1
+    window: null
+    notes: >-
+      update_scores applies base_scores[i] = alpha*(0 if reward<0.1 else reward) +
+      (1-alpha)*base_scores[i], with alpha = neuron.moving_average_alpha (default 0.1).
+      base_scores below 4e-2 are zeroed.
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Real-object gate: an image-vision model checks whether the rendered/preview images
+      look like a real 3D object; if not, score returns 0.
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Threshold gates: S0 < 0.23 returns 0; total_score < 0.35 returns 0; rewards below
+      0.1 are treated as 0 in the EMA update; base_scores below 4e-2 zeroed.
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      Outlier filtering (IQR-based, threshold 1.1) on the per-image similarity/quality
+      lists before taking geometric means, removing anomalous scores.
+  - kind: liveness_check
+    enforcement: penalty
+    description: >-
+      Non-serving / vpermit-failing UIDs are given zero scores in update_scores
+      (check_serving_axon + vpermit_tao_limit default 85000).
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      vpermit_tao_limit gating on which axons count as serving.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: >-
+    Two synapse paths exist (synthetic vs organic) but they share the same scoring; organic
+    only returns the top miner's response and does not separately set weights.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score]
+  status_values: []
+  reset_policy: >-
+    base_scores persisted to state.npz and reloaded; a UID's score is zeroed when its
+    hotkey changes in resync_metagraph; scores below 4e-2 are zeroed each update.
+  notes: >-
+    base_scores is an EMA moving-average vector over metagraph.n, saved/loaded across runs.
+
+documentation:
+  status: docs_and_code
+  source_version: "2.5.8"
+  primary_docs: ["README.md", "validation/README.md", "docs/running_on_mainnet.md"]
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "144"
+      quote: "pm2 start run.sh --name neural_v_autoupdate -- --netuid {46} --wallet.name {wallet}"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "neuralai/validator/reward.py"
+      line_ref: "19-22"
+      quote: "import numpy as np ... import bittensor as bt"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "46-53"
+      quote: "they produce a 3D mesh object ... validators ... render images in different axis from the response and validate the scores by comparing the similarity of the prompt and rendered images."
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "validation/validation_endpoint.py"
+      line_ref: "92"
+      quote: "total_score = S0 * 0.25 + S_geo * 0.5 + R_geo * 0.3 + Q_geo * 0.1"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "validation/validation_endpoint.py"
+      line_ref: "63-66"
+      quote: "S0 = self.text_similarity_model.compute_semantic_similarity(prompt_vector, prev_img_vector)[0] if Q0 > 0.15 else 0 ... if S0 < 0.23: return ValidateResponse(score=0)"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "validation/validation_endpoint.py"
+      line_ref: "70-76"
+      quote: "Si = self.detect_outliers(self.text_similarity_model.compute_semantic_similarity(prompt_vector, render_vectors)) ... S_geo = np.exp(np.log(Si).mean())"
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "validation/validation_endpoint.py"
+      line_ref: "68-77"
+      quote: "Ri = self.detect_outliers([self.image_model.compute_clip_similarity(prev_img, img) for img in rendered_images]) ... R_geo = np.exp(np.log(Ri).mean())"
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "validation/validation_endpoint.py"
+      line_ref: "74-78"
+      quote: "Qi = self.detect_outliers([self.quality_model.compute_quality(img) for img in before_images]) ... Q_geo = np.exp(np.log(Qi).mean())"
+    - claim_field: "/scoring_signals/4/notes"
+      source_path: "neuralai/validator/forward.py"
+      line_ref: "127-134"
+      quote: "f_time_scores = normalize(scores) ... final_scores = [ s * (1 - time_rate) + time_rate * (1 - t) if t else s for t, s in zip(f_time_scores, f_val_scores) ]"
+    - claim_field: "/scoring_signals/4/weight"
+      source_path: "neuralai/utils/config.py"
+      line_ref: "232-237"
+      quote: '"--validator.time_rate", type=float, ... default=0,'
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "neuralai/validator/forward.py"
+      line_ref: "23-27"
+      quote: "result = await utils.validate(config.validation.endpoint, nas_prompt_text, int(uid), timeout=timeout) ... return result['score']"
+    - claim_field: "/ground_truth_sources/0/notes"
+      source_path: "README.md"
+      line_ref: "123"
+      quote: "The Claude API key is utilized for generating image-to-text outputs through Anthropic's Claude 3.5 Haiku service"
+    - claim_field: "/aggregation/notes"
+      source_path: "neuralai/validator/reward.py"
+      line_ref: "47-51"
+      quote: "max_value = max(rewards) ... scores = [(x / max_value) ** 2 for x in rewards]"
+    - claim_field: "/aggregation/normalization"
+      source_path: "neuralai/base/validator.py"
+      line_ref: "277-284"
+      quote: "norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True) ... raw_weights = self.scores / norm"
+    - claim_field: "/weight_setting/method"
+      source_path: "neuralai/base/validator.py"
+      line_ref: "264"
+      quote: "self.scores = [(score ** 8 if score > 4e-1 else 0) for score in self.base_scores]"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "neuralai/base/validator.py"
+      line_ref: "313-321"
+      quote: "result, msg = self.subtensor.set_weights(wallet=self.wallet, netuid=self.config.netuid, uids=uint_uids, weights=uint_weights, ... version_key=self.spec_version,)"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "neuralai/utils/config.py"
+      line_ref: "62-67"
+      quote: '"--neuron.epoch_length", ... help="The default epoch length (how often we set weights, measured in 12 second blocks).", default=100,'
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "neuralai/utils/config.py"
+      line_ref: "215-220"
+      quote: '"--neuron.moving_average_alpha", type=float, ... default=0.1,'
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "neuralai/base/validator.py"
+      line_ref: "434-439"
+      quote: "alpha: float = self.config.neuron.moving_average_alpha ... self.base_scores[i] = alpha * (0 if scattered_rewards[i] < 0.1 else scattered_rewards[i]) + (1 - alpha) * self.base_scores[i] ... self.base_scores = np.where(self.base_scores < 4e-2, 0, self.base_scores)"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "validation/validation_endpoint.py"
+      line_ref: "48-53"
+      quote: "is_like_real_object_image = self.image_vision_model.analyze_images(image_paths) ... if is_like_real_object_image == False: return ValidateResponse(score=0)"
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "validation/validation_endpoint.py"
+      line_ref: "65-97"
+      quote: "if S0 < 0.23: return ValidateResponse(score=0) ... if total_score < 0.35: return ValidateResponse(score=0)"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "validation/validation_endpoint.py"
+      line_ref: "102-118"
+      quote: "def detect_outliers(self, data, threshold=1.1): ... non_outliers = [x for x in data if lower_bound <= x <= upper_bound]"
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "neuralai/base/validator.py"
+      line_ref: "416-429"
+      quote: "if not self.check_serving_axon(self.metagraph, uid, self.config.neuron.vpermit_tao_limit): non_serving_uids.append(uid) ... scattered_rewards[non_serving_uids] = 0"
+    - claim_field: "/anti_gaming/4/description"
+      source_path: "neuralai/utils/config.py"
+      line_ref: "239-244"
+      quote: '"--neuron.vpermit_tao_limit", ... default=85000,'
+    - claim_field: "/per_miner_state/state_kinds"
+      source_path: "neuralai/base/validator.py"
+      line_ref: "443-454"
+      quote: "np.savez(self.config.neuron.full_path + \"/state.npz\", step=self.step, scores=self.base_scores, hotkeys=self.hotkeys,)"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "neuralai/base/validator.py"
+      line_ref: "345-347"
+      quote: "if hotkey != self.metagraph.hotkeys[uid]: self.scores[uid] = 0  # hotkey has been replaced"
+    - claim_field: "/documentation/source_version"
+      source_path: "neuralai/__init__.py"
+      line_ref: "23"
+      quote: '__version__ = "2.5.8"'
+  unresolved:
+    - "No burn/recycle UID or fraction present in source; mechanism_status set to active by absence of burn."
+    - "Total scoring weights (0.25+0.5+0.3+0.1=1.15) do not sum to 1; this is the literal code and is not a normalized weighted average."
+    - "compute_semantic_similarity / compute_clip_similarity / compute_quality model internals not read (separate model files); metric ranges assumed [0,1] only from gating thresholds."

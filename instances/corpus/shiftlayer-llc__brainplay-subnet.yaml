@@ -1,0 +1,294 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  Every weight update mixes 90% burn (UID 0) with 10% real distribution via
+  --burn_ratio default 0.90 in game/base/validator.py::_set_weights. In addition,
+  whole weight groups fall back to a 100% burn vector (all weight to UID 0) when
+  scores are stale (>1h), there are <30 games, no scores, a non-positive or tied
+  top score, or the winner is missing from the metagraph. The documented winner-
+  take-all scoring is live but only ever expresses through the 10% non-burn share.
+
+subnet:
+  name: "Brainplay"
+  owner_repo: "shiftlayer-llc__brainplay-subnet"
+  netuid: null
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners deploy AI model endpoints on Targon (TVM) and commit the endpoint UID
+    on-chain. Validators query those endpoints to make the models compete in
+    games (Codenames, 20 Questions, SuperMario). Miners are rewarded for winning
+    / performing best in the games; the single top-scoring miner per competition
+    window takes essentially all of that competition's non-burn weight.
+  submission_format: [compute_service, commitment_hash]
+
+scoring_signals:
+  - name: codenames_team_win
+    metric_kind: win_rate
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Legacy Codenames reward (game/validator/reward.py::get_rewards): winning
+      team's members get 1.0, losers 0.0. Aggregated as a window-average win rate
+      per hotkey before winner selection.
+  - name: twentyq_solve
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      20 Questions per-attempt score: 0.0 if unsolved or question_index<=0;
+      1.0 if solved within 20 questions; for index in 21..30 a linear penalty
+      1.0 - 0.1*(index-20); 0.0 beyond 30 questions.
+  - name: supermario_progress
+    metric_kind: vlm_judgment
+    direction: higher_is_better
+    weight: null
+    normalization: min_max
+    notes: >-
+      Round-relative SuperMario score: best valid run gets 1.0; other valid runs
+      scale by progress_from_start / best_progress (clamped to [0,1]); failed or
+      invalid runs (no artifacts, error, invalid_response) get 0.0.
+
+ground_truth_sources:
+  - kind: llm_judgment
+    description: >-
+      20 Questions referee yes/no/unknown answers are produced by an LLM judge
+      provider (chutes.ai, default model openai/gpt-oss-120b-TEE), with a
+      deterministic local heuristic fallback when credentials are absent.
+    source_identifier: "https://llm.chutes.ai/v1"
+    trust_model: oracle
+    notes: ""
+  - kind: deterministic_dataset
+    description: >-
+      SuperMario uses an isolated Mario benchmark environment; progress and
+      level-completion are measured from the run artifacts/env_score returned by
+      the miner endpoint, with validator-side image-hash verification.
+    source_identifier: "4b9ba675ef3c8ca8b8e41dfe7636b5c72c507711befe76562d18326572efcfef"
+    trust_model: adversarial
+    notes: ""
+
+aggregation:
+  method: winner_take_all
+  composition: hybrid
+  normalization: l1
+  temperature: null
+  decay_rate: null
+  min_weight_floor: 0.001
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: 0.90
+    dynamic: false
+    notes: >-
+      Fixed 0.90 burn_ratio mixed into every published weight vector
+      (_set_weights). Separately, the entire vector becomes a pure burn vector
+      (UID 0 = 1.0) under stale/insufficient/no-score/tie/missing-winner
+      conditions.
+  notes: >-
+    Per competition, scores are averaged over a rolling window per hotkey
+    (default 1 day). Only hotkeys meeting the stake requirement and with games
+    >= record_count_limit (int(0.9*median game count)) are eligible. The single
+    unique top-scoring hotkey gets raw weight 1.0; every other hotkey with score
+    >0 gets a 0.001 floor; the vector is L1-normalized, then 90% burn is mixed
+    in. Weight groups combine competitions by ratio (llm group: codenames 0.5 /
+    twentyq 0.5 when both present; otherwise 1/count).
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    set_weights per weight group per publish_mechid. llm group (codenames+twentyq)
+    publishes on mechid=0; vision group (supermario) on mechid=1. Snapshots must
+    be fresh (TTL 3600s); missing fresh snapshots keep last publication or burn.
+  on_chain_call: set_weights
+  tempo_or_interval: "1 days"
+  smoothing:
+    kind: sma
+    alpha: null
+    window: 86400
+    notes: >-
+      Scoring window is a rolling simple average of per-hotkey scores over
+      scoring.interval (default '1 days'); not an EMA. Set via
+      window_average_scores_by_hotkey over [since_ts, end_ts].
+
+anti_gaming:
+  - kind: stake_weighting
+    enforcement: rejection
+    description: >-
+      Only hotkeys with metagraph stake S[uid] >= neuron.minimum_stake_requirement
+      are counted toward scores/weights (default 0).
+  - kind: liveness_check
+    enforcement: penalty
+    description: >-
+      If the latest synced score is older than 1 hour the validator switches the
+      whole competition to a burn vector; competitions with <30 games in the
+      window are skipped (burned).
+  - kind: rate_limit
+    enforcement: penalty
+    description: >-
+      record_count_limit = int(0.9 * median eligible game count) excludes actors
+      with few games (e.g. new registrations) from winner eligibility.
+  - kind: hardware_validation
+    enforcement: rejection
+    description: >-
+      For SuperMario, validators verify the deployed miner container image hash
+      against the canonical hash before using the endpoint.
+
+sub_competitions:
+  structure: multi_mechanism
+  stages:
+    - name: "codenames"
+      role: "main"
+      advancement_rule: "weight_group llm, publish_mechid 0; window-average win-rate winner-take-all"
+    - name: "twentyq"
+      role: "main"
+      advancement_rule: "weight_group llm, publish_mechid 0; window-average score winner-take-all"
+    - name: "supermario"
+      role: "main"
+      advancement_rule: "weight_group vision, publish_mechid 1; round-relative progress winner-take-all"
+  count: 3
+  notes: >-
+    Three competitions across two weight groups / two mechids. llm group shares
+    mechid 0 (codenames 0.5 + twentyq 0.5); vision group is mechid 1.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score]
+  status_values: []
+  reset_policy: >-
+    Rolling-window based: scores are summed/averaged only over the configured
+    scoring window (default 1 day); older records age out of the window.
+  notes: >-
+    Per-hotkey window aggregates (avg_scores, total_scores, counts, win/loss
+    counts, observer counts) are maintained in the score/generic stores keyed by
+    competition and validator hotkey.
+
+documentation:
+  status: docs_and_code
+  source_version: "2.4.1"
+  primary_docs: ["README.md", "docs/running_on_mainnet.md"]
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: /subnet/name
+      source_path: README.md
+      line_ref: "5"
+      quote: "# Brainplay"
+    - claim_field: /subnet/implementation_lang
+      source_path: README.md
+      line_ref: "95"
+      quote: "**Python Version** (Python 3.10 + recommended)"
+    - claim_field: /task/summary
+      source_path: README.md
+      line_ref: "18-22"
+      quote: "Uses TVM (Targon) for miner model submission and validator-side querying ... Miners deploy models via Targon; validators query server endpoints miners deployed via TVM"
+    - claim_field: /task/submission_format
+      source_path: README.md
+      line_ref: "240-242"
+      quote: "Deploy a serverless model endpoint on Targon. ... Commit that endpoint UID on-chain so validators can discover and query it."
+    - claim_field: /scoring_signals/0/notes
+      source_path: game/validator/reward.py
+      line_ref: "63-68"
+      quote: "if winner == \"red\": rewards = np.array([1.0, 0.0, 0.0, 0.0]) elif winner == \"blue\": rewards = np.array([0.0, 0.0, 1.0, 0.0]) else: rewards = np.array([0.0, 0.0, 0.0, 0.0])"
+    - claim_field: /scoring_signals/1/notes
+      source_path: game/plugins/twentyq/scoring.py
+      line_ref: "4-14"
+      quote: "if not solved: return 0.0 ... if question_index <= 20: return 1.0 if question_index > 30: return 0.0 bonus_used = question_index - 20 return max(0.0, 1.0 - 0.1 * bonus_used)"
+    - claim_field: /scoring_signals/2/notes
+      source_path: game/plugins/supermario/scoring.py
+      line_ref: "35-45"
+      quote: "if index == 0: scores[participant.hotkey] = 1.0 ... score = max(0.0, min(1.0, float(participant.progress_from_start) / best_progress))"
+    - claim_field: /scoring_signals/2/notes
+      source_path: README.md
+      line_ref: "52"
+      quote: "Final scores are round-relative: the best valid run gets `1.0`, other valid runs scale by progress, and failed/invalid runs score `0.0`."
+    - claim_field: /ground_truth_sources/0/source_identifier
+      source_path: game/providers/judge/chutes_ai.py
+      line_ref: "27-35"
+      quote: "model: str = \"openai/gpt-oss-120b-TEE\", ... base_url or os.getenv(\"CHUTES_BASE_URL\", \"https://llm.chutes.ai/v1\")"
+    - claim_field: /ground_truth_sources/1/source_identifier
+      source_path: README.md
+      line_ref: "396-400"
+      quote: "The current SuperMario image hash verified by validators is: 4b9ba675ef3c8ca8b8e41dfe7636b5c72c507711befe76562d18326572efcfef"
+    - claim_field: /aggregation/method
+      source_path: game/base/validator.py
+      line_ref: "829-830"
+      quote: "winner_uid = winner_uids[0] weights[winner_uid] = 1.0"
+    - claim_field: /aggregation/min_weight_floor
+      source_path: game/base/validator.py
+      line_ref: "824-827"
+      quote: "for hotkey, score in avg_scores.items(): if score > 0: uid = self.metagraph.hotkeys.index(hotkey) weights[uid] = 0.001"
+    - claim_field: /aggregation/normalization
+      source_path: game/base/validator.py
+      line_ref: "847-850"
+      quote: "norm = np.linalg.norm(weights, ord=1, axis=0, keepdims=True) ... raw_weights = weights / norm"
+    - claim_field: /aggregation/burn_allocation/fraction
+      source_path: game/config/legacy.py
+      line_ref: "226-230"
+      quote: "\"--burn_ratio\", type=float, help=\"The ratio of burn on each weight update.\", default=0.90,"
+    - claim_field: /aggregation/burn_allocation/address_or_uid
+      source_path: game/base/validator.py
+      line_ref: "1123-1127"
+      quote: "burn_weights[0] = 1.0 weights = burn_weights * self.config.burn_ratio + weights * (1 - self.config.burn_ratio)"
+    - claim_field: /aggregation/burn_allocation/notes
+      source_path: game/base/validator.py
+      line_ref: "868-872"
+      quote: "def _burn_vector(self) -> np.ndarray: burn_weights = np.zeros(self.metagraph.n, dtype=np.float32) if self.metagraph.n > 0: burn_weights[0] = 1.0"
+    - claim_field: /aggregation/notes
+      source_path: game/base/validator.py
+      line_ref: "696-697"
+      quote: "median_count = float(np.median(eligible_counts)) if eligible_counts else 0.0 record_count_limit = int(median_count * 0.9)"
+    - claim_field: /weight_setting/method
+      source_path: game/core/codes.py
+      line_ref: "26-50"
+      quote: "\"codenames\": GameCodeInfo(... weight_group=\"llm\", publish_mechid=0,) ... \"supermario\": GameCodeInfo(... weight_group=\"vision\", publish_mechid=1,)"
+    - claim_field: /weight_setting/on_chain_call
+      source_path: game/base/validator.py
+      line_ref: "1148-1156"
+      quote: "result, msg = self.subtensor.set_weights(wallet=self.wallet, netuid=self.config.netuid, uids=uint_uids, mechid=mechid, weights=uint_weights ...)"
+    - claim_field: /weight_setting/tempo_or_interval
+      source_path: game/validator/scoring_config.py
+      line_ref: "15"
+      quote: "SCORING_INTERVAL = \"1 days\""
+    - claim_field: /weight_setting/smoothing/notes
+      source_path: game/base/validator.py
+      line_ref: "630-634"
+      quote: "avg_scores, total_scores, counts = (self.generic_store.window_average_scores_by_hotkey(comp_value, since_ts, end_ts, validator_hotkey=validator_hotkey))"
+    - claim_field: /anti_gaming/0/description
+      source_path: game/base/validator.py
+      line_ref: "654-657"
+      quote: "hotkeys_with_minimum_stake = [self.metagraph.hotkeys[uid] for uid in range(self.metagraph.n) if self.metagraph.S[uid] >= self.config.neuron.minimum_stake_requirement]"
+    - claim_field: /anti_gaming/1/description
+      source_path: game/base/validator.py
+      line_ref: "611-625"
+      quote: "if age_seconds > 3600: ... Switching to burn code. ... raw_weights=self._burn_vector(), status=\"stale\""
+    - claim_field: /anti_gaming/1/description
+      source_path: game/base/validator.py
+      line_ref: "720-731"
+      quote: "if comp_games < 30: ... Not enough games for competition ... skipping its allocation. ({comp_games} < 30)"
+    - claim_field: /anti_gaming/3/description
+      source_path: README.md
+      line_ref: "274"
+      quote: "For `supermario`, validators also verify the deployed image hash before using the endpoint."
+    - claim_field: /sub_competitions/notes
+      source_path: README.md
+      line_ref: "77-78"
+      quote: "`codenames` and `twentyq` publish through the `llm` weight group on `mechid=0`. `supermario` publishes through the `vision` weight group on `mechid=1`."
+    - claim_field: /aggregation/notes
+      source_path: game/base/validator.py
+      line_ref: "986-989"
+      quote: "if weight_group == \"llm\" and {\"codenames\", \"twentyq\"}.issubset(snapshots.keys()): return {\"codenames\": 0.5, \"twentyq\": 0.5}"
+    - claim_field: /documentation/source_version
+      source_path: game/__init__.py
+      line_ref: "20"
+      quote: "__version__ = \"2.4.1\""
+  unresolved:
+    - "netuid: README shows multiple example netuids (117 mainnet, 335 testnet); no canonical netuid constant in code."
+    - "minimum_stake_requirement default is 0, so stake-weighting is effectively off unless configured at runtime."

@@ -1,0 +1,328 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: unknown
+mechanism_status_notes: >-
+  Whitepaper-only repository (no source code, config, or weight-setting call site).
+  The document describes phase-one intentions for Aurelius (Bittensor Subnet 37) but
+  provides no implementation, so the operative on-chain reality (active scoring vs.
+  burn) cannot be determined from this repo.
+
+subnet:
+  name: "Aurelius"
+  owner_repo: "Aurelius-Protocol__aurelius-whitepaper"
+  netuid: 37
+  implementation_lang: none_docs_only
+
+task:
+  summary: >-
+    Miners contribute one of two innovation types: (a) configuration innovation —
+    defining environmental scenarios (agent parameters, interaction conditions,
+    narrative context) for a multi-agent world model; and (b) world-model
+    innovation — improving the world-model infrastructure itself. Validators run
+    the orchestrated world model, score submissions against a "DLV" (Dual Life
+    Value) signal and secondary dimensions on a Pareto frontier, and reach
+    consensus on which submissions are rewarded. The corpus output ("aenes" =
+    atomic units of moral reasoning) is periodically used to retrain the base model.
+  submission_format: [source_code, other]
+  submission_format_other: >-
+    Scenario/orchestrator configurations and world-model infrastructure improvements
+    submitted by miners; openly visible and forkable.
+
+scoring_signals:
+  - name: dlv_signal_quality
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Apex selection pressure and a gate: "A configuration that fails to produce
+      sufficient DLV reasoning is rejected regardless of performance on other
+      dimensions." Measured by a judge model (LLM-as-judge) against DLV heuristics:
+      self-awareness, other-awareness, tension recognition, deliberation, coherence.
+      No numeric threshold given in the whitepaper.
+  - name: novelty
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Secondary (Pareto) dimension. "Novelty is measured across perspectives,
+      strategies, outcomes, and corpus-level redundancy. New aenes should surface
+      reasoning samples the corpus does not already contain." No weight given;
+      combined via Pareto dominance, not an additive weight.
+  - name: token_efficiency
+    metric_kind: other
+    metric_kind_other: alignment_signal_per_token
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Secondary (Pareto) dimension. "Total alignment signal per token, including
+      tokens from both the world model and the agent." No numeric value given.
+  - name: immersion_effectiveness
+    metric_kind: other
+    metric_kind_other: behavioral_delta_between_conditions
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Secondary (Pareto) dimension proxying epistemic opacity. Measured as the delta
+      in agent behavior between control (explicit game framing) and immersive
+      (first-person, consequential framing) conditions. "Environments with strong
+      deltas are selected for."
+
+ground_truth_sources:
+  - kind: llm_judgment
+    description: >-
+      Validators feed an agent's observations, reasoning, and actions to a judge
+      model that evaluates the aene against DLV heuristics. Aurelius mitigates
+      gaming via judge ensembles, cross-validation, and continuous human-in-the-loop
+      calibration on sampled batches.
+    source_identifier: ""
+    trust_model: adversarial
+    notes: >-
+      Acknowledged as LLM-as-judge with known limitations (gameable, can reward
+      surface patterns). Heuristics "designed to be calibrated over time."
+  - kind: other
+    kind_other: external_moral_reasoning_benchmarks
+    description: >-
+      Corpus effectiveness validated through fine-tuning experiments against
+      external moral reasoning benchmarks; key signal is out-of-distribution
+      generalization. This is a corpus-level validation, not a per-submission
+      ground truth.
+    source_identifier: ""
+    trust_model: trusted
+    notes: "References [12,13] (MoReBench, MACHIAVELLI)."
+
+aggregation:
+  method: other
+  method_other: >-
+    Pareto-frontier ranking gated by a DLV threshold. "Ranking of miner submissions
+    operates on a Pareto frontier. Any submission that passes the DLV threshold is
+    rewarded if no other beats it on all secondary dimensions simultaneously."
+  composition: gated
+  normalization: none
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: "No burn mechanism described in the whitepaper."
+  notes: >-
+    DLV signal quality acts as a hard gate; among DLV-passing submissions, ranking
+    is by Pareto dominance over novelty, token efficiency, and immersion
+    effectiveness. World-model changes carry a higher consensus bar than
+    configuration changes. No numeric thresholds, temperatures, or weights given.
+
+weight_setting:
+  cadence: undocumented
+  method: >-
+    Validator consensus adjudicates which aenes/submissions enter the corpus and are
+    rewarded; "Validator consensus adjudicates aenes entering the corpus." No
+    on-chain weight-setting call, tempo, or smoothing is described.
+  on_chain_call: unknown
+  tempo_or_interval: null
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: "No reward smoothing/EMA described in the whitepaper."
+
+anti_gaming:
+  - kind: other
+    kind_other: judge_ensembles_and_human_calibration
+    enforcement: other
+    enforcement_other: mitigation
+    description: >-
+      "Aurelius mitigates this through judge ensembles, cross-validation, and
+      continuous human-in-the-loop calibration on sampled batches." Addresses
+      LLM-as-judge gaming.
+  - kind: deduplication
+    enforcement: penalty
+    description: >-
+      Novelty is measured including corpus-level redundancy; new aenes should surface
+      reasoning the corpus does not already contain, penalizing redundant submissions.
+  - kind: other
+    kind_other: cryptographic_anchoring
+    enforcement: other
+    enforcement_other: tamper_evidence
+    description: >-
+      Corpus is batched and hashed into Merkle trees periodically anchored to
+      Bitcoin; "The corpus cannot be modified after the fact without detection."
+      Provides tamper-evidence/provenance rather than scoring enforcement.
+
+sub_competitions:
+  structure: multi_mechanism
+  stages:
+    - name: configuration
+      role: main
+      advancement_rule: >-
+        Configuration scoring: validators receive configurations from miners, deploy
+        them, and score results; consensus decides which configurations produce
+        high-quality aenes.
+    - name: world_model
+      role: main
+      advancement_rule: >-
+        World-model scoring: improvements scored against quality, efficiency, and
+        stability. "World model changes affect the entire system, thus a higher bar
+        is set for consensus."
+  count: 2
+  notes: >-
+    Two parallel miner contribution tracks (configuration innovation and world-model
+    innovation), each with a corresponding validator scoring role.
+
+per_miner_state:
+  tracked: false
+  state_kinds: []
+  status_values: []
+  reset_policy: ""
+  notes: >-
+    Agents are explicitly stateless ("Agents are stateless; by design they do not
+    learn during interaction or carry context between sessions"). No persistent
+    per-miner ledger/reputation state is described for the incentive mechanism.
+
+documentation:
+  status: whitepaper_only
+  source_version: "Part 1 (phase-one implementation)"
+  primary_docs:
+    - "Aurelius_A_Peer-to-Peer_Alignment_Protocol.pdf"
+    - "README.md"
+  completeness: low
+
+provenance:
+  extracted_by: "im-extract / Opus 4.8"
+  confidence_overall: low
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "Aurelius_A_Peer-to-Peer_Alignment_Protocol.pdf"
+      line_ref: "p.6 (5.1 Bittensor)"
+      quote: >-
+        Aurelius is Subnet 37 on Bittensor. The subnet consists of two roles: miners
+        and validators.
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "README.md"
+      line_ref: "1-19"
+      quote: >-
+        This repository contains the official whitepaper (part 1) for the Aurelius
+        protocol.
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "Aurelius_A_Peer-to-Peer_Alignment_Protocol.pdf"
+      line_ref: "p.6 (5.2 Miners)"
+      quote: >-
+        Configuration innovation: is defining environmental scenarios. ... World
+        model innovation: is improving the world model infrastructure itself.
+      confidence: medium
+    - claim_field: "/task/submission_format"
+      source_path: "Aurelius_A_Peer-to-Peer_Alignment_Protocol.pdf"
+      line_ref: "p.7 (5.4 Evolutionary Iteration)"
+      quote: >-
+        All miner contributions are openly visible and forkable. A high quality miner
+        submission can be forked, modified, and resubmitted by any other miner.
+      confidence: medium
+    - claim_field: "/scoring_signals/0/name"
+      source_path: "Aurelius_A_Peer-to-Peer_Alignment_Protocol.pdf"
+      line_ref: "p.7 (6.1 Signal Hierarchy)"
+      quote: >-
+        DLV signal quality is the apex selection pressure. A configuration that fails
+        to produce sufficient DLV reasoning is rejected regardless of performance on
+        other dimensions.
+      confidence: high
+    - claim_field: "/scoring_signals/0/metric_kind"
+      source_path: "Aurelius_A_Peer-to-Peer_Alignment_Protocol.pdf"
+      line_ref: "p.8 (6.2 DLV Signal Quality)"
+      quote: >-
+        Validators feed an agent's observations, reasoning, and actions to a judge
+        model. The judge evaluates the aene against DLV heuristics ... Self-awareness
+        ... Other-awareness ... Tension recognition ... Deliberation ... Coherence.
+      confidence: high
+    - claim_field: "/scoring_signals/1/name"
+      source_path: "Aurelius_A_Peer-to-Peer_Alignment_Protocol.pdf"
+      line_ref: "p.8 (6.3 Secondary Signals)"
+      quote: >-
+        Novelty. ... Novelty is measured across perspectives, strategies, outcomes,
+        and corpus-level redundancy.
+      confidence: high
+    - claim_field: "/scoring_signals/2/name"
+      source_path: "Aurelius_A_Peer-to-Peer_Alignment_Protocol.pdf"
+      line_ref: "p.9 (6.3 Secondary Signals)"
+      quote: >-
+        Token efficiency. Total alignment signal per token, including tokens from
+        both the world model and the agent.
+      confidence: high
+    - claim_field: "/scoring_signals/3/name"
+      source_path: "Aurelius_A_Peer-to-Peer_Alignment_Protocol.pdf"
+      line_ref: "p.9 (6.3 Secondary Signals)"
+      quote: >-
+        Immersion effectiveness measures how well epistemic opacity is achieved in
+        practice. ... The delta in behavior between conditions indicates the strength
+        of the immersion. Environments with strong deltas are selected for.
+      confidence: high
+    - claim_field: "/aggregation/method_other"
+      source_path: "Aurelius_A_Peer-to-Peer_Alignment_Protocol.pdf"
+      line_ref: "p.8 (6.1 Signal Hierarchy)"
+      quote: >-
+        Ranking of miner submissions operates on a Pareto frontier. Any submission
+        that passes the DLV threshold is rewarded if no other beats it on all
+        secondary dimensions simultaneously.
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/kind"
+      source_path: "Aurelius_A_Peer-to-Peer_Alignment_Protocol.pdf"
+      line_ref: "p.8 (6.2 DLV Signal Quality)"
+      quote: >-
+        This is LLM-as-judge. It has known limitations. ... Aurelius mitigates this
+        through judge ensembles, cross-validation, and continuous human-in-the-loop
+        calibration on sampled batches.
+      confidence: high
+    - claim_field: "/ground_truth_sources/1/kind_other"
+      source_path: "Aurelius_A_Peer-to-Peer_Alignment_Protocol.pdf"
+      line_ref: "p.9 (6.4 Validation)"
+      quote: >-
+        Corpus effectiveness is validated through fine-tuning experiments against
+        external moral reasoning benchmarks. The key signal is out-of-distribution
+        generalization.
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "Aurelius_A_Peer-to-Peer_Alignment_Protocol.pdf"
+      line_ref: "p.6 (5.3 Validators)"
+      quote: >-
+        They determine which configurations produce high quality aenes and which do
+        not. Validator consensus adjudicates aenes entering the corpus.
+      confidence: medium
+    - claim_field: "/anti_gaming/2/kind_other"
+      source_path: "Aurelius_A_Peer-to-Peer_Alignment_Protocol.pdf"
+      line_ref: "p.11 (8.2 Cryptographic Anchoring)"
+      quote: >-
+        The Aurelius corpus is batched and hashed into separate Merkle trees. The
+        roots are periodically anchored to Bitcoin. The corpus cannot be modified
+        after the fact without detection.
+      confidence: high
+    - claim_field: "/sub_competitions/structure"
+      source_path: "Aurelius_A_Peer-to-Peer_Alignment_Protocol.pdf"
+      line_ref: "p.6-7 (5.3 Validators)"
+      quote: >-
+        Validators run the world model. They have two roles mapping to miner
+        contributions. Configuration scoring ... World model scoring ... World model
+        changes affect the entire system, thus a higher bar is set for consensus.
+      confidence: high
+    - claim_field: "/per_miner_state/tracked"
+      source_path: "Aurelius_A_Peer-to-Peer_Alignment_Protocol.pdf"
+      line_ref: "p.5 (4.3 Agent Design)"
+      quote: >-
+        Agents are stateless; by design they do not learn during interaction or carry
+        context between sessions.
+      confidence: medium
+  unresolved:
+    - "No source code, config, or weight-setting call site exists in the repo (whitepaper-only); on-chain mechanism (set_weights cadence, EMA smoothing, burn) is undocumented."
+    - "No numeric constants given: DLV threshold, Pareto weights, judge-ensemble size, calibration batch fractions, retrain cadence are all unspecified."
+    - "mechanism_status cannot be verified as active/burn — no validator implementation present."
+    - "Whether weight setting uses standard set_weights or commit_reveal is not stated."
+  extractor_notes: >-
+    Docs-only (whitepaper) extraction. All evidence quotes are from the 12-page PDF
+    whitepaper (page/section refs in line_ref since the PDF has no line numbers) and
+    the README. No code-derived fields could be filled.

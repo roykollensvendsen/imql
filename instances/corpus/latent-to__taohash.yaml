@@ -1,0 +1,261 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: mixed
+mechanism_status_notes: >-
+  Scoring is active: validators rank miners by the USD-denominated value of the BTC
+  shares they contributed in each evaluation window. However weight distribution is
+  capped by the alpha actually available to distribute, and any residual weight (and
+  the full weight when no miners are mining) is assigned to the subnet-owner burn UID.
+  In practice emissions are largely burned unless miners contribute enough share value.
+
+subnet:
+  name: "TAOHash"
+  owner_repo: "latent-to__taohash"
+  netuid: 14
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners contribute Bitcoin (and Bitcoin Cash) proof-of-work mining hashrate to the
+    subnet's unified pool. A validator-side proxy records each miner's submitted shares;
+    validators score a miner by the fiat (USD) value of the BTC/BCH block-reward share
+    those shares represent over each evaluation window. Higher total share value over the
+    period yields a higher on-chain weight (and thus more alpha emission). Miners also
+    earn direct BTC payouts off-chain via the TIDES protocol, independent of weights.
+  submission_format: [compute_service]
+
+scoring_signals:
+  - name: share_value_fiat
+    metric_kind: throughput
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      Per miner, per coin: share_value_fiat = (share_value / coin_difficulty) *
+      block_reward * coin_price. share_value is the difficulty-weighted work the pool
+      recorded for that worker; block_reward is BLOCK_REWARDS[coin] (3.125 for btc and
+      bch); coin_price is the CoinGecko USD price. Summed across the window via add_score,
+      then multiplied by the coin payout_factor (PAYOUT_FACTOR=0.015) in
+      get_weighted_scores, then summed across coins (btc, bch) into final_scores.
+
+ground_truth_sources:
+  - kind: hardware_probe
+    description: >-
+      Miner mining contributions (shares / share_value / hashrate) for a time range,
+      retrieved from the subnet's mining-pool proxy API (ProxyPool) rather than directly
+      from miners. Coin price from CoinGecko; network difficulty from a network-stats
+      lookup.
+    source_identifier: "ProxyPool.get_miner_contributions_timerange; CoinPriceAPI('coingecko'); get_current_difficulty"
+    trust_model: trusted
+    notes: >-
+      The proxy pool API is operated by the subnet; validators need proxy credentials
+      from subnet staff. Share values are taken as authoritative (already computed by
+      the pool from actual work done).
+
+aggregation:
+  method: proportional
+  composition: weighted_sum
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "burn_uid (SubnetOwnerHotkey UID)"
+    fraction: null
+    dynamic: true
+    notes: >-
+      If total miner value is zero, weights[burn_uid]=1.0 (full burn). Otherwise weights
+      are score/total_value, but if total_value <= value_to_dist (the alpha available to
+      distribute = blocks_to_set_for * (1 - OWNER_TAKE=0.18) * SPLIT_WITH_MINERS=0.5 *
+      alpha_price) each weight is scaled down by total_value/value_to_dist and the
+      remaining (1 - sum_weights) is added to weights[burn_uid]. Burn fraction is a
+      computed residual, not a fixed constant.
+  notes: >-
+    final_scores[uid] = sum over coins of (raw_score[uid] * payout_factor). Weights are
+    proportional to final_scores, capped by value_to_dist, normalized so weights sum to 1
+    (residual to burn UID; if sum exceeds 1 weights are renormalized).
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Each weights_interval (== subnet tempo), set_weights consolidates per-coin weighted
+    scores into final_scores, computes proportional weights capped by distributable alpha
+    with residual to the burn UID, calls subtensor.set_weights, then resets per-coin
+    scores for the next cycle. Evaluation of share value polls roughly every 10 minutes
+    (eval_interval = 25 blocks).
+  on_chain_call: set_weights
+  tempo_or_interval: "weights_interval = tempo; eval_interval = 25 blocks"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      Scores are reset every cycle (reset_scores after each successful set_weights), so no
+      EMA/SMA of the final reward is applied across cycles. A field self.alpha = 0.8 is
+      assigned in the validator __init__ but is never referenced anywhere in the
+      weight/score code (dead variable); not treated as an active smoothing constant.
+
+anti_gaming:
+  - kind: proof_of_work
+    enforcement: barrier
+    description: >-
+      Reward is grounded in actual Bitcoin/Bitcoin-Cash proof-of-work shares recorded by
+      the pool proxy; value scales with real difficulty-weighted work done, so claiming
+      reward requires real hashrate.
+  - kind: deduplication
+    enforcement: rejection
+    description: >-
+      In get_metrics_timerange, when two hotkeys map to the same pool worker_id, only the
+      hotkey with the earlier block_at_registration keeps the worker's contributions; the
+      later duplicate is dropped.
+  - kind: other
+    kind_other: coldkey_blocklist
+    enforcement: penalty
+    description: >-
+      A hardcoded BAD_COLDKEYS list zeroes a miner's scores across all coins on state
+      restore (and replaced/duplicate hotkeys have their scores reset to 0.0).
+
+sub_competitions:
+  structure: multi_asset
+  stages: []
+  count: 2
+  notes: >-
+    Two coins are scored in parallel (SUPPORTED_COINS = ['btc', 'bch']); each has its own
+    EvaluationMetrics with a per-coin payout_factor, and the per-coin weighted scores are
+    summed into a single final score before weighting.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, registration_age]
+  status_values: []
+  reset_policy: >-
+    Per-coin scores accumulate within an evaluation window and are reset to zero after
+    each successful set_weights. Scores are also zeroed on hotkey replacement, on
+    duplicate-worker resolution (loser dropped), and for BAD_COLDKEYS on state restore.
+  notes: >-
+    block_at_registration is tracked per hotkey and used to resolve duplicate pool workers
+    (earlier registration wins).
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/tides_faq.md"
+    - "docs/running_validator.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "docs/running_validator.md"
+      line_ref: "153"
+      quote: "`netuid`: Set to 14 for TAOHash subnet"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "taohash/validator/validator.py"
+      line_ref: "1"
+      quote: "#! /usr/bin/env python3"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "11"
+      quote: "TAOHash is a Bittensor subnet designed around production of proof-of-work (PoW) BTC mining hashrate."
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "19"
+      quote: "Miners contribute BTC mining hashrate, and earn rewards through two independent systems:"
+    - claim_field: "/scoring_signals/0/name"
+      source_path: "taohash/core/pool/metrics/taohash_proxy.py"
+      line_ref: "44-46"
+      quote: "if self.share_value: return (self.share_value / coin_difficulty) * block_reward * coin_price"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "taohash/validator/validator.py"
+      line_ref: "211-215"
+      quote: "share_value = metric.get_share_value_fiat(coin_price, coin_difficulty, coin) ... evaluation_metrics.add_score(uid, share_value)"
+    - claim_field: "/scoring_signals/0/metric_kind"
+      source_path: "taohash/core/pool/metrics/taohash_proxy.py"
+      line_ref: "42"
+      quote: "block_reward = BLOCK_REWARDS.get(coin, 3.125)"
+    - claim_field: "/aggregation/notes"
+      source_path: "taohash/validator/validator.py"
+      line_ref: "388-392"
+      quote: "weighted_scores = metrics.get_weighted_scores() ... final_scores[uid] += weighted_scores[uid]"
+    - claim_field: "/aggregation/method"
+      source_path: "taohash/validator/validator.py"
+      line_ref: "357-358"
+      quote: "if total_value > value_to_dist: weights = [score / total_value for score in final_scores]"
+    - claim_field: "/aggregation/burn_allocation/dynamic"
+      source_path: "taohash/validator/validator.py"
+      line_ref: "365-368"
+      quote: "remaining = max(0.0, 1.0 - sum_weights) if remaining > 0: weights[self.burn_uid] += remaining"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "taohash/validator/validator.py"
+      line_ref: "347-349"
+      quote: "alpha_to_dist = blocks_to_set_for * (1 - OWNER_TAKE) * SPLIT_WITH_MINERS; value_to_dist = alpha_to_dist * alpha_price"
+    - claim_field: "/mechanism_status"
+      source_path: "taohash/validator/validator.py"
+      line_ref: "398-401"
+      quote: "if total_value == 0: logging.info(\"No miners are mining, we should burn the alpha\") weights = [0.0] * len(self.hotkeys) weights[self.burn_uid] = 1.0"
+    - claim_field: "/scoring_signals/0/notes/payout_factor"
+      source_path: "taohash/core/constants.py"
+      line_ref: "10-13"
+      quote: "OWNER_TAKE = 0.18  SPLIT_WITH_MINERS = 0.5  PAYOUT_FACTOR = 0.015"
+    - claim_field: "/scoring_signals/0/notes/block_rewards"
+      source_path: "taohash/core/constants.py"
+      line_ref: "15-18"
+      quote: "BLOCK_REWARDS = { \"btc\": 3.125, \"bch\": 3.125, }"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "taohash/validator/validator.py"
+      line_ref: "407-414"
+      quote: "success, err_msg = self.subtensor.set_weights(netuid=self.config.netuid, wallet=self.wallet, uids=list(range(len(self.hotkeys))), weights=weights, ... version_key=VERSION_KEY,)"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "taohash/validator/validator.py"
+      line_ref: "63"
+      quote: "self.weights_interval = self.tempo"
+    - claim_field: "/weight_setting/method"
+      source_path: "taohash/validator/__init__.py"
+      line_ref: "64-69"
+      quote: "\"--eval_interval\", type=int, default=25, help=\"The interval on which to run evaluation across the metagraph.\""
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "taohash/validator/validator.py"
+      line_ref: "62"
+      quote: "self.alpha = 0.8"
+    - claim_field: "/weight_setting/smoothing/kind"
+      source_path: "taohash/validator/validator.py"
+      line_ref: "418-420"
+      quote: "# Reset evaluation metrics for next cycle for metrics in self.evaluation_metrics.values(): metrics.reset_scores(len(self.hotkeys))"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "taohash/core/pool/metrics/taohash_proxy.py"
+      line_ref: "27-31"
+      quote: "The share value is already calculated by the pool based on actual work done."
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "taohash/core/pool/metrics/taohash_proxy.py"
+      line_ref: "83-92"
+      quote: "if block_at_registration[i] < block_at_registration[other_hotkey_idx]: # Current hotkey registered earlier, use it ... del hotkeys_to_workers[other_hotkey]"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "taohash/validator/validator.py"
+      line_ref: "329-332"
+      quote: "if self.metagraph.coldkeys[idx] in BAD_COLDKEYS: for metrics in self.evaluation_metrics.values(): metrics.scores[idx] = 0.0"
+    - claim_field: "/sub_competitions/notes"
+      source_path: "taohash/validator/validator.py"
+      line_ref: "39"
+      quote: "SUPPORTED_COINS = [\"btc\", \"bch\"]"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "taohash/core/pool/metrics/evaluation.py"
+      line_ref: "42-49"
+      quote: "def reset_scores(self, num_hotkeys: int) -> None: ... self.scores = [0.0] * num_hotkeys"
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "taohash/validator/validator.py"
+      line_ref: "184-203"
+      quote: "timerange_result = get_metrics_timerange(...) ; coin_price = self.price_api.get_price(coin) ; coin_difficulty = get_current_difficulty(coin)"
+    - claim_field: "/documentation/primary_docs"
+      source_path: "docs/tides_faq.md"
+      line_ref: "5-6"
+      quote: "TIDES (Time-based Incentivized Distribution of Earnings System) is TAOHash's Bitcoin reward distribution protocol."
+  unresolved:
+    - "value_to_dist depends on live alpha_price (subnet price * TAO price) and blocks_to_set_for; the actual burned fraction is runtime-dependent and not a fixed constant."
+    - "TIDES off-chain BTC reward window (network_difficulty x 8) is documented in docs only; not implemented in this repo's scored on-chain path."
+    - "Per-coin payout_factor can be overridden at runtime from the proxy API (timerange_data 'payout_factor'); the literal 0.015 is only the default fallback."

@@ -1,0 +1,371 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+# Documented mechanism is winner-take-all (100% to seated winner). The live
+# validator code, however, splits every winner's weight 5% / 95% to the owner
+# UID (BURN_FRACTION = 0.95) on every set_weights, and burns 100% on cold start
+# or stale winner cache. Operative reality is therefore partial_burn, not the
+# documented full winner-take-all.
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  INCENTIVE_MECHANISM.md documents winner-take-all (weight[winner]=1.0). The
+  actual validator code (trajectoryrl/base/validator.py) sets the winner's
+  weight to 1.0 - BURN_FRACTION = 0.05 and routes BURN_FRACTION = 0.95 to
+  OWNER_UID = 74 on every weight write, and burns 100% to the owner when no
+  winner is seated or the winner cache is stale.
+
+subnet:
+  name: "TrajectoryRL"
+  owner_repo: "trajectoryRL__trajectoryRL"
+  netuid: 11
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners submit content-addressed "packs" (PolicyBundles) whose payload is a
+    SKILL.md — instructions/strategies teaching an AI agent (Hermes) to solve
+    Terminal-Bench-format shell scenarios. Validators run the agent inside each
+    scenario container with the miner's SKILL.md, then a fresh verifier
+    container scores the agent's output. Reward goes (per docs) to the single
+    seated winner pack; in the live code the winner's emission is 95% burned to
+    the owner UID.
+  submission_format: [content_link, commitment_hash]
+
+scoring_signals:
+  - name: scenario_correctness
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      Per-scenario quality = passed_tests / total_tests parsed from the
+      verifier's ctrf.json (continuous in [0,1]); final score is the
+      equal-weighted sum across scenarios (range [0, N]). Falls back to the
+      binary reward (0 or 1) when the ctrf payload is unparseable. Season 1
+      docs (EVALUATION_S1.md) describe an alternative agent-judge quality score
+      with a hard qualification gate (qualified must be true on all episodes).
+  - name: qualified_gate
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Stake-weighted majority qualified flag. consensus_qualified is true when
+      qualified-reporting stake > 0.5 of valid stake; only qualified votes
+      contribute to the consensus score. A non-qualified miner cannot seat as
+      winner. Cited in winner_state.aggregate_challenger_score and
+      EVALUATION_S1.md qualification gate.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Fixed set of Terminal-Bench-format shell-verifier scenarios (SANDBOX_SCENARIOS),
+      each scored by a one-shot pytest verifier container producing ctrf.json.
+    source_identifier: "trajrl-bench (ghcr.io/trajectoryrl/sandbox-agent)"
+    trust_model: trusted
+    notes: >-
+      Scenarios + episodes-per-scenario are deliberately non-configurable so all
+      validators run the same set and scores are comparable.
+  - kind: llm_judgment
+    description: >-
+      Season 1 agent-judge that SSHes into the sandbox, reads a per-scenario
+      JUDGE.md rubric, inspects sandbox state, and emits a structured quality
+      score. Also a server-side Phase-1 LLM-as-judge integrity pre-eval gate.
+    source_identifier: "JUDGE.md per scenario / Pre-Eval Gate"
+    trust_model: adversarial
+    notes: >-
+      Judge never sees the miner SKILL.md (prompt-injection isolation). EVALUATION_S1.md.
+
+aggregation:
+  method: winner_take_all
+  composition: gated
+  normalization: none
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "74"
+    fraction: 0.95
+    dynamic: false
+    notes: >-
+      BURN_FRACTION = 0.95 in trajectoryrl/base/validator.py: when a winner is
+      seated, weights = [1.0 - BURN_FRACTION, BURN_FRACTION] on [winner_uid,
+      OWNER_UID]; the winner receives 0.05 and the owner UID 74 receives 0.95.
+      When no winner is seated, or the cache is stale (> WINNER_FALLBACK_TTL),
+      100% is burned to OWNER_UID.
+  notes: >-
+    Per docs: server-coordinated stake-weighted aggregation. consensus_score =
+    Σ(stake_i × score_i)/Σ(stake_i) over qualified-reporting validators;
+    consensus_qualified = stake-weighted majority (>0.5). Winner Protection
+    (delta = 0.03, docs) requires a challenger to beat the seated winner's
+    frozen score by the multiplicative margin. NOTE: the in-repo
+    ValidatorConfig still carries the legacy v5.x score_delta = 0.10 and
+    quorum_threshold = 0.5; the documented v6.0 delta of 0.03 is not present as
+    a literal constant in the read code.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    Tempo-gated weight loop. Reads the locally-derived seated winner (cached
+    from GET /api/v2/winner/current via derive_winner_state) and calls
+    set_weights for [winner_uid, OWNER_UID] = [0.05, 0.95], or burns 100% to
+    OWNER_UID when no winner / stale cache. Always sets weights every tempo to
+    avoid deregistration.
+  on_chain_call: set_weights
+  tempo_or_interval: "100 blocks (weight_interval_blocks default)"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No local EMA on the final reward; on-chain YC3 + Liquid Alpha bond
+      dynamics handle cross-validator smoothing (yuma_version 3,
+      liquid_alpha_enabled true, bonds_moving_avg 900000 per docs).
+
+anti_gaming:
+  - kind: deduplication
+    enforcement: rejection
+    description: >-
+      Pack ownership lock (pack_first_seen): server records the first hotkey per
+      pack_hash; later submissions of the same pack_hash from a different hotkey
+      are rejected at queue admission (eval_status='failed'). No succession;
+      eviction by-active with EVICTION_GRACE_WINDOWS = 7.
+  - kind: plagiarism_detection
+    enforcement: rejection
+    description: >-
+      NCD (Normalized Compression Distance) similarity via zlib; SIMILARITY_THRESHOLD
+      = 0.80 in trajectoryrl/utils/ncd.py (is_similar returns True when
+      similarity >= threshold). Note v6.0 docs state NCD self-checks were removed
+      from the validator daemon; the module remains in the repo.
+  - kind: commit_reveal
+    enforcement: barrier
+    description: >-
+      Winner Protection: challenger must beat the seated winner's frozen
+      consensus score by a multiplicative margin (docs delta = 0.03; code
+      ValidatorConfig.score_delta = 0.10) to dethrone; resists copy-paste and
+      trivial undercutting.
+  - kind: stake_weighting
+    enforcement: penalty
+    description: >-
+      Server-coordinated stake-weighted aggregation + quorum gate
+      (QUORUM_FRACTION / quorum_threshold = 0.5) and MIN_VALIDATOR_STAKE =
+      10000.0; dilutes single-validator manipulation and gates finalize on
+      reporting stake share.
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Content-addressed packs: validators verify sha256(canonical_json) ==
+      pack_hash independently; tampered bytes/URLs invalidate the commitment.
+  - kind: rate_limit
+    enforcement: barrier
+    description: >-
+      Channel A: one chain commitment per ~100 blocks per hotkey. Channel B:
+      MINER_SUBMIT_COOLDOWN_SECONDS = 3600. Owner ban after failed_pack_count >
+      3 (30-day ban, escalating to ~99 years).
+
+sub_competitions:
+  structure: single
+  stages: []
+  count: null
+  notes: >-
+    Per-season benchmark; one challenger pack evaluated per challenge epoch.
+    Season-defined scoring (Season 1 = Self-Learning Agents). Steady-state
+    winner-take-all with a < 10-miner bootstrap phase (70/20/10 split, per docs).
+
+per_miner_state:
+  tracked: true
+  state_kinds: [status_enum, cooldown, cumulative_score]
+  status_values:
+    - pending_pre_eval
+    - pending_eval
+    - failed
+    - completed
+    - exhausted
+    - blacklisted
+  reset_policy: >-
+    eval_status advances through the submission lifecycle per pack_hash; quorum
+    abort moves the submission to 'exhausted' (no retry). winner_state is not
+    reset on SPEC_NUMBER bump.
+  notes: >-
+    Server holds winner_state / winner_history / validator_activity; miner
+    cooldown via MINER_COOLDOWN_EPOCHS = 5; validators marked inactive after
+    INACTIVE_THRESHOLD_EPOCHS = 3 consecutive misses. State is primarily
+    server-side in v6.0; the validator daemon is intentionally thin.
+
+documentation:
+  status: docs_and_code
+  source_version: "v6.0 (INCENTIVE_MECHANISM.md, 2026-05-07); SPEC_NUMBER = 10"
+  primary_docs:
+    - "docs/INCENTIVE_MECHANISM.md"
+    - "docs/EVALUATION_S1.md"
+    - "README.md"
+    - "trajectoryrl/base/validator.py"
+    - "trajectoryrl/utils/config.py"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "trajectoryrl/utils/config.py"
+      line_ref: "82"
+      quote: "netuid: int = 11"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "trajectoryrl/base/validator.py"
+      line_ref: "1"
+      quote: '"""TrajectoryRL Validator — v6.0 winner-challenger daemon.'
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "112"
+      quote: >-
+        Mining means writing a SKILL.md — instructions and strategies that teach
+        an AI agent how to handle operational scenarios. The validator runs the
+        agent (Hermes) inside each scenario's container ...; a fresh container of
+        the same image runs `pytest` against the agent's output for the score.
+    - claim_field: "/task/submission_format"
+      source_path: "docs/INCENTIVE_MECHANISM.md"
+      line_ref: "34-36"
+      quote: >-
+        Channel A — On-Chain Commitment. Miners upload pack.json to any publicly
+        accessible HTTP(S) URL ... and submit metadata on-chain via Bittensor's
+        set_commitment extrinsic.
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "trajectoryrl/utils/sandbox_harness.py"
+      line_ref: "77-79"
+      quote: >-
+        Continuous correctness in [0.0, 1.0]: passed_tests / total_tests from the
+        verifier's ctrf.json. Falls back to ``float(reward)`` (binary 0 or 1) when
+        ctrf isn't parseable.
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "trajectoryrl/utils/sandbox_harness.py"
+      line_ref: "110-126"
+      quote: "Final score is the equal-weighted sum ... self.final_score = sum(scores)"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "trajectoryrl/utils/winner_state.py"
+      line_ref: "133-135"
+      quote: >-
+        qualified_subs = [s for s in valid if s.get("challenger_qualified")] ...
+        consensus_qualified = (qualified_stake / total_stake) > 0.5
+    - claim_field: "/ground_truth_sources/0/notes"
+      source_path: "trajectoryrl/utils/config.py"
+      line_ref: "170-174"
+      quote: >-
+        Scenarios + episodes-per-scenario are not configurable on purpose: every
+        validator runs the same set so scores are comparable across validators /
+        windows / SPEC_NUMBER bumps.
+    - claim_field: "/ground_truth_sources/1/description"
+      source_path: "docs/EVALUATION_S1.md"
+      line_ref: "37-39"
+      quote: >-
+        Scoring uses an agent judge that independently explores the sandbox
+        environment and grades the testee agent's work. The judge reads a
+        natural-language rubric (`JUDGE.md` per scenario) and produces a quality score.
+    - claim_field: "/aggregation/method"
+      source_path: "docs/INCENTIVE_MECHANISM.md"
+      line_ref: "97-99"
+      quote: "weight[winner] = 1.0 / weight[others] = 0.0"
+    - claim_field: "/aggregation/notes"
+      source_path: "docs/INCENTIVE_MECHANISM.md"
+      line_ref: "331-336"
+      quote: >-
+        consensus_score = Σ(stake_i × score_i) / Σ(stake_i), summed over
+        qualified-reporting validators only
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "trajectoryrl/base/validator.py"
+      line_ref: "72"
+      quote: "BURN_FRACTION = 0.95  # 95% of miner emissions burned via owner UID"
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "trajectoryrl/base/validator.py"
+      line_ref: "71"
+      quote: "OWNER_UID = 74"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "trajectoryrl/base/validator.py"
+      line_ref: "1245-1250"
+      quote: >-
+        if winner_uid == OWNER_UID: uids = [OWNER_UID]; weights = [1.0] else:
+        uids = [winner_uid, OWNER_UID]; weights = [1.0 - BURN_FRACTION, BURN_FRACTION]
+    - claim_field: "/mechanism_status"
+      source_path: "trajectoryrl/base/validator.py"
+      line_ref: "1166-1172"
+      quote: >-
+        if not self._winner_state.is_fresh(...): ... "refusing set_weights and
+        burning to owner UID" ... await self._set_burn_weights(reason="winner_cache_stale")
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "trajectoryrl/utils/config.py"
+      line_ref: "135"
+      quote: "weight_interval_blocks: int = 100"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "trajectoryrl/base/validator.py"
+      line_ref: "1195-1202"
+      quote: "result = self.subtensor.set_weights(netuid=self.config.netuid, wallet=self.wallet, uids=uids, weights=weights, ...)"
+    - claim_field: "/weight_setting/method"
+      source_path: "docs/INCENTIVE_MECHANISM.md"
+      line_ref: "114-118"
+      quote: >-
+        Validators always call `set_weights` every tempo, never skip — failure to
+        set weights leads to deregistration.
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "docs/INCENTIVE_MECHANISM.md"
+      line_ref: "281"
+      quote: >-
+        A later submission with the same `pack_hash` but a different hotkey is
+        treated as a copy and rejected before queue admission
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "trajectoryrl/utils/ncd.py"
+      line_ref: "19"
+      quote: "SIMILARITY_THRESHOLD = 0.80"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "trajectoryrl/utils/config.py"
+      line_ref: "98"
+      quote: "score_delta: float = 0.10  # Winner Protection: challenger must score 10% higher"
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "trajectoryrl/utils/config.py"
+      line_ref: "113-114"
+      quote: >-
+        min_validator_stake: float = 10000.0 ... quorum_threshold: float = 0.5 ...
+        aggregate only when submitted stake share > threshold
+    - claim_field: "/anti_gaming/4/description"
+      source_path: "docs/INCENTIVE_MECHANISM.md"
+      line_ref: "260"
+      quote: "Validators verify `sha256(canonical_json) == pack_hash` independently."
+    - claim_field: "/anti_gaming/5/description"
+      source_path: "docs/INCENTIVE_MECHANISM.md"
+      line_ref: "64"
+      quote: "Per-miner cooldown: 60 min (configurable via `MINER_SUBMIT_COOLDOWN_SECONDS`)"
+    - claim_field: "/per_miner_state/status_values"
+      source_path: "docs/INCENTIVE_MECHANISM.md"
+      line_ref: "638-640"
+      quote: >-
+        miner_submissions row inserted with eval_status = 'pending_pre_eval' ...
+        failed → eval_status = 'failed' ... all checks pass → eval_status = 'pending_eval'
+    - claim_field: "/documentation/source_version"
+      source_path: "trajectoryrl/utils/config.py"
+      line_ref: "40"
+      quote: "SPEC_NUMBER = 10"
+    - claim_field: "/sub_competitions/notes"
+      source_path: "docs/INCENTIVE_MECHANISM.md"
+      line_ref: "103-110"
+      quote: >-
+        When active miners < `bootstrap_threshold` (default 10) ... weight[1st] =
+        0.70 / weight[2nd] = 0.20 / weight[3rd] = 0.10
+  unresolved:
+    - >-
+      /aggregation Winner Protection delta: docs v6.0 state delta = 0.03, but the
+      only literal in the read code is ValidatorConfig.score_delta = 0.10 (legacy
+      v5.x value). The 0.03 constant is not present in the source read, so the
+      documented value is not code-confirmed.
+    - >-
+      /scoring_signals active scoring method: two scoring descriptions coexist —
+      sandbox_harness.py computes passed_tests/total_tests from ctrf.json
+      (Terminal-Bench verifier), while EVALUATION_S1.md describes an agent-judge
+      quality_score. Which is live for the current season is not unambiguously
+      resolvable from the read sources.
+    - >-
+      /aggregation config vs docs divergence: config.py reflects the v5.x
+      consensus-CAS model (IPFS, consensus_epsilon, window_publish_pct,
+      disable_winner_protection default true) while INCENTIVE_MECHANISM.md and
+      validator.py reflect v6.0 server-coordinated derivation; scoring/__init__.py
+      confirms the v5.x scorer was removed. The config dataclass is partly stale
+      relative to the live daemon.

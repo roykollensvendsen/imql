@@ -1,0 +1,120 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: unknown
+mechanism_status_notes: >-
+  The repository is a one-line placeholder readme ("More information coming soon.")
+  with no validator, reward, weight-setting, or config code. The live operative status
+  of subnet 71 cannot be determined from the repository.
+
+subnet:
+  name: "Kora, AI trading agent"
+  owner_repo: "korapilot-ai__sn71-kora"
+  netuid: 71
+  implementation_lang: none_docs_only
+
+task:
+  summary: >-
+    The repository describes "Kora", an AI trading agent on Bittensor subnet 71 (Kora Pilot,
+    by Pioneer AI Foundry). No task specification, miner submission format, or scoring detail
+    is present in the source; the readme only links to external sites and states more
+    information is coming soon.
+  submission_format: [other]
+  submission_format_other: "undocumented (no submission format described in the source repository)"
+
+scoring_signals: []
+
+ground_truth_sources: []
+
+aggregation:
+  method: undocumented
+  composition: other
+  composition_other: "undocumented (no scoring/aggregation described in the source repository)"
+  normalization: none
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: "No burn mechanism documented in the source repository."
+  notes: "No aggregation logic present in the repository."
+
+weight_setting:
+  cadence: undocumented
+  method: ""
+  on_chain_call: unknown
+  tempo_or_interval: null
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: "No weight-setting or smoothing code in the source repository."
+
+anti_gaming: []
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: "Not documented."
+
+per_miner_state:
+  tracked: false
+  state_kinds: []
+  status_values: []
+  reset_policy: ""
+  notes: "Not documented."
+
+documentation:
+  status: docs_only
+  source_version: null
+  primary_docs:
+    - "readme.md"
+  completeness: low
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8"
+  extracted_at: "2026-06-06"
+  confidence_overall: low
+  evidence:
+    - claim_field: "/subnet/name"
+      source_path: "readme.md"
+      line_ref: "1"
+      quote: "# Kora, AI trading agent"
+      confidence: high
+    - claim_field: "/subnet/netuid"
+      source_path: "readme.md"
+      line_ref: "4"
+      quote: "[Subnet 71](https://taostats.io/subnets/71/chart)"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "readme.md"
+      line_ref: "1-8"
+      quote: "# Kora, AI trading agent - [Kora Pilot](https://www.korapilot.ai/) ... [Pioneer AI Foundry](https://www.p10neer.ai/)."
+      confidence: medium
+    - claim_field: "/documentation/status"
+      source_path: "readme.md"
+      line_ref: "6"
+      quote: "More information coming soon."
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "readme.md"
+      line_ref: "1-9"
+      quote: "(repository contains only readme.md; no source code files)"
+      confidence: high
+  unresolved:
+    - "/task/submission_format — no miner submission format described in the source"
+    - "/scoring_signals — no scoring signals described in the source"
+    - "/ground_truth_sources — no ground-truth source described in the source"
+    - "/aggregation/method — no aggregation/scoring logic in the source"
+    - "/weight_setting/cadence — no weight-setting code in the source"
+    - "/weight_setting/on_chain_call — no on-chain weight call in the source"
+    - "/anti_gaming — no anti-gaming mechanism described in the source"
+    - "/mechanism_status — live status of subnet 71 not determinable from the repository"
+  extractor_notes: >-
+    Repository is a placeholder: a single readme.md (9 lines) with project links and
+    "More information coming soon." No validator/reward/weights/config code exists.
+    All code-derived fields left empty and listed in unresolved; confidence_overall low.

@@ -1,0 +1,262 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  The live validator scores miners on GPU hardware inventory and container uptime
+  (a proof-of-resources mechanism) in evaluate_miners.get_rewards, normalizes to
+  sum=1, and EMAs into on-chain weights. The README markets an aspirational "AI
+  Agent Launchpad / TAOPump" economy with agent tokens, creators and users, but
+  none of that scoring is present in code — only hardware/uptime scoring is
+  implemented. No burn UID is present.
+
+subnet:
+  name: "SN108 Internet of Intelligence (Agent Launchpad)"
+  owner_repo: "subnet108__internet-of-intelligence"
+  netuid: 108
+  implementation_lang: python
+
+task:
+  summary: >-
+    A miner runs a server (queried at the config endpoint) that reports its GPU
+    inventory and the uptime/status of its running containers ("pods"). The
+    validator queries a random sample of miners, verifies the reported identity
+    (ip/port/coldkey/hotkey/nonce/signature/timestamp), then scores each miner on
+    (a) its share of total GPUs, (b) its share of total container uptime, and (c)
+    a bonus for long-running containers, all multiplied by a GPU-model rarity
+    weight. There is no AI/agent task being evaluated in code; reward is hardware
+    capacity and liveness.
+  submission_format: [compute_service, api_response]
+
+scoring_signals:
+  - name: gpu_count_share
+    metric_kind: hardware_spec
+    direction: higher_is_better
+    weight: 0.5
+    normalization: min_max
+    notes: >-
+      score_a = len(r["gpu"]) / total_gpus across all valid responses; weighted by
+      GPU_CORES_SCORE = 0.5.
+  - name: container_uptime_share
+    metric_kind: uptime
+    direction: higher_is_better
+    weight: 0.3
+    normalization: min_max
+    notes: >-
+      score_b = sum of uptimes of containers with status==1, divided by total
+      uptime across all valid responses; weighted by POD_RUN_TIME_SCORE = 0.3.
+  - name: long_running_bonus
+    metric_kind: uptime
+    direction: higher_is_better
+    weight: 0.1
+    normalization: none
+    notes: >-
+      score_c = 1/total_long_run if a miner's average container uptime exceeds
+      POD_RUN_TIME_AVG_DAY (604800s = 7 days); weighted by POD_RUN_TIME_AVG_SCORE
+      = 0.1.
+  - name: gpu_model_rarity_multiplier
+    metric_kind: hardware_spec
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      gpu_weight = sum of GPU_MODEL_RATES per GPU model; applied as a
+      multiplicative (1 + gpu_weight) factor on the additive score, not an
+      additive term. Rates literal in const.py (e.g. H100 80GB HBM3 = .10).
+
+ground_truth_sources:
+  - kind: hardware_probe
+    description: >-
+      Self-reported GPU inventory and container uptime returned by the miner's
+      local server, attested with an Ed25519/RSA-style signature verified against
+      a baked-in public.key plus identity checks (ip/port/coldkey/hotkey, nonce,
+      timestamp freshness within 10s).
+    source_identifier: "neurons/validator/src/config/public.key"
+    trust_model: adversarial
+    notes: >-
+      Values are self-reported by miners; validator only verifies signature and
+      identity fields, not the actual presence of the hardware.
+
+aggregation:
+  method: proportional
+  composition: multiplicative
+  normalization: sum_to_one
+  normalization_other: ""
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: "No burn UID or burn fraction present in code."
+  notes: >-
+    total_score = (0.5*score_a + 0.3*score_b + 0.1*score_c) * (1 + gpu_weight);
+    then scores_result = scores_result / total_sum so the vector sums to 1.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    update_scores EMAs the per-step normalized rewards into self.scores
+    (alpha*new + (1-alpha)*old); set_weights L1-normalizes self.scores, runs
+    process_weights_for_netuid (quantile/max-weight-limit clamp), converts to
+    uint16 and calls subtensor.set_weights.
+  on_chain_call: set_weights
+  tempo_or_interval: "100 blocks (neuron.epoch_length default)"
+  smoothing:
+    kind: ema
+    alpha: 0.1
+    window: null
+    notes: >-
+      moving_average_alpha default 0.1 in add_validator_args; applied in
+      update_scores as alpha*scattered_rewards + (1-alpha)*self.scores.
+
+anti_gaming:
+  - kind: liveness_check
+    enforcement: rejection
+    description: >-
+      Responses are dropped (scored 0) unless status is true and the reported
+      ip/port/coldkey/hotkey match the metagraph axon, nonce matches, signature
+      verifies against public.key, and timestamp is within 10000 ms of now.
+  - kind: deduplication
+    enforcement: rejection
+    description: >-
+      If more than one active axon shares the same IP (active_ip_count[ip] > 1),
+      that miner's response is invalidated (set to None / score 0).
+  - kind: hardware_validation
+    enforcement: barrier
+    description: >-
+      GPU_MODEL_RATES whitelists rewarded GPU models; unknown models contribute 0
+      to gpu_weight. Only containers with status==1 count toward uptime.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score]
+  status_values: []
+  reset_policy: >-
+    On resync_metagraph, scores[uid] is zeroed when a hotkey is replaced; scores
+    persisted to state.npz and reloaded on start.
+  notes: >-
+    self.scores is an EMA moving average per uid (cumulative_score); no debt
+    ledger or status enum.
+
+documentation:
+  status: sparse
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "neurons/validator/README.md"
+    - "neurons/miner/README.md"
+  completeness: low
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "neurons/utils/config.py"
+      line_ref: "75"
+      quote: 'parser.add_argument("--netuid", type=int, help="Subnet netuid", default=108)'
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "neurons/validator/src/core/evaluate_miners.py"
+      line_ref: "19-21"
+      quote: "import time\nimport bittensor as bt\nimport numpy as np"
+    - claim_field: "/task/summary"
+      source_path: "neurons/validator/src/core/evaluate_miners.py"
+      line_ref: "150-154"
+      quote: 'valid_results.append({ "containers": data.get("containers", []), "gpu": data.get("gpu", []), "ip": data.get("ip") })'
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "neurons/validator/src/config/const.py"
+      line_ref: "30"
+      quote: "GPU_CORES_SCORE = 0.5"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "neurons/validator/src/core/evaluate_miners.py"
+      line_ref: "188-189"
+      quote: 'score_a = len(r["gpu"]) / total_gpus if total_gpus > 0 else 0'
+    - claim_field: "/scoring_signals/1/weight"
+      source_path: "neurons/validator/src/config/const.py"
+      line_ref: "32"
+      quote: "POD_RUN_TIME_SCORE = 0.3"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "neurons/validator/src/core/evaluate_miners.py"
+      line_ref: "191-193"
+      quote: 'score_b = sum(c["uptime"] for c in r["containers"] if c["status"] == 1)  score_b = score_b / total_uptime if total_uptime > 0 else 0'
+    - claim_field: "/scoring_signals/2/weight"
+      source_path: "neurons/validator/src/config/const.py"
+      line_ref: "34"
+      quote: "POD_RUN_TIME_AVG_SCORE = 0.1"
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "neurons/validator/src/core/evaluate_miners.py"
+      line_ref: "200-201"
+      quote: 'if avg_container_uptime > conf.POD_RUN_TIME_AVG_DAY and total_long_run > 0:  score_c = 1 / total_long_run'
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "neurons/validator/src/core/evaluate_miners.py"
+      line_ref: "203-204"
+      quote: 'gpu_weight = sum(conf.GPU_MODEL_RATES.get(g.get("model"), 0) for g in r["gpu"])'
+    - claim_field: "/aggregation/notes"
+      source_path: "neurons/validator/src/core/evaluate_miners.py"
+      line_ref: "206"
+      quote: "total_score = (conf.GPU_CORES_SCORE * score_a + conf.POD_RUN_TIME_SCORE * score_b + conf.POD_RUN_TIME_AVG_SCORE * score_c) * (1 + gpu_weight)"
+    - claim_field: "/aggregation/normalization"
+      source_path: "neurons/validator/src/core/evaluate_miners.py"
+      line_ref: "220-222"
+      quote: "total_sum = np.sum(scores_result)  if total_sum > 0:  scores_result = scores_result / total_sum"
+    - claim_field: "/aggregation/composition"
+      source_path: "neurons/validator/src/config/const.py"
+      line_ref: "1-3"
+      quote: 'GPU_MODEL_RATES = { "NVIDIA B200": .05, "NVIDIA H200": .08, "NVIDIA H100 80GB HBM3": .10,'
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "neurons/validator/src/core/evaluate_miners.py"
+      line_ref: "81-82"
+      quote: 'pub_key_path = Path(__file__).resolve().parent.parent / "config" / "public.key"  pub_key = read_public_key(pub_key_path)'
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "neurons/utils/config.py"
+      line_ref: "211-216"
+      quote: '--neuron.moving_average_alpha ... help="Moving average alpha parameter, how much to add of the new observation.", default=0.1,'
+    - claim_field: "/weight_setting/method"
+      source_path: "neurons/validator/src/core/validator.py"
+      line_ref: "360-363"
+      quote: "alpha: float = self.config.neuron.moving_average_alpha  self.scores = ( alpha * scattered_rewards + (1 - alpha) * self.scores )"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "neurons/validator/src/core/validator.py"
+      line_ref: "271-279"
+      quote: "result, msg = self.subtensor.set_weights( wallet=self.wallet, netuid=self.config.netuid, uids=uint_uids, weights=uint_weights,"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "neurons/utils/config.py"
+      line_ref: "84-89"
+      quote: '--neuron.epoch_length ... help="The default epoch length (how often we set weights, measured in 12 second blocks).", default=100,'
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "neurons/validator/src/core/evaluate_miners.py"
+      line_ref: "144-148"
+      quote: 'ts = data.get("timestamp", 0)  if now_ts - ts > 10_000:  ... valid_results.append(None)'
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "neurons/validator/src/core/evaluate_miners.py"
+      line_ref: "103-106"
+      quote: 'if active_ip_count.get(m.ip, 0) > 1:  ...  valid_results.append(None)  continue'
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "neurons/validator/src/core/evaluate_miners.py"
+      line_ref: "192"
+      quote: 'score_b = sum(c["uptime"] for c in r["containers"] if c["status"] == 1)'
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "neurons/validator/src/core/validator.py"
+      line_ref: "303-305"
+      quote: "for uid, hotkey in enumerate(self.hotkeys):  if hotkey != self.metagraph.hotkeys[uid]:  self.scores[uid] = 0"
+    - claim_field: "/mechanism_status"
+      source_path: "README.md"
+      line_ref: "39-48"
+      quote: '2. TAOPump Dynamic System (Ecosystem Incentive) ... | System | Buyback / Burn | Ensures token stability and deflationary effect. |'
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "neurons/validator/src/config/const.py"
+      line_ref: "36"
+      quote: "POD_RUN_TIME_AVG_DAY = 604800"
+  unresolved:
+    - "Whether the README's TAOPump / agent-token / creator-user incentives are paid via any off-chain mechanism — no code implements them; only hardware/uptime scoring exists."
+    - "Actual chain tempo for weight setting (epoch_length default 100 blocks is a CLI default, not confirmed against the netuid's on-chain tempo)."
+    - "Whether process_weights_for_netuid max_weight_limit / min_allowed_weights impose a concrete numeric floor/cap (values read from chain at runtime, not literal in repo)."

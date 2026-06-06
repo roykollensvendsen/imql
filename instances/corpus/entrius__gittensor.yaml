@@ -1,0 +1,364 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  Live code blends four hardcoded emission pools (gittensor/validator/forward.py
+  blend_emission_pools): OSS contributions OSS_EMISSION_SHARE=0.30, issue discovery
+  ISSUE_DISCOVERY_EMISSION_SHARE=0.10, a flat 0.15 to a treasury UID (111), and
+  RECYCLE_EMISSION_SHARE=0.45 routed flat to UID 0 (RECYCLE_UID). The recycle UID
+  also absorbs any unclaimed share when a pool is empty, so a large fixed fraction
+  (>=0.45) is permanently recycled/burned alongside live PR scoring — hence
+  partial_burn. NOTE: the forward() docstring claims 30%/30%/15%/25% but the actual
+  constants used by the code are 0.30/0.10/0.15/0.45; the constants are authoritative.
+
+subnet:
+  name: "Gittensor"
+  owner_repo: "entrius__gittensor"
+  netuid: 74
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners register a GitHub fine-grained personal access token (PAT) with validators
+    and contribute merged pull requests (and discovered/solved issues) to whitelisted
+    open-source repositories. Validators authenticate GitHub account ownership via the
+    PAT (or the das-github-mirror service), fetch the miner's PRs over a rolling
+    35-day window, and score each merged PR by an AST/tree-sitter token-based base
+    score scaled by code density, then multiplied by repo weight, linked-issue,
+    label, open-PR-spam, time-decay, credibility, and review-quality multipliers.
+    Per-miner scores are summed, normalized to sum to 1, and blended into four
+    hardcoded emission pools.
+  submission_format: [source_code]
+
+scoring_signals:
+  - name: token_score
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      AST/tree-sitter token score over a PR's file diff (structural nodes like
+      functions/classes + leaf tokens). Density-scaled SOURCE token score feeds the
+      base score: initial_base_score = MERGED_PR_BASE_SCORE(25) * source_density when
+      source token score >= MIN_TOKEN_SCORE_FOR_BASE_SCORE(5), else 0
+      (mirror/scoring.py calculate_base_score_for_pr_files).
+  - name: contribution_bonus
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Cross-category bonus added to base score: bonus_percent =
+      min(1.0, total_score / CONTRIBUTION_SCORE_FOR_FULL_BONUS(1500)); bonus =
+      bonus_percent * MAX_CONTRIBUTION_BONUS(25).
+  - name: repo_weight_multiplier
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Per-repository weight from master_repositories.json; DEFAULT_REPO_WEIGHT=0.01
+      fallback. Multiplicative on the PR score (resolve_repo_weight).
+  - name: time_decay_multiplier
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Sigmoid time decay from merge timestamp (datetime_utils.calculate_time_decay):
+      sigmoid = 1/(1+exp(0.4*(days_since_merge-10))), floored at
+      TIME_DECAY_MIN_MULTIPLIER=0.05, with a 12h grace period
+      (TIME_DECAY_GRACE_PERIOD_HOURS). Rolling 35-day window (PR_LOOKBACK_DAYS).
+  - name: issue_multiplier
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Flat multiplier from best valid linked issue: MAINTAINER_ISSUE_MULTIPLIER=1.66
+      if a valid issue author is OWNER/MEMBER/COLLABORATOR, else
+      STANDARD_ISSUE_MULTIPLIER=1.33, else 1.0 (scoring.py calculate_issue_multiplier).
+  - name: review_quality_multiplier
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      max(0.0, 1.0 - REVIEW_PENALTY_RATE(0.15) * changes_requested_count) per
+      maintainer CHANGES_REQUESTED review (calculate_review_quality_multiplier).
+  - name: credibility_multiplier
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      merged_count / (merged_count + max(0, closed_count - mulligan)); also gates
+      eligibility at MIN_CREDIBILITY=0.80 (credibility.py).
+
+ground_truth_sources:
+  - kind: organic_traffic
+    kind_other: ""
+    description: >-
+      Real merged pull requests / closed issues on whitelisted public GitHub
+      repositories, fetched via the GitHub GraphQL API (legacy PAT path) or the
+      das-github-mirror service (mirror.gittensor.io). Account ownership is proven
+      by the miner's GitHub PAT.
+    source_identifier: "github_api / mirror.gittensor.io"
+    trust_model: adversarial
+    notes: >-
+      GitHub is the external oracle for merge state, authorship, reviews, and labels;
+      miners are adversarial (sybil/self-merge/spam controls applied).
+
+aggregation:
+  method: proportional
+  composition: multiplicative
+  normalization: sum_to_one
+  normalization_other: ""
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: 0.45
+    dynamic: false
+    notes: >-
+      RECYCLE_EMISSION_SHARE=0.45 routed flat to RECYCLE_UID=0 in
+      blend_emission_pools; recycle UID additionally absorbs unclaimed shares of any
+      empty pool (OSS 0.30 and/or issue 0.10), so effective burn can exceed 0.45.
+      A separate flat 0.15 (ISSUES_TREASURY_EMISSION_SHARE) goes to treasury UID 111.
+  notes: >-
+    Per-PR earned_score = base_score * product(repo, issue, label, spam, decay, cred,
+    review) multipliers (classes.py calculate_final_earned_score), summed per miner
+    (finalize_miner_scores), collateral deducted, then normalize_rewards_linear
+    divides each miner's total_score by the sum of all totals (proportional, sum to 1).
+
+weight_setting:
+  cadence: rate_limited
+  cadence_other: ""
+  method: >-
+    update_scores applies an EMA (alpha * new + (1-alpha) * old) to per-UID scores
+    each forward round (every VALIDATOR_STEPS_INTERVAL=120 steps ~ stated 2h); set_weights
+    L1-normalizes self.scores and calls subtensor.set_weights.
+  on_chain_call: set_weights
+  tempo_or_interval: "VALIDATOR_STEPS_INTERVAL=120 steps (~2h per scoring round); VALIDATOR_WAIT=60s loop"
+  smoothing:
+    kind: ema
+    kind_other: ""
+    alpha: 0.70
+    window: null
+    notes: >-
+      neuron.moving_average_alpha default 0.70 in update_scores
+      (neurons/base/validator.py): self.scores = alpha*scattered + (1-alpha)*self.scores.
+
+anti_gaming:
+  - kind: deduplication
+    enforcement: penalty
+    description: >-
+      detect_and_penalize_miners_sharing_github zeroes total_score (and token/base
+      totals) for UIDs sharing the same GitHub account; penalized UIDs are
+      blacklisted and their scores set to 0 (inspections.py).
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Self-merge rejected unless external approval exists; PRs merged to
+      non-acceptable base branches or from acceptable source branches are rejected;
+      maintainer-authored PRs excluded (_should_skip_merged_mirror_pr).
+  - kind: challenge_period
+    enforcement: barrier
+    description: >-
+      Eligibility gate (credibility.py check_eligibility): requires
+      MIN_VALID_MERGED_PRS=5 valid merged PRs (token_score>=5) and
+      MIN_CREDIBILITY=0.80 credibility before a miner receives any score.
+  - kind: collateral
+    enforcement: penalty
+    description: >-
+      Open PRs reserve collateral = base*multipliers*OPEN_PR_COLLATERAL_PERCENT(0.20),
+      deducted from a miner's earned score (calculate_open_pr_collateral_score).
+  - kind: rate_limit
+    enforcement: penalty
+    description: >-
+      Excessive-open-PR spam multiplier is binary 1.0/0.0: 0 if open PRs exceed a
+      dynamic threshold (base EXCESSIVE_PR_PENALTY_BASE_THRESHOLD=10 +
+      floor(token_score/300), capped MAX_OPEN_PR_THRESHOLD=30)
+      (calculate_pr_spam_penalty_multiplier).
+
+sub_competitions:
+  structure: multi_mechanism
+  structure_other: ""
+  stages:
+    - name: "OSS contributions (PR scoring)"
+      role: "main"
+      advancement_rule: "eligibility gate: >=5 valid merged PRs and credibility >=0.80"
+      multipliers: {}
+    - name: "Issue discovery"
+      role: "other"
+      advancement_rule: "mirror-only; stricter gate MIN_VALID_SOLVED_ISSUES=7, MIN_ISSUE_CREDIBILITY=0.80"
+      multipliers: {}
+  count: 2
+  notes: >-
+    Two scored competitions (OSS contributions 30%, issue discovery 10%) plus two
+    flat allocations (treasury UID 111 15%, recycle UID 0 45%) blended in
+    blend_emission_pools.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, reputation]
+  status_values: []
+  reset_policy: >-
+    EMA-smoothed self.scores persisted to state.npz; blacklisted/penalized UIDs reset
+    to 0. PR scoring uses a rolling 35-day lookback window (PR_LOOKBACK_DAYS), so
+    contributions naturally age out.
+  notes: >-
+    Credibility (merged/(merged+closed-mulligan)) acts as a reputation-like ratio
+    gating eligibility; an evaluation_cache stores last-successful evaluations for
+    GitHub-API-failure fallback.
+
+documentation:
+  status: code_authoritative
+  source_version: null
+  primary_docs:
+    - "README.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8[1m]"
+  extracted_at: "2026-06-06"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "17"
+      quote: "Gittensor is a Bittensor subnet (SN74)"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "21"
+      quote: "validators authenticate account ownership via the PAT, verify the merged contributions, and score them based on code quality, repository weight, and programming language factors. Rewards are distributed proportionally to contribution scores."
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "27"
+      quote: "Only merged PRs to legitimate repositories earn emissions"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "gittensor/validator/oss_contributions/mirror/scoring.py"
+      line_ref: "308-315"
+      quote: "if source_token_score < MIN_TOKEN_SCORE_FOR_BASE_SCORE: initial_base_score = 0.0 else: initial_base_score = MERGED_PR_BASE_SCORE * source_density"
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "gittensor/validator/oss_contributions/mirror/scoring.py"
+      line_ref: "313-314"
+      quote: "bonus_percent = min(1.0, scoring_result.total_score / CONTRIBUTION_SCORE_FOR_FULL_BONUS) contribution_bonus = round(bonus_percent * MAX_CONTRIBUTION_BONUS, 2)"
+      confidence: high
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "gittensor/validator/utils/datetime_utils.py"
+      line_ref: "59-60"
+      quote: "sigmoid = 1 / (1 + math.exp(TIME_DECAY_SIGMOID_STEEPNESS_SCALAR * (days_since_merge - TIME_DECAY_SIGMOID_MIDPOINT)))  return max(sigmoid, TIME_DECAY_MIN_MULTIPLIER)"
+      confidence: high
+    - claim_field: "/scoring_signals/4/notes"
+      source_path: "gittensor/constants.py"
+      line_ref: "173-174"
+      quote: "STANDARD_ISSUE_MULTIPLIER = 1.33  # Non-maintainer issue author\nMAINTAINER_ISSUE_MULTIPLIER = 1.66  # Issue author is OWNER/MEMBER/COLLABORATOR"
+      confidence: high
+    - claim_field: "/scoring_signals/5/notes"
+      source_path: "gittensor/validator/oss_contributions/scoring.py"
+      line_ref: "175"
+      quote: "multiplier = max(0.0, 1.0 - REVIEW_PENALTY_RATE * changes_requested_count)"
+      confidence: high
+    - claim_field: "/aggregation/composition"
+      source_path: "gittensor/classes.py"
+      line_ref: "238-248"
+      quote: "multipliers = {'repo':..., 'issue':..., 'label':..., 'spam':..., 'decay':..., 'cred':..., 'review':...}  self.earned_score = _apply_score_multipliers(self.base_score, multipliers, label)"
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "gittensor/validator/oss_contributions/normalize.py"
+      line_ref: "9-33"
+      quote: "Normalize scores to sum to 1.0, preserving ratios. ... normalized = {uid: score / total for uid, score in rewards.items()}"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "gittensor/constants.py"
+      line_ref: "155-161"
+      quote: "RECYCLE_UID = 0 ... OSS_EMISSION_SHARE = 0.30 ... ISSUE_DISCOVERY_EMISSION_SHARE = 0.10 ... RECYCLE_EMISSION_SHARE = 0.45  # 45% to recycle UID 0"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "gittensor/validator/forward.py"
+      line_ref: "187-192"
+      quote: "if RECYCLE_UID in miner_uids: recycle_idx = sorted_uids.index(RECYCLE_UID) rewards[recycle_idx] += RECYCLE_EMISSION_SHARE + recycle_extra"
+      confidence: high
+    - claim_field: "/mechanism_status_notes"
+      source_path: "gittensor/validator/forward.py"
+      line_ref: "148-194"
+      quote: "Blend 4 emission pools into a single rewards array. - OSS contributions: 30% - Issue discovery: 30% - Issue treasury: 15% (flat to UID 111) - Recycle: 25% (flat to UID 0)"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "gittensor/utils/config.py"
+      line_ref: "119-124"
+      quote: "'--neuron.moving_average_alpha', type=float, ... default=0.70,"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/kind"
+      source_path: "neurons/base/validator.py"
+      line_ref: "348-349"
+      quote: "alpha: float = self.config.neuron.moving_average_alpha  self.scores = alpha * scattered_rewards + (1 - alpha) * self.scores"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "neurons/base/validator.py"
+      line_ref: "262-270"
+      quote: "result, msg = self.subtensor.set_weights(wallet=self.wallet, netuid=self.config.netuid, uids=uint_uids, weights=uint_weights, ...)"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "gittensor/validator/utils/config.py"
+      line_ref: "5-6"
+      quote: "VALIDATOR_WAIT = 60  # 60 seconds\nVALIDATOR_STEPS_INTERVAL = 120  # 2 hours, every time a scoring round happens"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "gittensor/validator/oss_contributions/inspections.py"
+      line_ref: "14-17"
+      quote: "def detect_and_penalize_miners_sharing_github ... Will then penalize detected 'duplicate miners' with a score of 0.0."
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "gittensor/constants.py"
+      line_ref: "127-128"
+      quote: "MIN_VALID_MERGED_PRS = 5  # minimum \"valid\" merged PRs ... MIN_CREDIBILITY = 0.80  # minimum credibility ratio to receive score"
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "gittensor/constants.py"
+      line_ref: "150"
+      quote: "OPEN_PR_COLLATERAL_PERCENT = 0.20"
+      confidence: high
+    - claim_field: "/anti_gaming/4/description"
+      source_path: "gittensor/validator/oss_contributions/scoring.py"
+      line_ref: "241-251"
+      quote: "bonus = int(total_token_score // OPEN_PR_THRESHOLD_TOKEN_SCORE) return min(EXCESSIVE_PR_PENALTY_BASE_THRESHOLD + bonus, MAX_OPEN_PR_THRESHOLD) ... return 1.0 if total_open_prs <= threshold else 0.0"
+      confidence: high
+    - claim_field: "/sub_competitions/notes"
+      source_path: "gittensor/constants.py"
+      line_ref: "157-190"
+      quote: "OSS_EMISSION_SHARE = 0.30 ... ISSUE_DISCOVERY_EMISSION_SHARE = 0.10 ... ISSUES_TREASURY_UID = 111 ... ISSUES_TREASURY_EMISSION_SHARE = 0.15"
+      confidence: high
+    - claim_field: "/sub_competitions/stages/1/advancement_rule"
+      source_path: "gittensor/constants.py"
+      line_ref: "135-136"
+      quote: "MIN_VALID_SOLVED_ISSUES = 7 ... MIN_ISSUE_CREDIBILITY = 0.80  # minimum issue credibility ratio"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "gittensor/constants.py"
+      line_ref: "23-34"
+      quote: "BASE_GITHUB_API_URL = 'https://api.github.com' ... GITTENSOR_MIRROR_DEFAULT_URL = 'https://mirror.gittensor.io'"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "gittensor/constants.py"
+      line_ref: "78"
+      quote: "PR_LOOKBACK_DAYS = 35  # rolling window for scoring"
+      confidence: high
+  unresolved:
+    - "label_multiplier values: per-repo label multipliers live in master_repositories.json (not in this tree); only the resolution logic is in source."
+    - "Token weights (per-AST-node-type scoring weights) come from a token_config JSON loaded at runtime; literal values not present in the read source."
+    - "Exact GitHub repo whitelist and per-repo weights (master_repositories.json) are dynamic/external; DEFAULT_REPO_WEIGHT=0.01 fallback is the only literal."
+    - "Precise on-chain weight-setting cadence (chain rate limit / tempo) is governed by bittensor process_weights_for_netuid and the chain, not a literal in this repo."
+  extractor_notes: >-
+    Code-authoritative Python validator. Detailed scoring docs are external
+    (docs.gittensor.io/scoring.html, not in repo). Notable discrepancy: forward.py
+    docstrings state 30/30/15/25 emission split but the imported constants are
+    0.30/0.10/0.15/0.45 — constants are what execute, so they are used here.

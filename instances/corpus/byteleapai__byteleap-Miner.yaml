@@ -1,0 +1,217 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+# This is the MINER-side repository of the ByteLeap SN128 compute subnet. The validator
+# (which computes scores and sets weights) lives in a separate, unavailable repository.
+# Scoring is described only in the README at a documentation level; no scoring, reward,
+# or weight-setting code is present in this repo. mechanism_status is therefore unknown.
+mechanism_status: unknown
+mechanism_status_notes: >-
+  Miner-only repo. README documents a two-factor scoring model (lease revenue 100% plus a
+  169-hour availability multiplier) but the actual scoring/weight computation lives on the
+  validator, which is not in this repository. Whether scoring is live or burning emissions
+  cannot be determined from the available source.
+
+subnet:
+  name: "ByteLeap Compute Network (Miner)"
+  owner_repo: "byteleapai__byteleap-Miner"
+  netuid: 128
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners aggregate worker hardware resources and act as the Bittensor network interface
+    for the ByteLeap distributed compute platform (SN128). Each miner manages up to 100
+    workers over WebSocket, reports their status and system info to validators via encrypted
+    heartbeats, and executes cryptographic compute challenges (CPU/GPU matrix multiplication
+    with Merkle-tree commitments and proofs) routed from the validator. Per the README,
+    miners earn rewards through active compute leases (lease revenue) and an availability
+    multiplier; the scoring itself is performed by the validator (separate repo).
+  submission_format: [compute_service, commitment_hash]
+  extensions:
+    detail: >-
+      Two-phase challenge protocol: Phase 1 miner sends CommitmentData (Merkle root per
+      computation unit); Phase 2 miner submits ProofData (row hashes + Merkle proofs) for
+      validator verification.
+
+scoring_signals:
+  - name: lease_revenue
+    metric_kind: reward
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      README "Score Components (Weighted)": "Lease Revenue (100%): Active compute rentals
+      generate the primary score". Idle workers score zero on this component. Documentation
+      claim only; no computation present in this repo.
+  - name: availability_multiplier
+    metric_kind: uptime
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      README: "Availability Multiplier: Based on 169-hour online presence". Described as a
+      multiplier (not additively weighted), hence weight null. Documentation claim only;
+      the 169-hour figure appears only in the README, not in any code constant.
+
+ground_truth_sources:
+  - kind: hardware_probe
+    description: >-
+      Workers report system/hardware info (CPU, memory, disk, GPU) and online status via
+      heartbeats; miners run CPU/GPU matrix-multiplication challenges whose results are
+      committed via Merkle roots and proven on request.
+    source_identifier: "neurons/shared/challenges (cpu_matrix, gpu_matrix)"
+    trust_model: adversarial
+    notes: >-
+      Challenge-response with Merkle commitments and ECDSA signatures (GPU) defends against
+      spoofed compute. Actual verification/scoring runs on the validator (not in this repo).
+
+aggregation:
+  method: undocumented
+  composition: hybrid
+  normalization: none
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: "No burn information present in this miner-only repo."
+  notes: >-
+    README states final score "sums all worker performance (capped at 100)" and that lease
+    revenue (100%) is combined with an availability multiplier, implying an additive-then-
+    multiplicative (hybrid) composition. The exact aggregation method is computed by the
+    validator and is not in this repository, hence 'undocumented'.
+
+per_miner_state:
+  tracked: false
+  state_kinds: []
+  status_values: []
+  reset_policy: ""
+  notes: >-
+    No per-miner persistent scoring state in this repo. The miner tracks worker connections
+    and a passive validator blacklist (failure threshold 5, TTL 600s) but no score ledger.
+
+anti_gaming:
+  - kind: hardware_validation
+    enforcement: rejection
+    description: >-
+      Cryptographic compute challenges (CPU/GPU matrix multiplication) with Merkle-tree
+      commitment/proof verification and ECDSA signatures for GPU results validate that a
+      worker actually possesses the claimed hardware. README: "Challenges target only
+      unleased workers".
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Matrix challenges use dynamic matrix sizing with variance (base_matrix_challenge.py
+      calculate_dynamic_matrix_size, "dynamic variance for anti-gaming") so challenges are
+      not precomputable.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      config/miner_config.yaml requires non-whitelisted validators to hold
+      validator_min_stake_tao: 10000; a validator whitelist and passive blacklist
+      (threshold 5 failures, ttl 600s) gate which validators the miner serves.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+documentation:
+  status: docs_only
+  source_version: "0.0.6"
+  primary_docs: ["README.md", "config/miner_config.yaml"]
+  completeness: low
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8"
+  extracted_at: "2026-06-06"
+  confidence_overall: low
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "config/miner_config.yaml"
+      line_ref: "4"
+      quote: "netuid: 128"
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "requirements.txt"
+      line_ref: null
+      quote: "Python repo (33 code files); README: 'Python 3.8+'."
+      confidence: high
+    - claim_field: "/subnet/name"
+      source_path: "README.md"
+      line_ref: "1-3"
+      quote: "ByteLeap Miner - Bittensor SN128 Compute Network ... resource aggregation component of the ByteLeap distributed compute platform."
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "3-30"
+      quote: "Miners connect to the Bittensor network (SN128), aggregate worker resources, and earn rewards through active compute leases and computational challenges. ... Maximum 100 workers per miner"
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "neurons/shared/protocols.py"
+      line_ref: "348-423"
+      quote: "Phase 1: Commitment data sent from Miner to Validator ... Phase 2: Proof data sent from Miner to Validator."
+      confidence: medium
+    - claim_field: "/scoring_signals/0"
+      source_path: "README.md"
+      line_ref: "16-26"
+      quote: "Lease Revenue (100%): Active compute rentals generate the primary score ... Idle workers score zero on this component"
+      confidence: medium
+    - claim_field: "/scoring_signals/1"
+      source_path: "README.md"
+      line_ref: "19-20"
+      quote: "Availability Multiplier: Based on 169-hour online presence"
+      confidence: medium
+    - claim_field: "/aggregation/notes"
+      source_path: "README.md"
+      line_ref: "27-30"
+      quote: "Final score sums all worker performance (capped at 100)"
+      confidence: medium
+    - claim_field: "/ground_truth_sources/0"
+      source_path: "neurons/shared/protocols.py"
+      line_ref: "178-204"
+      quote: "challenge_type: Literal[\"cpu_matrix\", \"gpu_matrix\"] ... Compute challenge task"
+      confidence: high
+    - claim_field: "/anti_gaming/0"
+      source_path: "neurons/shared/protocols.py"
+      line_ref: "316-345"
+      quote: "merkle_root ... ECDSA signature of sig_ver|seed|gpu_uuid|merkle_root (mandatory for GPU, empty for CPU)"
+      confidence: high
+    - claim_field: "/anti_gaming/1"
+      source_path: "neurons/shared/challenges/base_matrix_challenge.py"
+      line_ref: "24-36"
+      quote: "Calculate matrix size with dynamic variance for anti-gaming"
+      confidence: high
+    - claim_field: "/anti_gaming/2"
+      source_path: "config/miner_config.yaml"
+      line_ref: "13-16"
+      quote: "validator_min_stake_tao: 10000 ... blacklist: threshold: 5 ttl_seconds: 600"
+      confidence: high
+    - claim_field: "/documentation/source_version"
+      source_path: "__version__.py"
+      line_ref: "6"
+      quote: '__version__ = "0.0.6"'
+      confidence: high
+    - claim_field: "/mechanism_status"
+      source_path: "README.md"
+      line_ref: "7-9"
+      quote: "Validator: Network coordination and scoring validation ... Miner: Resource aggregation and Bittensor network interface (this component)"
+      confidence: high
+  unresolved:
+    - "/aggregation/method — scoring/aggregation runs on the validator (separate repo); not in this source."
+    - "/weight_setting — no set_weights / weight computation code in this miner-only repo; cadence, on_chain_call, smoothing all unknown."
+    - "mechanism_status — cannot determine if emissions are burned vs scored; validator code unavailable."
+    - "Exact numeric form of the 169-hour availability multiplier and the lease-revenue-to-score mapping — README documents them but no code constants exist."
+    - "/scoring_signals weights — '100%' for lease revenue is a README figure, not a code-verified weight."
+  extractor_notes: >-
+    Repository is the miner component only. The README ('Scoring System') documents a
+    two-factor model at a high level, but no reward.py / weights util / set_weights call
+    exists anywhere in the tree (confirmed by grep). weight_setting omitted entirely because
+    no cadence/on-chain-call evidence exists. README says 'SN128' in prose while config sets
+    netuid: 128 (consistent). README mentions a 'Validator' tier doing 'Weight Calculation'
+    and 'Score Validation' but that code is in a separate repository.

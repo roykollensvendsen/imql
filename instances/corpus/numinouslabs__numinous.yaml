@@ -1,0 +1,303 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+# The on-chain weights are NOT computed from the local scoring code. The SetWeights task
+# fetches already-aggregated per-miner weights from a centralized Numinous API
+# (api_client.get_weights() -> aggregated_weight), then merely re-normalizes and pushes
+# them on-chain. The local scoring.py computes a windowed Brier score into a local DB but
+# that DB value is not the source of on-chain weights. The documented winner-takes-all
+# per-pool / domain-ranking mechanism lives off-chain on the platform. Marking mixed.
+mechanism_status: mixed
+mechanism_status_notes: >-
+  On-chain weights are sourced from a centralized off-chain API
+  (NuminousClient.get_weights -> aggregated_weight); the validator only re-normalizes and
+  pushes them. The in-repo scoring.py computes a reverse-EMA-weighted Brier score into a
+  local DB but is not the documented on-chain weight source. The full winner-takes-all
+  per-pool emission split (global + (topic,metric) pools) is documented but computed
+  off-chain and not present in this repo's code.
+
+subnet:
+  name: "Numinous"
+  owner_repo: "numinouslabs__numinous"
+  netuid: 6
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners submit Python forecasting agent code (agent_main(event_data) -> {prediction:
+    float in 0..1}). Validators execute the agent in an isolated sandbox once per binary
+    event; the prediction is reused across 24h intervals until the event cutoff. On
+    resolution the prediction is scored by Brier score; lower is better. Rewards are
+    winner-takes-all per pool (one global leaderboard plus K (topic, metric) domain pools).
+  submission_format: [source_code]
+
+scoring_signals:
+  - name: brier_score
+    metric_kind: probabilistic_forecast
+    direction: lower_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      (prediction - outcome)^2 on binary events. Computed in scoring.py as
+      (rema_prediction - outcome)^2 where rema_prediction is a reverse-power-decay weighted
+      average of per-interval predictions. Predictions clipped to [0.01, 0.99]; missing /
+      failed runs imputed to 0.5. README/docs describe winner-takes-all on the average
+      Brier over a rolling window of ~100 (docs say last 101) events.
+  - name: pnl
+    metric_kind: pnl
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Documented domain metric (Sport x PNL pool): simulates a $1 trade vs the Polymarket
+      price at forecast time. Documentation only; no implementing code found in repo.
+  - name: reasoning
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Documented Reasoning pool metric: 70/30 weighted average of a rubric quality score
+      and an implied-probability Brier score, with a substantial emissions share (docs:
+      25% Information track, 20% Signals track). Documentation only; rubric/extractor not
+      in this repo's code.
+
+ground_truth_sources:
+  - kind: market_data
+    description: >-
+      Binary event outcomes (outcome = 0 or 1). Events sourced from LLM-generated
+      geopolitical/political triggers and Polymarket markets (midprice 0.2-0.8 when
+      received). Some geopolitical/finance events resolve against the Polymarket price (or
+      a reference-LLM forecast) rather than the final binary outcome.
+    source_identifier: "Polymarket; Numinous event platform"
+    trust_model: oracle
+    notes: >-
+      Outcome is delivered by the centralized event platform; the validator reads it from
+      the events table (event.outcome) when scoring.
+
+aggregation:
+  method: winner_take_all
+  composition: other
+  composition_other: >-
+    Documented as winner-takes-all per pool: emissions split across one global pool
+    (alpha_0 * E) and K (topic, metric) pools (alpha_(t,r) * E), each pool fully awarded to
+    its argmin-rank miner. On-chain, the validator instead consumes pre-aggregated
+    per-miner weights from the API and only re-normalizes them to sum to one.
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: "No burn logic present in repo code."
+  notes: >-
+    Within scoring.py, per-interval predictions are combined into a single rema_prediction
+    by a reverse power-law decay weight w(i) = 1 - (i/(n_intervals-1))**exponent with
+    exponent default 2 (older intervals down-weighted), then a single Brier score is taken.
+    The final on-chain weight vector is the API's aggregated_weight values divided by their
+    sum (renormalize_weights).
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    Validator fetches aggregated per-miner weights from the Numinous API
+    (NuminousClient.get_weights -> aggregated_weight), merges onto the current metagraph
+    (missing miners filled 0.0), runs sanity checks, renormalizes to sum-to-one, applies
+    bittensor process_weights (min_allowed_weights / max_weight_limit), and submits via
+    subtensor.set_weights. Gated by the chain weights_rate_limit (in blocks).
+  on_chain_call: set_weights
+  tempo_or_interval: "weights_rate_limit blocks (fetched from chain)"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA over final weights in repo. A rolling scoring window exists upstream of
+      weighting: scoring.py uses event.run_days_before_cutoff intervals; docs describe a
+      rolling window of ~100/101 events.
+
+anti_gaming:
+  - kind: code_inspection
+    enforcement: rejection
+    description: >-
+      Agent execution and code are entirely visible to the subnet protocol; submitted code
+      is verified against the registered wallet/hotkey before execution. Code size limited
+      to 2MB.
+  - kind: rate_limit
+    enforcement: barrier
+    description: >-
+      Code can be updated at most once every 3 days; submitted code activates at the next
+      00:00 UTC; only agents activated before an event is broadcast forecast that event.
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      Sandbox enforces a 240s timeout, no internet (gateway-only), and resource limits.
+      Caching requires no dynamic timestamps/random seeds so executions match across
+      validators. Predictions clipped to [0.01, 0.99]; failed/timed-out/missing runs
+      imputed to 0.5 (Brier 0.25).
+
+sub_competitions:
+  structure: per_task_type
+  stages: []
+  count: null
+  notes: >-
+    Miners participate in multiple independent tracks; identity is
+    (miner_uid, hotkey, track) and each track has its own agents, predictions, scores and
+    weight pools, scored independently. Tracks defined in
+    neurons/validator/models/track.py. Docs additionally describe one global pool plus K
+    (topic, metric) domain pools (e.g. Information / Signals tracks; Sport x PNL,
+    geopolitical, finance pools), but the pool split is computed off-chain.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [registration_age, cumulative_score]
+  status_values: []
+  reset_policy: >-
+    7-day immunity period after registration during which a miner cannot be deregistered
+    and is scored only once; after immunity, the miner with the lowest (best inverse) Brier
+    score may be deregistered when a new miner registers.
+  notes: >-
+    Scoring tracks per-miner registration time (miner_registered_minutes); miners
+    registered after the scoring window started are excluded. Average Brier over a rolling
+    window (docs: ~100/101 events) determines ranking.
+
+documentation:
+  status: docs_and_code
+  source_version: "2.1.9"
+  primary_docs:
+    - "docs/scoring-system.md"
+    - "docs/architecture.md"
+    - "docs/subnet-rules.md"
+    - "README.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: medium
+  evidence:
+    - claim_field: /subnet/netuid
+      source_path: neurons/validator/utils/config.py
+      line_ref: "30-31"
+      quote: '"--netuid", type=int, help="Subnet netuid", choices=[6, 155]'
+    - claim_field: /subnet/implementation_lang
+      source_path: neurons/validator/tasks/scoring.py
+      line_ref: "1-8"
+      quote: "import copy\nimport math\nfrom dataclasses import dataclass"
+    - claim_field: /task/submission_format
+      source_path: docs/architecture.md
+      line_ref: "94-98"
+      quote: "Submission: Miner submits Python code via API. The code is stored in an S3 bucket."
+    - claim_field: /task/summary
+      source_path: README.md
+      line_ref: "15-18"
+      quote: >-
+        instead of scoring predictions ($f(X)$) the subnet scores the underlying agentic
+        models ($X$). Miners send forecasting agents which are subsequently evaluated by
+        validators in sandboxes
+    - claim_field: /scoring_signals/0/metric_kind
+      source_path: docs/architecture.md
+      line_ref: "163-169"
+      quote: "If $o_q = 1$: S(p_i, 1) = (1 - p_i)^2 ; If $o_q = 0$: S(p_i, 0) = p_i^2."
+    - claim_field: /scoring_signals/0/direction
+      source_path: docs/architecture.md
+      line_ref: "171"
+      quote: "The lower the score the better. This strictly proper scoring rule incentivizes miners to report their true beliefs."
+    - claim_field: /scoring_signals/0/notes
+      source_path: neurons/validator/tasks/scoring.py
+      line_ref: "462-466"
+      quote: "scores_df[ScoreNames.rema_peer_score] = (scores_df[ScoreNames.rema_prediction] - current_outcome) ** 2"
+    - claim_field: /scoring_signals/1/notes
+      source_path: docs/scoring-system.md
+      line_ref: "52-55"
+      quote: "The `PNL` metric is used in the `Sport x PNL` pool. ... we simulate a `$1` trade based on the miner's forecast relative to the Polymarket price"
+    - claim_field: /scoring_signals/2/notes
+      source_path: docs/scoring-system.md
+      line_ref: "49"
+      quote: >-
+        A substantial share of daily emissions is allocated to the Reasoning pool
+        (currently 25% on the Information track, 20% on the Signals track). The `Reasoning`
+        column on the leaderboard is a 70/30 weighted average of a rubric quality score and
+        an implied-probability Brier score.
+    - claim_field: /ground_truth_sources/0/description
+      source_path: docs/subnet-rules.md
+      line_ref: "130-132"
+      quote: "Polymarket: Subset of Polymarket markets where the midprice is within 0.2-0.8 when received."
+    - claim_field: /ground_truth_sources/0/notes
+      source_path: neurons/validator/tasks/scoring.py
+      line_ref: "409-411"
+      quote: "outcome = float(event.outcome)\n        outcome_round = int(round(outcome))  # for safety, should be 0 or 1"
+    - claim_field: /aggregation/method
+      source_path: docs/scoring-system.md
+      line_ref: "26-29"
+      quote: "Each pool is winner-takes-all. For a given pool, the miner with the best ranking receives the full allocation for that pool."
+    - claim_field: /aggregation/composition_other
+      source_path: docs/scoring-system.md
+      line_ref: "9-18"
+      quote: "Global pool: `alpha_0 * E` ; `(topic, metric)` pools: `alpha_(t,r) * E` ... alpha_0 + sum_(t,r) alpha_(t,r) = 1"
+    - claim_field: /aggregation/normalization
+      source_path: neurons/validator/tasks/set_weights.py
+      line_ref: "220-222"
+      quote: "normalized_scores[SWNames.raw_weights] = normalized_scores[SWNames.metagraph_score].div(normalized_scores[SWNames.metagraph_score].sum())"
+    - claim_field: /aggregation/notes
+      source_path: neurons/validator/tasks/scoring.py
+      line_ref: "183-192"
+      quote: "w (i) = 1 - (i / (n_intervals - 1)) ** exponent ... return 1 - x**exponent"
+    - claim_field: /weight_setting/method
+      source_path: neurons/validator/tasks/set_weights.py
+      line_ref: "395-406"
+      quote: "api_response = await self.api_client.get_weights() ... weights_from_api = self._convert_api_weights_to_weights(api_response)"
+    - claim_field: /mechanism_status
+      source_path: neurons/validator/tasks/set_weights.py
+      line_ref: "357-368"
+      quote: "metagraph_score=weight.aggregated_weight,"
+    - claim_field: /weight_setting/on_chain_call
+      source_path: neurons/validator/tasks/set_weights.py
+      line_ref: "304-309"
+      quote: "response = await self.subtensor.set_weights(wallet=self.wallet, netuid=self.netuid, uids=processed_uids, weights=processed_weights, version_key=self.spec_version,"
+    - claim_field: /weight_setting/tempo_or_interval
+      source_path: neurons/validator/tasks/set_weights.py
+      line_ref: "113-129"
+      quote: "weights_rate_limit = await self.subtensor.weights_rate_limit(netuid=self.netuid) ... if blocks_since_last_attempt < weights_rate_limit:"
+    - claim_field: /weight_setting/cadence
+      source_path: neurons/validator/tasks/set_weights.py
+      line_ref: "120-123"
+      quote: "# do not attempt to set weights more often than the rate limit"
+    - claim_field: /anti_gaming/0/description
+      source_path: README.md
+      line_ref: "18"
+      quote: "Agent execution and code are entirely visible to the subnet protocol."
+    - claim_field: /anti_gaming/1/description
+      source_path: README.md
+      line_ref: "56"
+      quote: "Code submitted before 00:00 UTC activates the following day. You can update your code at most once every 3 days."
+    - claim_field: /anti_gaming/2/description
+      source_path: neurons/validator/tasks/scoring.py
+      line_ref: "26-27"
+      quote: "# controls the clipping of predictions [CLIP_EPS, 1 - CLIP_EPS]\nCLIP_EPS = 1e-2"
+    - claim_field: /sub_competitions/structure
+      source_path: docs/subnet-rules.md
+      line_ref: "25-27"
+      quote: >-
+        A miner's identity is `(miner_uid, hotkey, track)` ... Each track has its own
+        scoring pools and weight allocation.
+    - claim_field: /per_miner_state/reset_policy
+      source_path: docs/subnet-rules.md
+      line_ref: "246-248"
+      quote: "A miner has an initial immunity period of 7 days where it can't be de-registered ... the miner with the lowest Brier score can be deregistered if new miner registers"
+    - claim_field: /per_miner_state/notes
+      source_path: neurons/validator/tasks/scoring.py
+      line_ref: "433-437"
+      quote: "# Do not score miners which registered after the scoring window started\n        miners = self.miners_last_reg[ ... <= scoring_window_start_minutes]"
+    - claim_field: /documentation/source_version
+      source_path: neurons/validator/version.py
+      line_ref: "1"
+      quote: '__version__ = "2.1.9"'
+  unresolved:
+    - "Numeric pool weights alpha_0 / alpha_(t,r) (other than docs-stated 25%/20% Reasoning shares) are not in repo code."
+    - "Exact rolling-window length for ranking (README says ~100, subnet-rules says last 101) is configured per-event via event.run_days_before_cutoff, not a single repo constant."
+    - "PNL and Reasoning scoring implementations are documented only; no implementing code is present in this repo."
+    - "The off-chain aggregation that produces api aggregated_weight (the actual on-chain weight source) is not in this repo."
+    - "Whether emissions are ever burned is indeterminable from this repo (no burn code present)."

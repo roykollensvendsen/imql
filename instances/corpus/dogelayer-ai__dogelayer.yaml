@@ -1,0 +1,271 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: mixed
+mechanism_status_notes: >-
+  Proportional scoring by accumulated fiat share-value is implemented and active, but the
+  weight distribution is capped by an economic "value_to_dist" budget and any residual weight
+  is assigned to the subnet-owner burn UID. When no miner is mining (total_value == 0) the
+  validator burns 100% to the burn UID. So the live mechanism mixes active proportional
+  scoring with dynamic residual burn and a full-burn fallback.
+
+subnet:
+  name: "DogeLayer"
+  owner_repo: "dogelayer-ai__dogelayer"
+  netuid: 80
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners contribute Scrypt (LTC/DOGE) proof-of-work mining hashrate to the DogeLayer mining
+    pool, registering their work under their Bittensor hotkey (or hotkey.suffix per rig).
+    Validators query the pool proxy API for per-miner share metrics over a time window, convert
+    each miner's accumulated share_value into a fiat (USD) value, and accumulate it as a score.
+    Weights are then distributed proportionally to accumulated share-value, bounded by an
+    economic budget, with residual emission burned to the subnet owner UID.
+  submission_format: [compute_service]
+
+scoring_signals:
+  - name: share_value_fiat
+    metric_kind: throughput
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      Per-miner pool share_value (already computed by the pool from actual work) converted to
+      USD via base_value = (share_value / coin_difficulty) * 6.25 * coin_price, then accumulated
+      additively into self.scores[uid]. 6.25 is a hardcoded block-reward multiplier; coin_price
+      and coin_difficulty come from external APIs. Higher accumulated fiat share-value -> higher
+      weight.
+
+ground_truth_sources:
+  - kind: organic_traffic
+    description: >-
+      Real mining shares/hashrate produced by miners and recorded by the DogeLayer proxy pool;
+      validators retrieve per-worker share_value, hashrate and shares via the proxy pool API
+      (get_miner_contributions_timerange) keyed by hotkey/worker_id.
+    source_identifier: "dogelayer.core.pool.proxy (ProxyPool / ProxyPoolAPI)"
+    trust_model: trusted
+    notes: >-
+      Validators (non-owner) call a shared proxy API URL/token configured in .env; the pool is
+      the single source of share metrics, so it is effectively a trusted centralized oracle for
+      work done.
+  - kind: market_data
+    description: >-
+      External coin price (CoinGecko, with $75 LTC fallback) and current network difficulty used
+      to convert raw share_value into a fiat economic value.
+    source_identifier: "CoinPriceAPI('coingecko'); get_current_difficulty('litecoin')"
+    trust_model: oracle
+    notes: "Price fallback hardcoded to 75.0 USD if the API fails or returns 0."
+
+aggregation:
+  method: proportional
+  composition: weighted_sum
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "burn_uid (subnet owner UID, resolved from SubnetOwnerHotkey)"
+    fraction: null
+    dynamic: true
+    notes: >-
+      Two burn paths. (1) Residual burn: remaining = max(0, 1 - sum(weights)) is added to
+      weights[burn_uid]. (2) Full burn fallback: if total_value (sum of scores) == 0, weights are
+      all zero except weights[burn_uid] = 1.0. The distributable share itself is capped by an
+      economic budget value_to_dist = blocks_to_set_for * (1 - OWNER_TAKE) * SPLIT_WITH_MINERS *
+      (own_stake_weight / total_stake) * alpha_price, with OWNER_TAKE=0.18, SPLIT_WITH_MINERS=0.5,
+      PAYOUT_FACTOR=1.0.
+  notes: >-
+    calculate_weights_distribution: if scaled_total_value (= total_value * PAYOUT_FACTOR) >
+    value_to_dist, weights = score / scaled_total_value (proportional, normalized by the larger
+    pool value); else weights = (score / total_value) * (scaled_total_value / value_to_dist),
+    scaling the whole distribution down by how much of the economic budget was earned. Residual
+    goes to burn UID.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    Direct set_weights over UIDs 0..len(hotkeys)-1 each time blocks_since_last_update >=
+    weights_interval (= tempo). Commit-reveal code path exists but is commented out; direct
+    submission is used. Scores are reset to zero after a successful weight set.
+  on_chain_call: set_weights
+  tempo_or_interval: "tempo blocks (weights_interval = self.tempo)"
+  smoothing:
+    kind: ema
+    alpha: 0.8
+    window: null
+    notes: >-
+      self.alpha = 0.8 is set in the validator constructor; however no use of self.alpha was
+      found in the read scoring/weighting code (scores accumulate additively and reset after each
+      set_weights). Reported as the literal alpha constant but its application is unverified.
+
+anti_gaming:
+  - kind: proof_of_work
+    enforcement: barrier
+    description: >-
+      Rewards are derived from real Scrypt PoW mining share_value recorded by the pool, so a
+      miner must contribute actual hashpower to earn score.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      The distributable economic budget per validator scales with own_stake_weight / total_stake,
+      so a validator's distribution is proportional to its own stake share.
+  - kind: other
+    kind_other: "coldkey blocklist (BAD_COLDKEYS) score zeroing"
+    enforcement: elimination
+    description: >-
+      Hardcoded BAD_COLDKEYS blocklist: on state restore, any miner whose coldkey is in
+      BAD_COLDKEYS has its score forced to 0.0.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score]
+  status_values: []
+  reset_policy: >-
+    self.scores accumulates fiat share-value across evaluation windows and is reset to
+    [0.0]*len(hotkeys) after each successful set_weights. Restored from saved state unless the
+    validator was down longer than tempo*1.5 blocks.
+  notes: >-
+    block_at_registration is tracked and used to resolve duplicate worker IDs (older registration
+    wins). last_evaluation_timestamp gates the metrics query window.
+
+documentation:
+  status: docs_and_code
+  source_version: "Subnet 80 (DogeLayer), bittensor 9.10.1"
+  primary_docs:
+    - "README.md"
+    - "docs/running_validator.md"
+    - "docs/running_miner.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "392"
+      quote: "- **Subnet ID (netuid)**: 80"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "dogelayer/validator/validator.py"
+      line_ref: "1"
+      quote: "#! /usr/bin/env python3"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "12"
+      quote: >-
+        DogeLayer is a Bittensor subnet designed around production of proof-of-work (PoW) mining
+        hashrate for Scrypt algorithm (LTC/DOGE).
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "20"
+      quote: >-
+        Validators evaluate miners, ranking (weighting) them by the share-value they've produced
+        over each period of time.
+    - claim_field: "/scoring_signals/0/name"
+      source_path: "dogelayer/validator/validator.py"
+      line_ref: "274-281"
+      quote: "share_value = metric.get_share_value_fiat(ltc_price, ltc_difficulty) ... self.scores[uid] += share_value"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "dogelayer/core/pool/metrics/dogelayer_proxy.py"
+      line_ref: "47"
+      quote: "base_value = (self.share_value / coin_difficulty) * 6.25 * coin_price"
+    - claim_field: "/ground_truth_sources/0/kind"
+      source_path: "dogelayer/core/pool/metrics/dogelayer_proxy.py"
+      line_ref: "86"
+      quote: "all_workers = pool.get_miner_contributions_timerange(start_time, end_time, coin)"
+    - claim_field: "/ground_truth_sources/1/source_identifier"
+      source_path: "dogelayer/validator/validator.py"
+      line_ref: "69"
+      quote: 'self.price_api = CoinPriceAPI("coingecko", None)'
+    - claim_field: "/ground_truth_sources/1/notes"
+      source_path: "dogelayer/validator/validator.py"
+      line_ref: "256-258"
+      quote: "ltc_price = self.price_api.get_price(coin); if ltc_price is None or ltc_price == 0: ltc_price = 75.0"
+    - claim_field: "/aggregation/method"
+      source_path: "dogelayer/validator/validator.py"
+      line_ref: "401"
+      quote: "weights = [score / scaled_total_value for score in self.scores]"
+    - claim_field: "/aggregation/notes"
+      source_path: "dogelayer/validator/validator.py"
+      line_ref: "398-405"
+      quote: >-
+        scaled_total_value = total_value * PAYOUT_FACTOR ... if scaled_total_value > value_to_dist:
+        weights = [score / scaled_total_value ...] else: weights_to_dist = scaled_total_value /
+        value_to_dist; weights = [(score / total_value) * weights_to_dist ...]
+    - claim_field: "/aggregation/burn_allocation/enabled"
+      source_path: "dogelayer/validator/validator.py"
+      line_ref: "407-409"
+      quote: "remaining = max(0.0, 1.0 - sum(weights)); if remaining > 0: weights[self.burn_uid] += remaining"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "dogelayer/validator/validator.py"
+      line_ref: "414-417"
+      quote: >-
+        if total_value == 0: ... weights = [0.0] * len(self.hotkeys); weights[self.burn_uid] = 1.0
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "dogelayer/validator/validator.py"
+      line_ref: "99-101"
+      quote: "self.burn_uid = self.get_burn_uid() ... self.is_subnet_owner = self.burn_hotkey == self.wallet.hotkey.ss58_address"
+    - claim_field: "/aggregation/notes#budget_constants"
+      source_path: "dogelayer/core/constants.py"
+      line_ref: "10-13"
+      quote: "OWNER_TAKE = 0.18; SPLIT_WITH_MINERS = 0.5; PAYOUT_FACTOR = 1.0"
+    - claim_field: "/aggregation/notes#value_to_dist"
+      source_path: "dogelayer/validator/validator.py"
+      line_ref: "391-397"
+      quote: >-
+        alpha_to_dist = (blocks_to_set_for * (1 - OWNER_TAKE) * SPLIT_WITH_MINERS *
+        (own_stake_weight / total_stake)); value_to_dist = alpha_to_dist * alpha_price
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "dogelayer/validator/validator.py"
+      line_ref: "437-444"
+      quote: "success, err_msg = self.subtensor.set_weights(netuid=..., weights=weights, version_key=VERSION_KEY)"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "dogelayer/validator/validator.py"
+      line_ref: "73"
+      quote: "self.weights_interval = self.tempo"
+    - claim_field: "/weight_setting/cadence"
+      source_path: "dogelayer/validator/validator.py"
+      line_ref: "516-517"
+      quote: "if blocks_since_last_weights >= self.weights_interval: success, err_msg = self.set_weights()"
+    - claim_field: "/weight_setting/method#reset"
+      source_path: "dogelayer/validator/validator.py"
+      line_ref: "449-450"
+      quote: "self.last_update = self.current_block; self.scores = [0.0] * len(self.hotkeys)"
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "dogelayer/validator/validator.py"
+      line_ref: "70"
+      quote: "self.alpha = 0.8"
+    - claim_field: "/anti_gaming/0/kind"
+      source_path: "README.md"
+      line_ref: "12"
+      quote: "production of proof-of-work (PoW) mining hashrate for Scrypt algorithm (LTC/DOGE)"
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "dogelayer/validator/validator.py"
+      line_ref: "394-395"
+      quote: "* SPLIT_WITH_MINERS * (own_stake_weight / total_stake)"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "dogelayer/validator/validator.py"
+      line_ref: "374-375"
+      quote: "if self.metagraph.coldkeys[idx] in BAD_COLDKEYS: self.scores[idx] = 0.0"
+    - claim_field: "/per_miner_state/state_kinds"
+      source_path: "dogelayer/validator/validator.py"
+      line_ref: "281"
+      quote: "self.scores[uid] += share_value"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "dogelayer/validator/validator.py"
+      line_ref: "360-363"
+      quote: >-
+        if blocks_down >= (self.tempo * 1.5): logging.warning(...Starting fresh.); return
+  unresolved:
+    - "Exact tempo value for netuid 80 (read from chain at runtime via subtensor.tempo(netuid)); not a source literal."
+    - "Whether/where self.alpha = 0.8 is actually applied — no EMA application found in the scoring or weighting code paths read."
+    - "Commit-reveal weight path is present but commented out; only direct set_weights is active."

@@ -1,0 +1,412 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: mixed
+mechanism_status_notes: >-
+  Three reward tracks are normalized and summed by percentage weights
+  (YOUTUBE_REWARDS_PERCENT, FOCUS_REWARDS_PERCENT, AUDIO_REWARDS_PERCENT). In the
+  checked-in constants AUDIO_REWARDS_PERCENT = 0.0 and FOCUS_REWARDS_PERCENT = 1,
+  so YOUTUBE_REWARDS_PERCENT = 1.0 - 1 - 0.0 = 0.0 by default, meaning the
+  ImageBind YouTube and audio scoring paths receive ~0 weight unless the live
+  focus-rewards-percent API returns a smaller value. The focus percent is fetched
+  at runtime from {api_root}/api/focus/get_rewards_percent and falls back to the
+  constant; the YouTube/audio scoring code is present but its on-chain weight
+  share is governed by these live/percentage splits, so the operative mechanism
+  differs from the full documented scoring. No explicit burn/null-UID routing was
+  found in the source.
+
+subnet:
+  name: "OMEGA Labs Any-to-Any / Multimodal Dataset (SN24)"
+  owner_repo: "omegalabsinc__omegalabs-bittensor-subnet"
+  netuid: 24
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners contribute multimodal data to build a large dataset. For YouTube video
+    tasks, miners scrape YouTube clips matching a validator topic query and submit
+    VideoMetadata with ImageBind embeddings (video/audio/description); they are
+    scored on query relevance, description relevance, novelty, and description
+    detail. For audio tasks, miners submit podcast audio clips scored on
+    diarization, length, audio quality, and query relevance. Separately, the Focus
+    Videos marketplace lets users record task-completion videos (Ω Focus app)
+    which are scored off-chain; miners buy these to boost their focus score share.
+  submission_format: [content_link, signals]
+  # content_link = YouTube video IDs / metadata; signals = ImageBind embeddings & audio bytes
+
+scoring_signals:
+  - name: query_relevance
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 1.3
+    normalization: none
+    notes: >-
+      Mean of video-query cosine, audio-query cosine, and a text-only similarity
+      model score; scaled by QUERY_RELEVANCE_SCALING_FACTOR = 1.3 in the YouTube
+      aggregate score.
+  - name: description_relevance
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 0.7
+    normalization: none
+    notes: >-
+      Weighted blend of video-description cosine (VIDEO_RELEVANCE_WEIGHT = 0.65)
+      and audio-description cosine (0.35), then scaled by unique-token length and
+      DESCRIPTION_RELEVANCE_SCALING_FACTOR = 0.7.
+  - name: novelty_score
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      true_novelty = min(local cosine novelty, global Pinecone novelty via API).
+      Videos with novelty < DIFFERENCE_THRESHOLD (0.1) are filtered out rather
+      than additively weighted; acts as a gate/dedup, not an additive term.
+  - name: description_length_boost
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Unique-token count scales description score between
+      MIN_LENGTH_BOOST_TOKEN_COUNT=100 and MAX_LENGTH_BOOST_TOKEN_COUNT=300 with
+      DESCRIPTION_LENGTH_WEIGHT=0.35; too-short descriptions are penalized.
+  - name: audio_diarization_inverse_der
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 0.6
+    normalization: none
+    notes: "inverse_der scaled by DIARIZATION_SCALING_FACTOR = 0.6 in audio total_score."
+  - name: audio_length_score
+    metric_kind: composite
+    direction: higher_is_better
+    weight: 0.1
+    normalization: none
+    notes: "total_audio_length / (NUM_AUDIOS * MAX_AUDIO_LENGTH_SECONDS); scaled by AUDIO_LENGTH_SCALING_FACTOR = 0.1."
+  - name: audio_quality_total_score
+    metric_kind: composite
+    direction: higher_is_better
+    weight: 0.2
+    normalization: none
+    notes: >-
+      Weighted sum of speech_content, speaker_dominance, background_noise,
+      unique_speakers_error sub-scores; scaled by AUDIO_QUALITY_SCALING_FACTOR=0.2.
+  - name: audio_query_relevance
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 0.1
+    normalization: none
+    notes: "Mean audio-query cosine; scaled by AUDIO_QUERY_RELEVANCE_SCALING_FACTOR = 1.0 - 0.6 - 0.1 - 0.2 = 0.1."
+  - name: focus_points_percentage
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Per-hotkey focus_points_percentage fetched from the validator API
+      (/api/focus/miner_purchase_scores); used directly as the focus reward
+      (no EMA). Off-chain scoring (DeepSeek completion x boosted multiplier per docs).
+
+ground_truth_sources:
+  - kind: reference_model
+    description: >-
+      ImageBind v2 (Meta, Omega Labs fork) produces the unified video/audio/text
+      embeddings the validator recomputes to spot-check and to measure relevance.
+    source_identifier: "imagebind (v2=True)"
+    trust_model: trusted
+    notes: "Validator re-embeds a random sampled submission and compares to submitted embeddings."
+  - kind: organic_traffic
+    description: >-
+      Source content is scraped from YouTube (videos/podcasts); validator
+      downloads a random clip via proxy to verify the submission is real.
+    source_identifier: "youtube"
+    trust_model: adversarial
+  - kind: other
+    kind_other: "centralized_validator_api"
+    description: >-
+      Global novelty scores, focus_points_percentage, and the live focus rewards
+      percent all come from the Omega validator API (sn24-api.omegatron.ai),
+      which is authoritative for focus scoring and global dedup.
+    source_identifier: "https://sn24-api.omegatron.ai"
+    trust_model: oracle
+
+aggregation:
+  method: weighted_average
+  composition: hybrid
+  normalization: l1
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: >-
+      No explicit burn / null-UID routing found in source. Emission can be
+      effectively withheld from the YouTube/audio tracks when their percentage is
+      0, but this is a track weight split, not a documented burn.
+  notes: >-
+    In set_weights, each of the three per-track score vectors (scores,
+    focus_scores, audio_score_arr) is L1-normalized (torch.nn.functional.normalize
+    p=1) and scaled by its percentage (YOUTUBE/FOCUS/AUDIO_REWARDS_PERCENT), then
+    summed into raw_weights. Within the YouTube track the per-video signals are an
+    additive weighted sum divided by num_videos; novelty/stuffing act as gates.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Per-track L1-normalized score vectors scaled by reward percentages and summed;
+    raw_weights passed through process_weights_for_netuid then
+    convert_weights_and_uids_for_emit before subtensor.set_weights.
+  on_chain_call: set_weights
+  tempo_or_interval: "neuron.epoch_length blocks (default 100, 12s blocks)"
+  smoothing:
+    kind: ema
+    alpha: 0.3
+    window: null
+    notes: >-
+      YouTube scores (update_scores) and audio scores (update_audio_scores) use
+      EMA with neuron.moving_average_alpha (default 0.3). Focus scores
+      (update_focus_scores) explicitly do NOT use an EMA; they are scattered in
+      directly each step.
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      is_valid_youtube_id check; fake video IDs return FAKE_VIDEO_PUNISHMENT = -5.0.
+  - kind: liveness_check
+    enforcement: penalty
+    description: >-
+      With CHECK_PROBABILITY = 0.1 the validator downloads a random submitted clip
+      via proxy and re-embeds it; if recomputed embeddings are not similar
+      (SIMILARITY_THRESHOLD 0.95 / strict allclose) the miner gets
+      FAKE_VIDEO_PUNISHMENT = -5.0. Audio: byte-equality check of submitted vs
+      downloaded audio.
+  - kind: deduplication
+    enforcement: rejection
+    description: >-
+      Cosine-similarity dedup within batch (> SIMILARITY_THRESHOLD 0.95) and
+      against global Pinecone index; novelty < DIFFERENCE_THRESHOLD (0.1) videos
+      are filtered, leaving MIN_SCORE if none remain.
+  - kind: other
+    kind_other: "token_stuffing_detection"
+    enforcement: penalty
+    description: >-
+      unstuff.is_stuffed and check_extraneous_chunks reject token-stuffed
+      descriptions; high-confidence stuffing returns
+      STUFFED_DESCRIPTION_PUNISHMENT = -5.0.
+
+sub_competitions:
+  structure: multi_mechanism
+  stages:
+    - name: youtube_video
+      role: main
+      advancement_rule: "weighted by YOUTUBE_REWARDS_PERCENT (= 1 - focus - audio)"
+    - name: audio_podcast
+      role: main
+      advancement_rule: "weighted by AUDIO_REWARDS_PERCENT (0.0 in checked-in constants)"
+    - name: focus_videos
+      role: main
+      advancement_rule: "weighted by FOCUS_REWARDS_PERCENT (live API; constant default 1)"
+  count: 3
+  notes: >-
+    Three parallel reward tracks combined by percentage split at weight-setting
+    time, not a ladder/tournament.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score]
+  status_values: []
+  reset_policy: >-
+    scores/focus_scores reset to 0 when a hotkey is replaced in the metagraph;
+    state persisted to state.pt (scores, focus_scores, audio_score_arr, hotkeys).
+  notes: >-
+    YouTube and audio scores are EMA moving averages persisted across steps; focus
+    scores are overwritten each step from the API (no EMA).
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/scoring.md"
+    - "docs/focus_video_scoring_and_embeddings.md"
+    - "CLAUDE.md"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8[1m]"
+  extracted_at: "2026-06-06"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "neurons/validator.py"
+      line_ref: "132-136"
+      quote: "\"https://dev-sn24-api.omegatron.ai\" ... else \"https://sn24-api.omegatron.ai\""
+      confidence: medium
+    - claim_field: "/mechanism_status"
+      source_path: "omega/constants.py"
+      line_ref: "1-3"
+      quote: "FOCUS_REWARDS_PERCENT = 1\nAUDIO_REWARDS_PERCENT = 0.0"
+      confidence: high
+    - claim_field: "/mechanism_status_notes"
+      source_path: "neurons/validator.py"
+      line_ref: "145-147"
+      quote: "self.YOUTUBE_REWARDS_PERCENT = (\n    1.0 - self.FOCUS_REWARDS_PERCENT - self.AUDIO_REWARDS_PERCENT\n)"
+      confidence: high
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "omega/constants.py"
+      line_ref: "21"
+      quote: "QUERY_RELEVANCE_SCALING_FACTOR = 1.3"
+      confidence: high
+    - claim_field: "/scoring_signals/1/weight"
+      source_path: "omega/constants.py"
+      line_ref: "22"
+      quote: "DESCRIPTION_RELEVANCE_SCALING_FACTOR = 0.7"
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "omega/constants.py"
+      line_ref: "23"
+      quote: "VIDEO_RELEVANCE_WEIGHT = 0.65"
+      confidence: high
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "775-787"
+      quote: "true_novelty_scores = [\n    min(local_score, global_score)"
+      confidence: high
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "omega/constants.py"
+      line_ref: "29-31"
+      quote: "DESCRIPTION_LENGTH_WEIGHT = 0.35\nMIN_LENGTH_BOOST_TOKEN_COUNT = 100\nMAX_LENGTH_BOOST_TOKEN_COUNT = 300"
+      confidence: high
+    - claim_field: "/scoring_signals/4/weight"
+      source_path: "omega/constants.py"
+      line_ref: "48"
+      quote: "DIARIZATION_SCALING_FACTOR = 0.6  # max 1"
+      confidence: high
+    - claim_field: "/scoring_signals/5/weight"
+      source_path: "omega/constants.py"
+      line_ref: "46"
+      quote: "AUDIO_LENGTH_SCALING_FACTOR = 0.1  # max 1"
+      confidence: high
+    - claim_field: "/scoring_signals/6/weight"
+      source_path: "omega/constants.py"
+      line_ref: "47"
+      quote: "AUDIO_QUALITY_SCALING_FACTOR = 0.2  # max 1"
+      confidence: high
+    - claim_field: "/scoring_signals/7/weight"
+      source_path: "omega/constants.py"
+      line_ref: "49-54"
+      quote: "AUDIO_QUERY_RELEVANCE_SCALING_FACTOR = (\n    1.0\n    - DIARIZATION_SCALING_FACTOR\n    - AUDIO_LENGTH_SCALING_FACTOR\n    - AUDIO_QUALITY_SCALING_FACTOR\n)"
+      confidence: high
+    - claim_field: "/scoring_signals/5/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "1281-1283"
+      quote: "audio_length_score = total_audio_length / (\n    NUM_AUDIOS * MAX_AUDIO_LENGTH_SECONDS\n)"
+      confidence: high
+    - claim_field: "/scoring_signals/8/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "415-423"
+      quote: "reward = focus_videos.get(hotkey, {}).get(\"focus_points_percentage\", 0.0)\n... self.update_focus_scores(focus_rewards, focus_reward_uids)"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "858-870"
+      quote: "query_relevance_scores = [\n    sum([video_query_relevance_scores[idx], audio_query_relevance_scores[idx], get_text_similarity_score(...)])\n    / 3"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "neurons/validator.py"
+      line_ref: "141"
+      quote: "self.imagebind = ImageBind(v2=True)"
+      confidence: high
+    - claim_field: "/ground_truth_sources/2/source_identifier"
+      source_path: "neurons/validator.py"
+      line_ref: "1119-1121"
+      quote: "f\"{self.api_root}/api/get_pinecone_novelty\""
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "omega/base/validator.py"
+      line_ref: "336-352"
+      quote: "raw_weights_youtube = (torch.nn.functional.normalize(self.scores, p=1, dim=0) * self.YOUTUBE_REWARDS_PERCENT) ... raw_weights = raw_weights_youtube + raw_weights_focus + raw_weights_audio"
+      confidence: high
+    - claim_field: "/aggregation/normalization"
+      source_path: "omega/base/validator.py"
+      line_ref: "337"
+      quote: "torch.nn.functional.normalize(self.scores, p=1, dim=0)"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "914-924"
+      quote: "score = (((sum(description_relevance_scores) * DESCRIPTION_RELEVANCE_SCALING_FACTOR) + (sum(query_relevance_scores) * QUERY_RELEVANCE_SCALING_FACTOR)) / 2 / videos.num_videos)"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "omega/base/validator.py"
+      line_ref: "395-403"
+      quote: "result, result_msg = self.subtensor.set_weights("
+      confidence: high
+    - claim_field: "/weight_setting/cadence"
+      source_path: "omega/base/neuron.py"
+      line_ref: "168-171"
+      quote: "return (self.block - self.metagraph.last_update[self.uid]) > self.config.neuron.epoch_length and self.neuron_type != \"MinerNeuron\""
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "omega/utils/config.py"
+      line_ref: "83-88"
+      quote: "\"--neuron.epoch_length\", ... help=\"The default epoch length (how often we set weights, measured in 12 second blocks).\", default=100,"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "omega/utils/config.py"
+      line_ref: "238-243"
+      quote: "\"--neuron.moving_average_alpha\", ... default=0.3,"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "omega/base/validator.py"
+      line_ref: "488-495"
+      quote: "alpha: float = self.config.neuron.moving_average_alpha\nself.scores = alpha * scattered_rewards + (1 - alpha) * self.scores ... def update_focus_scores(...): \"\"\"Unlike other update_*_scores functions, this function does not perform an exponential moving average.\"\"\""
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "omega/constants.py"
+      line_ref: "20"
+      quote: "FAKE_VIDEO_PUNISHMENT = -5.0"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "omega/constants.py"
+      line_ref: "15-17"
+      quote: "CHECK_PROBABILITY = 0.1\nDIFFERENCE_THRESHOLD = 0.1\nSIMILARITY_THRESHOLD = 0.95"
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "neurons/validator.py"
+      line_ref: "488-491"
+      quote: "has_duplicates = (similarity_score > SIMILARITY_THRESHOLD).any()"
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "neurons/validator.py"
+      line_ref: "807-812"
+      quote: "stuffed = [unstuff.is_stuffed(meta.description) for meta in metadata]\n... return STUFFED_DESCRIPTION_PUNISHMENT"
+      confidence: high
+    - claim_field: "/sub_competitions/structure"
+      source_path: "omega/base/validator.py"
+      line_ref: "326-352"
+      quote: "self.scores, self.focus_scores, self.audio_score_arr = self.pad_tensors(...)"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "omega/base/validator.py"
+      line_ref: "427-431"
+      quote: "if hotkey != self.metagraph.hotkeys[uid]:\n    self.scores[uid] = 0  # hotkey has been replaced\n    self.focus_scores[uid] = 0"
+      confidence: high
+    - claim_field: "/per_miner_state/notes"
+      source_path: "omega/base/validator.py"
+      line_ref: "554-562"
+      quote: "torch.save({\"step\": self.step, \"scores\": self.scores, \"focus_scores\": self.focus_scores, \"audio_score_arr\": self.audio_score_arr, \"hotkeys\": self.hotkeys}, ...)"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "CLAUDE.md"
+      line_ref: "5-5"
+      quote: "decentralized multimodal dataset creation system that incentivizes miners to contribute high-quality video content with embeddings"
+      confidence: high
+  unresolved:
+    - "Exact netuid (24) is inferred from the sn24-api.omegatron.ai endpoint and project name 'omega-sn24'; not asserted as a literal --netuid default in source."
+    - "Live focus rewards percent value at runtime is fetched from the API and not knowable from source; only the fallback constant (1) is in code."
+    - "Focus video off-chain scoring internals (DeepSeek completion x boosted multiplier, Pinecone indexes) are documented in docs/ but the scoring code lives in validator_api/ and the boosted-multiplier numeric values were not located as literals."

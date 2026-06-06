@@ -1,0 +1,341 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: mixed
+mechanism_status_notes: >-
+  Scoring is winner-take-all: the champion miner is assigned weight 1.0 and every
+  other miner 0.0 (champion_challenge._assign_weights). On chain, the WeightSetter
+  applies a dynamic validator_burn_percentage (fetched per-iteration from the
+  backend API, default 0.0 if config fetch fails) plus the accumulated weight of
+  "system miners" (uid <= 0 or uid > 1000), all redirected to UID 0. So a variable
+  fraction of emission is burned/redirected to UID 0 while the rest concentrates on
+  a single champion. The exact live burn fraction is API-driven and not a source
+  constant.
+
+subnet:
+  name: "Affine"
+  owner_repo: "AffineFoundation__affine"
+  netuid: 120
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners submit reasoning/LLM models (committed on-chain, served via Subnet 64 /
+    Chutes) that are evaluated on a set of RL environments. Validators look for the
+    model that Pareto-dominates the frontier across all environments. A single
+    "champion" model holds the crown and receives all weight; challengers must
+    dominate the champion on common tasks to dethrone it (winner-take-all).
+  submission_format: [model_weights, commitment_hash]
+
+scoring_signals:
+  - name: env_score
+    metric_kind: reward
+    direction: higher_is_better
+    weight: null
+    normalization: min_max
+    normalization_other: ""
+    notes: >-
+      Per-environment average score over completed tasks (MinerData.env_scores).
+      Raw scores are normalized to [0,1] via per-environment (min,max) ranges in
+      ScorerConfig.ENV_SCORE_RANGES before comparison. Signals are NOT additively
+      weighted; they feed a Pareto dominance comparison on common tasks, so weight
+      is null.
+  - name: pareto_dominance
+    metric_kind: win_rate
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Per pair, a challenger "wins" an env if its avg score on common tasks exceeds
+      the incumbent by a margin; dominance requires winning all envs (strict Pareto,
+      WIN_MIN_DOMINANT_ENVS=1 with not-worse tolerance in others). Gated/comparative,
+      not additively weighted.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Models are evaluated against RL environments (e.g. coding / program
+      abduction tasks such as DED-V2, ABD-V2, agentgym:sciworld) packaged as
+      pre-built Docker images. Scores per task are collected as samples.
+    source_identifier: "RL environments (DED-V2, ABD-V2, agentgym:sciworld)"
+    trust_model: trusted
+    notes: >-
+      Environments enumerated dynamically; only agentgym:sciworld has an explicit
+      score range in source (ENV_SCORE_RANGES). README references program abduction
+      and coding tasks.
+
+aggregation:
+  method: winner_take_all
+  composition: gated
+  normalization: none
+  normalization_other: ""
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: null
+    dynamic: true
+    notes: >-
+      WeightSetter.process_weights redirects to UID 0: (a) burn_percentage of all
+      weight (validator_burn_percentage fetched from API per iteration; default 0.0)
+      and (b) the accumulated weight of system miners (uid <= 0 or uid > 1000).
+      Fraction is dynamic/API-driven, not a source constant.
+  notes: >-
+    champion_challenge._assign_weights: champion (weight_uid) gets 1.0, all others
+    0.0. The Scorer docstring states "The champion gets 100% weight. All other
+    miners get 0%." Champion is resolved/dethroned via Pareto comparison on common
+    tasks; dethrone needs CHAMPION_DETHRONE_MIN_CHECKPOINT(=10) reached and the most
+    recent comparison a win.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Validator service waits for a weight submission window every WEIGHT_SET_INTERVAL_BLOCKS
+    (default 180) blocks, fetches the latest weights and validator_burn_percentage from
+    the backend API, then calls subtensor.set_weights with up to 3 retries. Off-chain
+    champion-challenge scoring (separate scorer service) produces the weights the API serves.
+  on_chain_call: set_weights
+  tempo_or_interval: "180 blocks"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA/SMA smoothing of the final reward in source. Weights are set directly
+      (champion=1.0). Temporal stability comes from champion persistence/dethrone
+      gating, not an EMA on the on-chain weight vector.
+
+anti_gaming:
+  - kind: plagiarism_detection
+    enforcement: penalty
+    enforcement_other: ""
+    description: >-
+      AntiCopyDetector flags model copies via two independent cosine signals
+      (hidden_states cosine and logprob top-3 cosine). Defaults: suspicious
+      thresholds 0.99, cheat thresholds 0.995, min_tasks 30. A 'suspicious'/'cheat'
+      status against the alleged source tightens the Pareto margin by
+      PARETO_SUSPICIOUS_MARGIN_MULTIPLIER (1.5) in pairwise elimination, making the
+      copy easier to terminate.
+  - kind: deduplication
+    enforcement: elimination
+    enforcement_other: ""
+    description: >-
+      Pairwise Pareto filter: among non-champion miners with >= PARETO_MIN_WINDOWS(5)
+      x window_size common tasks, the earlier-registered (incumbent) miner terminates
+      a strictly Pareto-dominated later miner (likely copy). Termination is permanent.
+  - kind: challenge_period
+    enforcement: elimination
+    enforcement_other: ""
+    description: >-
+      Champion challenges are checkpoint-gated. First CHAMPION_WARMUP_CHECKPOINTS(2)
+      checkpoints don't count. A challenger is terminated after
+      CHAMPION_TERMINATION_TOTAL_LOSSES(4) total or CHAMPION_TERMINATION_CONSECUTIVE_LOSSES(3)
+      consecutive post-warmup losses, or immediately on a loss at/after dethrone CP(10).
+  - kind: stake_weighting
+    enforcement: barrier
+    enforcement_other: ""
+    description: >-
+      System miners (uid <= 0 or uid > 1000) participate in scoring but their weight
+      is redirected to UID 0 rather than paid out, so they cannot earn emission.
+
+sub_competitions:
+  structure: tournament
+  stages:
+    - name: pairwise_pareto_filter
+      role: qualifier
+      advancement_rule: >-
+        Non-champion miners compared pairwise; strictly Pareto-dominated (and copy-flagged)
+        miners are permanently terminated. Survivors proceed to champion challenges.
+    - name: champion_challenge
+      role: boss
+      advancement_rule: >-
+        Each surviving challenger is compared against the champion on common tasks at
+        each new checkpoint. Reaching CHAMPION_DETHRONE_MIN_CHECKPOINT(10) and winning
+        the most recent comparison qualifies a challenger to dethrone; earliest-registered
+        qualifier (geo-mean tiebreaker) becomes the new champion and all state resets.
+  count: null
+  notes: >-
+    Winner-take-all single-champion ladder: one reigning champion holds 100% weight;
+    challengers must out-dominate it to take the crown.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [status_enum, performance_ledger, cumulative_score, registration_age]
+  status_values: [sampling, terminated, champion]
+  reset_policy: >-
+    On a successful dethrone (champion change), all non-terminated miners' challenge
+    counters (wins/losses/checkpoints) reset to sampling state. Terminated miners are
+    never revived (permanent).
+  notes: >-
+    Per-miner persisted challenge state: challenge_consecutive_wins, total_wins,
+    total_losses, consecutive_losses, checkpoints_passed, status, termination_reason.
+    Identity is hotkey+revision. first_block (registration age) breaks ties and sets
+    pairwise incumbency. Champion identity persisted in system_config with since_block.
+
+documentation:
+  status: code_authoritative
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/VALIDATOR.md"
+    - "docs/MINER.md"
+    - "skill/references/scoring-deep-dive.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "affine/src/scorer/scorer.py"
+      line_ref: "1-9"
+      quote: "Main Scorer Orchestrator ... from typing import Dict, Any, Optional"
+      confidence: high
+    - claim_field: "/subnet/netuid"
+      source_path: "affine/src/validator/main.py"
+      line_ref: "307"
+      quote: '@click.option("--netuid", type=int, default=120)'
+      confidence: medium
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "13"
+      quote: >-
+        Affine validators incentivize miners to submit models to Subnet 64 on Bittensor
+        ... evaluated on a set of RL environments, with validators looking for models that
+        dominate the Pareto frontier ... a winners-take-all mechanism
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "skill/references/database-schema.md"
+      line_ref: "9-12"
+      quote: "miners | MINER#{hotkey} | REVISION#{rev} | - | Miner registrations"
+      confidence: medium
+    - claim_field: "/aggregation/method"
+      source_path: "affine/src/scorer/scorer.py"
+      line_ref: "33"
+      quote: "The champion gets 100% weight. All other miners get 0%."
+      confidence: high
+    - claim_field: "/aggregation/composition"
+      source_path: "affine/src/scorer/champion_challenge.py"
+      line_ref: "411-417"
+      quote: "w = 1.0 if uid == weight_uid else 0.0"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/enabled"
+      source_path: "affine/src/validator/weight_setter.py"
+      line_ref: "80-95"
+      quote: >-
+        if burn_percentage > 0 and burn_percentage <= 1.0: weights_array *= (1.0 - burn_percentage)
+        ... extra_weight += burn_percentage ... Add extra weight to UID 0
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/dynamic"
+      source_path: "affine/src/validator/main.py"
+      line_ref: "248-249"
+      quote: 'burn_percentage = config.get("validator_burn_percentage", 0.0)'
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "affine/src/validator/weight_setter.py"
+      line_ref: "51-53"
+      quote: "System miner (uid <= 0 or uid > 1000): accumulate weight for UID 0"
+      confidence: high
+    - claim_field: "/scoring_signals/0/normalization"
+      source_path: "affine/src/scorer/config.py"
+      line_ref: "85-89"
+      quote: >-
+        ENV_SCORE_RANGES ... Maps env_name -> (min, max) so raw scores are normalized
+        to [0, 1] before any comparison.
+      confidence: high
+    - claim_field: "/scoring_signals/1/metric_kind"
+      source_path: "affine/src/scorer/stage2_pareto.py"
+      line_ref: "100-104"
+      quote: "if score_b > score_a + margin_b_over_a + 1e-9: b_dominant += 1 ... winner = \"B\""
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "affine/src/validator/main.py"
+      line_ref: "278"
+      quote: 'interval_blocks = int(os.getenv("WEIGHT_SET_INTERVAL_BLOCKS", "180"))'
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "affine/src/validator/weight_setter.py"
+      line_ref: "129-136"
+      quote: "success = await subtensor.set_weights(wallet=self.wallet, netuid=self.netuid, uids=uids, weights=weights, ...)"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "affine/src/anticopy/detector.py"
+      line_ref: "42-46"
+      quote: >-
+        hs_suspicious_threshold: float = 0.99, logprob_suspicious_threshold: float = 0.99,
+        hs_cheat_threshold: float = 0.995, logprob_cheat_threshold: float = 0.995, min_tasks: int = 30
+      confidence: high
+    - claim_field: "/anti_gaming/0/kind"
+      source_path: "affine/src/scorer/config.py"
+      line_ref: "66-72"
+      quote: >-
+        PARETO_SUSPICIOUS_MARGIN_MULTIPLIER: float = 1.5 ... When the current miner is suspicious
+        and the comparison target is the model it copied from, the required dominance margin is multiplied
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "affine/src/scorer/config.py"
+      line_ref: "110-117"
+      quote: >-
+        PARETO_MIN_WINDOWS: int = 5 ... when two non-champion miners share at least
+        PARETO_MIN_WINDOWS x window_size common tasks ... the dominated miner is terminated.
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "affine/src/scorer/config.py"
+      line_ref: "93-108"
+      quote: >-
+        CHAMPION_WARMUP_CHECKPOINTS: int = 2 ... CHAMPION_DETHRONE_MIN_CHECKPOINT: int = 10 ...
+        CHAMPION_TERMINATION_TOTAL_LOSSES: int = 4 ... CHAMPION_TERMINATION_CONSECUTIVE_LOSSES: int = 3
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "affine/src/validator/weight_setter.py"
+      line_ref: "25-27"
+      quote: >-
+        System miners (uid > 1000) participate in scoring but don't receive actual rewards on chain.
+        Their weights are accumulated and allocated to UID 0
+      confidence: high
+    - claim_field: "/sub_competitions/structure"
+      source_path: "affine/src/scorer/champion_challenge.py"
+      line_ref: "1-12"
+      quote: >-
+        Champion Challenge Scoring -- Winner-takes-all. ... Pairwise Pareto filter ...
+        Run challenges: each non-champion miner vs champion ... Assign weights: champion = 1.0, others = 0.0
+      confidence: high
+    - claim_field: "/per_miner_state/state_kinds"
+      source_path: "affine/src/scorer/champion_challenge.py"
+      line_ref: "112-123"
+      quote: >-
+        miner.challenge_consecutive_wins ... challenge_total_wins ... challenge_total_losses ...
+        challenge_checkpoints_passed ... challenge_status ... termination_reason
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "affine/src/scorer/champion_challenge.py"
+      line_ref: "505-511"
+      quote: >-
+        Reset counters for non-terminated miners on champion change. Termination is permanent --
+        terminated miners are never revived.
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "affine/src/scorer/config.py"
+      line_ref: "85-87"
+      quote: "ENV_SCORE_RANGES: Dict[str, tuple] = { 'agentgym:sciworld': (-100, 100.0), }"
+      confidence: high
+    - claim_field: "/mechanism_status"
+      source_path: "affine/src/validator/weight_setter.py"
+      line_ref: "30-33"
+      quote: >-
+        System miners (uid > 1000) participate in scoring but don't receive actual rewards on chain.
+        Their weights are accumulated and allocated to UID 0 (validator) along with burn percentage.
+      confidence: high
+  unresolved:
+    - "Live validator_burn_percentage value (fetched from backend API at runtime; no literal in source)."
+    - "per-environment window_size / env_sampling_counts (supplied at runtime from API, not constant in source)."
+    - "Full list of active RL environments (resolved dynamically; only agentgym:sciworld appears in config)."
+    - "Canonical netuid ambiguity: validator CLI default is 120, but README references Subnet 64 (Chutes) for the served models."
+  extractor_notes: >-
+    scoring-deep-dive.md documents an older 4-stage subset-scoring pipeline (stage3_subset/stage4_weights)
+    that no longer matches the current code, which is the winner-take-all champion-challenge system. Code
+    treated as authoritative over that doc. The named constants (warmup 2, dethrone CP 10, losses 4/3,
+    margins 0.02/0.03, PARETO_MARGIN 0.04, multiplier 1.5, anti-copy thresholds) are literals in
+    affine/src/scorer/config.py and affine/src/anticopy/detector.py.

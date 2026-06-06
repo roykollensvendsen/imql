@@ -1,0 +1,294 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Validator computes per-platform success-only scores from telemetry deltas, applies a
+  kurtosis sigmoid curve, and sets them directly on-chain via fiber weights.set_node_weights.
+  No burn UID or emission burn was found in the code.
+
+subnet:
+  name: "Subnet 42 (Gopher / Masa)"
+  owner_repo: "masa-finance__subnet-42"
+  netuid: 42
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners run a TEE (Intel SGX) job worker that scrapes/indexes data from social and web
+    platforms (Twitter/X, TikTok, Reddit, LinkedIn, web, LLM). The validator periodically pulls
+    signed telemetry counters from each miner's TEE worker, computes the per-platform delta of
+    successful work units over a window, and rewards miners proportionally to their normalized
+    success volume across platforms. Only successful work counts; errors do not penalize the score.
+  submission_format: [compute_service]
+
+scoring_signals:
+  - name: twitter_returned_tweets
+    metric_kind: volume
+    direction: higher_is_better
+    weight: 0.7
+    normalization: min_max
+    notes: >-
+      success_metrics=["tweets"]; raw field twitter_returned_tweets. emission_weight 0.7 (70%).
+      Raw success summed, then min-max normalized across nodes before weighting.
+  - name: twitter_apify_followers
+    metric_kind: volume
+    direction: higher_is_better
+    weight: 0.05
+    normalization: min_max
+    notes: 'platform twitter-apify; success_metrics=["followers"]; emission_weight 0.05.'
+  - name: tiktok_transcriptions
+    metric_kind: volume
+    direction: higher_is_better
+    weight: 0.05
+    normalization: min_max
+    notes: 'platform tiktok-transcription; success_metrics=["transcriptions"]; emission_weight 0.05.'
+  - name: tiktok_returned_videos
+    metric_kind: volume
+    direction: higher_is_better
+    weight: 0.05
+    normalization: min_max
+    notes: 'platform tiktok-search; success_metrics=["videos"]; emission_weight 0.05.'
+  - name: web_scraped_pages
+    metric_kind: volume
+    direction: higher_is_better
+    weight: 0.05
+    normalization: min_max
+    notes: 'platform web; success_metrics=["pages","scraped_pages"]; emission_weight 0.05.'
+  - name: reddit_returned_items
+    metric_kind: volume
+    direction: higher_is_better
+    weight: 0.05
+    normalization: min_max
+    notes: 'platform reddit; success_metrics=["items"]; emission_weight 0.05.'
+  - name: linkedin_returned_profiles
+    metric_kind: volume
+    direction: higher_is_better
+    weight: 0.05
+    normalization: min_max
+    notes: 'platform linkedin; success_metrics=["profiles"]; emission_weight 0.05.'
+  - name: llm_processed_items
+    metric_kind: volume
+    direction: higher_is_better
+    weight: 0.0
+    normalization: min_max
+    notes: >-
+      platform llm; emission_weight 0.0 ("Not scored currently, but tracked for metrics
+      visibility"). Contributes nothing to weighted score.
+
+ground_truth_sources:
+  - kind: hardware_probe
+    description: >-
+      Telemetry counters are fetched directly from each miner's Intel SGX TEE job worker
+      (gopher-lab/tee-worker) via a TEETelemetryClient telemetry sequence; the TEE attestation is
+      the trust anchor that the reported scrape counters are genuine.
+    source_identifier: "TEETelemetryClient / tee-worker (Intel SGX); MASA_TEE_API tee-api.masa.ai"
+    trust_model: oracle
+    notes: >-
+      Active stat-name (indexer worker_id) and active worker_version are fetched from
+      tee-api.masa.ai (/worker-id, /tee-version) and used to gate which source counters are scored.
+
+aggregation:
+  method: weighted_average
+  composition: weighted_sum
+  normalization: min_max
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: "No burn UID or emission burn present in the weight-setting path."
+  notes: >-
+    Per platform: raw success-only score = sum of success_metrics; min-max normalized to [0,1]
+    across nodes; multiplied by platform.emission_weight (summing to 1.0 across 8 platforms);
+    summed into a combined per-node score. The combined scores are then passed through
+    apply_kurtosis_custom (a sigmoid in z-scored space with a tanh boost, re-normalized to [0,1])
+    before being set as on-chain weights. Default kurtosis params: top_percentile=95,
+    reward_factor=0.0 (top-percentile emphasis disabled), steepness=1.1, center_sensitivity=0.1,
+    boost_factor=0.03.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    set_weights_loop runs every WEIGHTS_LOOP_CADENCE_SECONDS (half a weight-setting period =
+    BLOCKS_PER_WEIGHT_SETTING(100) * BLOCK_TIME_SECONDS(12) / 2 = 600s). set_weights checks
+    blocks_since_last_update vs min_interval_to_set_weights and sleeps the remainder before pushing.
+  on_chain_call: set_weights
+  tempo_or_interval: "100 blocks per weight setting; loop cadence 600s"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA/SMA on the final reward. Temporal aggregation is delta accumulation over the
+      telemetry window (default 8h expiration), with worker-restart chunking via boot_time and
+      max(0, end-start) clamping of each counter delta.
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      _validate_source_id fails closed: records whose stats_json worker_version does not match the
+      active worker_version (from tee-api), or that lack the active indexer source worker, are
+      skipped during delta calculation and not scored.
+  - kind: deterministic_check
+    enforcement: barrier
+    description: >-
+      Multi-source amplification guard: when the active indexer source is unknown, telemetry is
+      only aggregated if exactly one source is present; otherwise no counters are summed. Counter
+      deltas are clamped to max(0, end-start) so resets/decreases cannot inflate scores.
+  - kind: hardware_validation
+    enforcement: barrier
+    description: >-
+      Counters originate only from an Intel SGX TEE worker via TEETelemetryClient attestation
+      sequence; miners cannot self-report arbitrary numbers outside the attested worker.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      Optional MINER_WHITELIST env var: when set, node_manager filters nodes to whitelisted
+      hotkeys only (off by default / empty list).
+
+sub_competitions:
+  structure: multi_mechanism
+  stages: []
+  count: 8
+  notes: >-
+    Eight platform tracks (twitter, twitter-apify, tiktok-transcription, tiktok-search, web,
+    reddit, linkedin, llm) are scored independently and combined by fixed emission_weight shares
+    summing to 1.0; twitter dominates at 0.7 and llm is currently 0.0.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score]
+  status_values: []
+  reset_policy: >-
+    Telemetry entries expire after TELEMETRY_EXPIRATION_HOURS (default 8h); per-counter baseline
+    resets on TEE worker restart (boot_time change) within the delta window.
+  notes: >-
+    No persistent per-miner reputation/debt ledger; scoring is a stateless function of the
+    delta of telemetry counters accumulated over the current window.
+
+documentation:
+  status: docs_authoritative
+  source_version: "neurons __version__ = 2.9.2"
+  primary_docs:
+    - "https://developers.gopher-ai.com/docs/subnet/intro"
+    - "https://github.com/gopher-lab/tee-worker"
+    - "README.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract / Claude Opus 4.8"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "neurons/validator.py"
+      line_ref: "62"
+      quote: 'self.netuid = int(os.getenv("NETUID", "42"))'
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "validator/weights.py"
+      line_ref: "1-4"
+      quote: "from fiber.chain import weights, interface\nimport numpy as np"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "13-19"
+      quote: >-
+        Both neurons (miner and validator) also run a TEE job worker: ... Running the worker
+        requires Intel SGX-enabled hardware
+    - claim_field: "/task/submission_format"
+      source_path: "validator/scorer.py"
+      line_ref: "242-244"
+      quote: "telemetry_result = await telemetry_client.execute_telemetry_sequence("
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "validator/platform_config.py"
+      line_ref: "65-89"
+      quote: 'name="twitter", emission_weight=0.7, ... success_metrics=["tweets"]'
+    - claim_field: "/scoring_signals/1/weight"
+      source_path: "validator/platform_config.py"
+      line_ref: "90-101"
+      quote: 'name="twitter-apify", emission_weight=0.05, ... success_metrics=["followers"]'
+    - claim_field: "/scoring_signals/7/weight"
+      source_path: "validator/platform_config.py"
+      line_ref: "168-180"
+      quote: 'name="llm", emission_weight=0.0,  # Not scored currently, but tracked for metrics visibility'
+    - claim_field: "/scoring_signals/0/normalization"
+      source_path: "validator/weights.py"
+      line_ref: "494-498"
+      quote: "if max_val - min_val > 0: normalized_array = (raw_array - min_val) / (max_val - min_val)"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "validator/weights.py"
+      line_ref: "155-160"
+      quote: "for metric in platform_config.success_metrics: success_score += platform_metrics.get(metric, 0)"
+    - claim_field: "/ground_truth_sources/0/kind"
+      source_path: "validator/scorer.py"
+      line_ref: "32"
+      quote: 'self.api_url = os.getenv("MASA_TEE_API", "https://tee-api.masa.ai").rstrip("/")'
+    - claim_field: "/aggregation/composition"
+      source_path: "validator/weights.py"
+      line_ref: "507-509"
+      quote: "weighted_score = normalized_score * platform_config.emission_weight; total_weighted_score += weighted_score"
+    - claim_field: "/aggregation/notes"
+      source_path: "validator/weights.py"
+      line_ref: "525-526"
+      quote: "combined_scores = np.array(combined_scores); combined_scores = apply_kurtosis_custom(combined_scores)"
+    - claim_field: "/aggregation/notes"
+      source_path: "validator/weights.py"
+      line_ref: "21-28"
+      quote: "def apply_kurtosis_custom(x, top_percentile=95, reward_factor=0.0, steepness=1.1, center_sensitivity=0.1, boost_factor=0.03,):"
+    - claim_field: "/aggregation/burn_allocation/enabled"
+      source_path: "validator/weights.py"
+      line_ref: "759-769"
+      quote: "success = weights.set_node_weights(... node_ids=uids, node_weights=scores, netuid=self.validator.netuid, ...)"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "validator/weights.py"
+      line_ref: "759"
+      quote: "success = weights.set_node_weights("
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "neurons/validator.py"
+      line_ref: "37-43"
+      quote: >-
+        BLOCKS_PER_WEIGHT_SETTING = 100\nBLOCK_TIME_SECONDS = 12\nTIME_PER_WEIGHT_SETTING =
+        BLOCKS_PER_WEIGHT_SETTING * BLOCK_TIME_SECONDS\nWEIGHTS_LOOP_CADENCE_SECONDS = (
+        TIME_PER_WEIGHT_SETTING / 2 )
+    - claim_field: "/weight_setting/method"
+      source_path: "validator/weights.py"
+      line_ref: "702-714"
+      quote: "blocks_since_update = weights.blocks_since_last_update(... min_interval = weights.min_interval_to_set_weights(..."
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "validator/weights.py"
+      line_ref: "337-339"
+      quote: "chunk_deltas[field] = max(0, end_value - start_value)"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "validator/weights.py"
+      line_ref: "189-195"
+      quote: "if version is None or str(version) != str(active_version): return False"
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "validator/scorer.py"
+      line_ref: "160-164"
+      quote: "if len(stats_dict) == 1: selected_sources = [next(iter(stats_dict.keys()))] else: selected_sources = []"
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "validator/node_manager.py"
+      line_ref: "177-178"
+      quote: 'whitelist = os.getenv("MINER_WHITELIST", "").split(","); nodes_list = [node for node in nodes_list if node.hotkey in whitelist]'
+    - claim_field: "/sub_competitions/count"
+      source_path: "validator/platform_config.py"
+      line_ref: "183-188"
+      quote: "Platform emission weights must sum to 1.0, got {total_weight}"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "validator/background_tasks.py"
+      line_ref: "14"
+      quote: 'TELEMETRY_EXPIRATION_HOURS = int(os.getenv("TELEMETRY_EXPIRATION_HOURS", "8"))'
+    - claim_field: "/documentation/primary_docs"
+      source_path: "README.md"
+      line_ref: "9"
+      quote: "https://developers.gopher-ai.com/docs/subnet/intro"
+    - claim_field: "/documentation/source_version"
+      source_path: "neurons/__init__.py"
+      line_ref: "1"
+      quote: '__version__ = "2.9.2"'
+  unresolved:
+    - "Exact emission/incentive curve interaction with bittensor consensus (Yuma) is off-repo; only the raw weight vector is set here."
+    - "min_interval_to_set_weights value is read from chain at runtime (fiber), not a literal constant in this repo."

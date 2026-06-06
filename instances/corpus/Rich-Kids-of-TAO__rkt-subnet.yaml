@@ -1,0 +1,235 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  The validator hardcodes burner_uid=0 and burner_weight=0.9, so 90% of emission is
+  routed to UID 0 and only the remaining 0.1 is distributed proportionally among miners
+  according to their off-subnet emission value.
+
+subnet:
+  name: "Rich Kids of TAO"
+  owner_repo: "Rich-Kids-of-TAO__rkt-subnet"
+  netuid: 110
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners simply register a hotkey to the subnet (no code to run). Validators measure each
+    miner hotkey's emission across a set of community-voted external subnets, multiply emission
+    by the subnet's alpha price and the community-voted subnet weight, sum these across all voted
+    subnets to get a total emission value, normalize values by the maximum, smooth with an EMA,
+    and set on-chain weights — rewarding miners proportionally to their "wealth"/emissions
+    elsewhere in the Bittensor ecosystem.
+  submission_format: [other]
+  submission_format_other: >-
+    No submission; reward is derived from the miner hotkey's on-chain emissions on other subnets.
+    Registration of the hotkey to netuid 110 is the only action required.
+
+scoring_signals:
+  - name: cross_subnet_emission_value
+    metric_kind: other
+    metric_kind_other: >-
+      Total emission value across voted external subnets: sum(emission * alpha_price * subnet_weight).
+    direction: higher_is_better
+    weight: 1.0
+    normalization: min_max
+    notes: >-
+      Per voted subnet: emission_value = emission * price * subnet_weight (check_hotkey_emissions).
+      Summed across subnets, then normalized by the maximum across miners
+      (get_rewards_from_emissions divides by max). The validator's own subnet is skipped.
+
+ground_truth_sources:
+  - kind: other
+    kind_other: on-chain subnet emission/price metagraph data plus a centralized voting API
+    description: >-
+      Per-subnet metagraph emission values (metagraph.E[uid]) and subnet alpha prices
+      (subtensor.get_subnet_price) read from chain, combined with per-subnet community-voted
+      weights fetched from a centralized API.
+    source_identifier: "https://richkidsoftao.com/api/subnets"
+    trust_model: oracle
+    notes: >-
+      Subnet weights are fetched from a centralized API endpoint
+      (fetch_subnet_weights_from_api); falls back to empty/hardcoded if the API fails. Alpha
+      holders sign votes off-chain and the API averages them.
+
+aggregation:
+  method: proportional
+  composition: weighted_sum
+  normalization: min_max
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: 0.9
+    dynamic: false
+    notes: >-
+      burner_uid=0 receives burner_weight=0.9; remaining_weight=1.0-burner_weight=0.1 is split
+      among miners proportionally to their normalized score.
+  notes: >-
+    Rewards are emission_value normalized by the max across miners; if all emission values are
+    zero, rewards default to a uniform 1/N. Final weights = burner gets 0.9, others get
+    (score/total_other_scores)*0.1.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    EMA-smoothed normalized scores converted to weights with 0.9 reserved for the burner UID 0
+    and 0.1 distributed proportionally; pushed via subtensor.set_weights.
+  on_chain_call: set_weights
+  tempo_or_interval: 360
+  smoothing:
+    kind: ema
+    alpha: 0.1
+    window: null
+    notes: >-
+      update_scores: scores = moving_average_alpha*scattered_rewards + (1-moving_average_alpha)*scores,
+      with moving_average_alpha=0.1.
+
+anti_gaming:
+  - kind: deduplication
+    enforcement: penalty
+    description: >-
+      Duplicate hotkeys are processed only once; subsequent UIDs sharing an already-seen hotkey
+      are assigned emission 0.0 (processed_hotkeys set in check_metagraph_emissions).
+  - kind: stake_weighting
+    enforcement: rejection
+    description: >-
+      check_uid_availability excludes UIDs holding a validator_permit with stake above
+      vpermit_tao_limit (1024), so high-stake validators are not scored as miners.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score]
+  status_values: []
+  reset_policy: ""
+  notes: >-
+    self.scores is a per-UID EMA vector updated each evaluation round (moving_average_alpha=0.1).
+    No documented reset policy.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs: ["README.md", "VOTING_GUIDE.md"]
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "19"
+      quote: "btcli subnet register --netuid 110 --wallet.name YOUR_WALLET --wallet.hotkey YOUR_HOTKEY"
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "rich_kids_of_tao/validator.py"
+      line_ref: "4-5"
+      quote: "import numpy as np\nimport bittensor as bt"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "13"
+      quote: "Rewards: Based on total emission value across voted subnets (emission × subnet price × subnet weight)"
+      confidence: high
+    - claim_field: "/task/submission_format_other"
+      source_path: "README.md"
+      line_ref: "11"
+      quote: "Miners: Simply register to the subnet - no code to run"
+      confidence: high
+    - claim_field: "/scoring_signals/0/metric_kind_other"
+      source_path: "rich_kids_of_tao/emission_checker.py"
+      line_ref: "73-74"
+      quote: "emission_value = emission * price * subnet_weight\n                total_emission_value += emission_value"
+      confidence: high
+    - claim_field: "/scoring_signals/0/normalization"
+      source_path: "rich_kids_of_tao/emission_checker.py"
+      line_ref: "169-171"
+      quote: "max_emission = np.max(emission_array)\n    if max_emission > 0:\n        normalized_rewards = emission_array / max_emission"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "rich_kids_of_tao/emission_checker.py"
+      line_ref: "6-8"
+      quote: "def fetch_subnet_weights_from_api(\n    api_url: str = \"https://richkidsoftao.com/api/subnets\",\n) -> dict:"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "rich_kids_of_tao/emission_checker.py"
+      line_ref: "67-70"
+      quote: "emission = metagraph.E[uid].item()\n\n                # Get subnet price\n                price = subnet_prices.get(netuid, 1.0) if subnet_prices else 1.0"
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "rich_kids_of_tao/validator.py"
+      line_ref: "119-120"
+      quote: "elif total_other_scores > 0:\n                weights.append((score / total_other_scores) * remaining_weight)"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "rich_kids_of_tao/validator.py"
+      line_ref: "30-31"
+      quote: "self.burner_uid = 0\n        self.burner_weight = 0.9"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "rich_kids_of_tao/validator.py"
+      line_ref: "108-118"
+      quote: "remaining_weight = 1.0 - self.burner_weight\n...\n            if uid == self.burner_uid:\n                weights.append(self.burner_weight)"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "rich_kids_of_tao/emission_checker.py"
+      line_ref: "166-167"
+      quote: "if np.all(emission_array == 0):\n        return np.ones_like(emission_array) / len(emission_array)"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "rich_kids_of_tao/validator.py"
+      line_ref: "86-92"
+      quote: "result = self.subtensor.set_weights(\n                wallet=self.wallet,\n                netuid=self.config.netuid,\n                uids=uids,\n                weights=weights,\n                wait_for_inclusion=False,\n            )"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "rich_kids_of_tao/validator.py"
+      line_ref: "35"
+      quote: "self.epoch_length = 360"
+      confidence: high
+    - claim_field: "/weight_setting/cadence"
+      source_path: "rich_kids_of_tao/validator.py"
+      line_ref: "195"
+      quote: "should_set = blocks_since_last_update >= self.epoch_length"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "rich_kids_of_tao/validator.py"
+      line_ref: "32"
+      quote: "self.moving_average_alpha = 0.1"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "rich_kids_of_tao/validator.py"
+      line_ref: "64-67"
+      quote: "self.scores = (\n            self.moving_average_alpha * scattered_rewards\n            + (1 - self.moving_average_alpha) * self.scores\n        )"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "rich_kids_of_tao/emission_checker.py"
+      line_ref: "122-127"
+      quote: "if hotkey in processed_hotkeys:\n...\n                miner_emissions[uid] = 0.0\n                all_miner_uids.append(uid)\n                continue"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "rich_kids_of_tao/emission_checker.py"
+      line_ref: "94-100"
+      quote: "def check_uid_availability(metagraph, uid: int, vpermit_tao_limit: int = 1024) -> bool:\n    if metagraph.validator_permit[uid]:\n        if metagraph.S[uid] > vpermit_tao_limit:\n...\n            return False"
+      confidence: high
+    - claim_field: "/per_miner_state/state_kinds"
+      source_path: "rich_kids_of_tao/validator.py"
+      line_ref: "28"
+      quote: "self.scores = np.zeros(self.metagraph.n, dtype=np.float32)"
+      confidence: high
+    - claim_field: "/documentation/primary_docs"
+      source_path: "VOTING_GUIDE.md"
+      line_ref: "1-3"
+      quote: "# Voting System Guide\n\n## Overview"
+      confidence: high
+  unresolved:
+    - "Live mechanism_status (whether validators actually run this code or fully burn) is not verifiable from the repo; inferred partial_burn from the hardcoded burner_weight=0.9."
+    - "subnets_to_check fallback when the API fails resolves to empty dict (no hardcoded list present in source despite a comment referencing one)."

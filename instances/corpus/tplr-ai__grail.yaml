@@ -1,0 +1,310 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  90% of emissions always go to the burn UID (UID 0); the remaining 10% is split
+  among miners proportionally to cap achievement, with any unallocated portion
+  also going to burn. Scoring is active (capped mode is the current default), but
+  a fixed 90% base burn means most emission is burned regardless of miner output.
+
+subnet:
+  name: "GRAIL"
+  owner_repo: "tplr-ai__grail"
+  netuid: null
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners generate GRPO rollouts in a Triton-kernel code-generation environment.
+    Each rollout produces token completions whose hidden states are bound by a
+    cryptographic GRAIL proof. Validators verify a sample of rollouts through a
+    9-stage pipeline and the only metric that drives weight is the number of
+    UNIQUE rollouts (distinct SHA-256 of completion tokens) a miner produces per
+    window. Task correctness / reward is a verification gate, not the scored
+    quantity.
+  submission_format: [signals]
+
+scoring_signals:
+  - name: unique_rollouts
+    metric_kind: volume
+    direction: higher_is_better
+    weight: 1.0
+    normalization: other
+    normalization_other: >-
+      Capped mode (current default): min(unique, period_cap) then normalized
+      against period_cap^exponent. Uncapped mode: divided by sum of all scores.
+    notes: >-
+      A rollout is unique if its completion tokens (after the prompt) have a
+      distinct SHA-256 hash. Counted from a verified sample then extrapolated via
+      estimated_unique = unique_in_sample / sample_rate.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Triton-kernel code-generation environment (CURRENT_ENV_ID = "triton_kernel").
+      Generated code is compiled and executed against reference tests; rewards are
+      deterministic given (completion, context). Validator recomputes the GRAIL
+      proof, logprobs and reward independently and never trusts miner-supplied data.
+    source_identifier: "triton_kernel"
+    trust_model: adversarial
+    notes: >-
+      Reward gate uses sigmoid R = sigmoid(1{correct} + min(speedup, clip) - delta)
+      with SIGMOID_DELTA=1.8, SPEEDUP_CLIP=3.0; compared to miner claim with
+      REWARD_REL_TOL=0.02. This only gates rollout validity, it is not the scored signal.
+
+aggregation:
+  method: proportional
+  composition: gated
+  normalization: other
+  normalization_other: >-
+    Capped mode: cap_relative = score / (period_cap^exponent), then if total>1.0
+    share proportionally capped at 1.0, else miners keep their cap-relative share
+    and the remainder burns. Uncapped mode: score / sum(all_scores).
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: 0.90
+    dynamic: true
+    notes: >-
+      GRAIL_BURN_PERCENTAGE = 90.0 base to GRAIL_BURN_UID = 0. In capped mode the
+      "missing" weight from underproduction also goes to burn rather than being
+      redistributed (effective_miner_fraction = min(remaining, remaining*total_cap_relative)).
+      Burn UID receives 1.0 - sum(miner weights).
+  notes: >-
+    Superlinear scoring: superlinear_score = capped_unique ** SUPERLINEAR_EXPONENT
+    with SUPERLINEAR_EXPONENT = 4.0, amplifying differences and making sybil
+    splitting unprofitable (k identities yield k^(1-4) of reward).
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    Validators process the previous complete window (30 blocks), verify a sample,
+    score miners by unique rollouts over a rolling 12-window history, apply
+    superlinear + cap-proportional scoring and 90% burn, then call set_weights.
+  on_chain_call: set_weights
+  tempo_or_interval: "360 blocks"
+  smoothing:
+    kind: sma
+    alpha: null
+    window: 12
+    notes: >-
+      WEIGHT_ROLLING_WINDOWS = WEIGHT_SUBMISSION_INTERVAL_BLOCKS(360)/WINDOW_LENGTH(30)
+      = 12. Metrics are summed over the rolling 12-window submission interval;
+      weights submitted once per 360-block interval.
+
+anti_gaming:
+  - kind: proof_of_work
+    enforcement: rejection
+    description: >-
+      GRAIL proof: validator picks CHALLENGE_K=32 positions, extracts last-layer
+      hidden activations, selects PROOF_TOPK=16, log-buckets them, computes a random
+      linear sketch mod Mersenne prime PRIME_Q=2147483647 and compares to the miner
+      commitment. Hard check; a single failure rejects the rollout.
+  - kind: deduplication
+    enforcement: rejection
+    description: >-
+      Only unique completions count toward weight; duplicate completions (same
+      SHA-256 of completion tokens) within or across problems give no extra weight.
+  - kind: plagiarism_detection
+    enforcement: elimination
+    description: >-
+      Copycat detection hashes completion tokens across miners. Per-window overlap
+      > COPYCAT_WINDOW_THRESHOLD=0.05 of the smaller miner, or per-interval overlap
+      > COPYCAT_INTERVAL_THRESHOLD=0.03, flags both miners; flagged metrics are
+      zeroed. Any failure in the last 14 windows yields zero weight.
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      9-stage verification pipeline (schema, token, environment prompt, GRAIL proof,
+      termination at MIN_EOS_PROBABILITY=0.02, environment evaluation, reward match,
+      logprob match — all hard; distribution heuristic — soft). Soft failures gate
+      a miner only if > STOCHASTIC_CHECK_FAILURE_THRESHOLD=0.51 of checked rollouts fail.
+  - kind: liveness_check
+    enforcement: elimination
+    description: >-
+      Failure gating: no rollout files in recent windows, any verification/copycat
+      failure in the last FAILURE_LOOKBACK_WINDOWS=14 windows, or never being
+      selected for validation all result in zero weight.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      Superlinear exponent SUPERLINEAR_EXPONENT=4.0 makes sybil splitting
+      unprofitable: splitting into k identities yields k^(1-4) of the total reward.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: >-
+    Single environment (triton_kernel). Two scoring MODES (capped / uncapped) are
+    hardcoded and switched network-wide, not parallel sub-competitions.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [status_enum, cumulative_score]
+  status_values: []
+  reset_policy: >-
+    Failure flag and copycat flag persist over a 14-window lookback
+    (FAILURE_LOOKBACK_WINDOWS); any failure in that window zeroes weight.
+  notes: >-
+    Validator maintains rolling 12-window availability and selection history
+    (deques of maxlen WEIGHT_ROLLING_WINDOWS) plus per-hotkey per-window inference
+    metrics (estimated_unique, had_failure) summed over the interval.
+
+documentation:
+  status: docs_and_code
+  source_version: "v5"
+  primary_docs:
+    - "docs/incentive-mechanism.md"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/task/summary"
+      source_path: "docs/incentive-mechanism.md"
+      line_ref: "11-12"
+      quote: >-
+        The only metric that matters for your weight is **unique rollouts**. A
+        rollout is unique if its completion tokens (the part after the prompt) have
+        a distinct SHA-256 hash.
+    - claim_field: "/scoring_signals/0/name"
+      source_path: "grail/scoring/scorer.py"
+      line_ref: "46-52"
+      quote: >-
+        # Count unique (by hashing completion tokens) ... digest =
+        MinerScorer._compute_rollout_hash(r) ... unique_hashes.add(digest)
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "grail/scoring/scorer.py"
+      line_ref: "54-59"
+      quote: >-
+        # Extrapolate from sample to estimate total ... estimated_unique =
+        int(len(unique_hashes) / sample_rate)
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "grail/protocol/constants.py"
+      line_ref: "193-195"
+      quote: 'CURRENT_ENV_ID = "triton_kernel"'
+    - claim_field: "/ground_truth_sources/0/notes"
+      source_path: "grail/protocol/constants.py"
+      line_ref: "125-133"
+      quote: >-
+        # Sigmoid formulation: R = sigmoid(1{correct} + min(speedup, clip) - delta)
+        ... SIGMOID_DELTA = 1.8 ... SPEEDUP_CLIP = 3.0 ... REWARD_REL_TOL = 0.02
+    - claim_field: "/aggregation/notes"
+      source_path: "grail/protocol/constants.py"
+      line_ref: "138-141"
+      quote: >-
+        # Superlinear weighting exponent for sybil resistance. w_i proportional to
+        s_i^p. Splitting into k identities yields k^(1-p) * s^p < s^p. ...
+        SUPERLINEAR_EXPONENT = 4.0
+    - claim_field: "/aggregation/method"
+      source_path: "grail/scoring/weights.py"
+      line_ref: "117-120"
+      quote: >-
+        # Apply superlinear scoring ... superlinear_score =
+        base_score**self.superlinear_exponent
+    - claim_field: "/aggregation/normalization_other"
+      source_path: "grail/scoring/weights.py"
+      line_ref: "122-140"
+      quote: >-
+        max_score = period_cap**self.superlinear_exponent ; cap_relative = [score /
+        max_score for score in raw_scores] ... else: miners get their cap-relative
+        share, rest burns
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "grail/protocol/constants.py"
+      line_ref: "149-152"
+      quote: >-
+        # Emission burn: percentage burned to UID 0 ... GRAIL_BURN_UID = 0 ;
+        GRAIL_BURN_PERCENTAGE = 90.0
+    - claim_field: "/aggregation/burn_allocation/dynamic"
+      source_path: "grail/scoring/weights.py"
+      line_ref: "196-211"
+      quote: >-
+        effective_miner_fraction = min(remaining_fraction, remaining_fraction *
+        total_cap_relative) ... weights[burn_index] = 1.0 - math.fsum(w for i, w in
+        enumerate(weights) if i != burn_index)
+    - claim_field: "/mechanism_status"
+      source_path: "docs/incentive-mechanism.md"
+      line_ref: "32"
+      quote: >-
+        90% of total emissions always go to the burn UID (UID 0). The remaining 10%
+        is split among miners proportionally to their cap achievement.
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "grail/protocol/constants.py"
+      line_ref: "143-147"
+      quote: >-
+        # Maximum unique rollouts per miner per window ... The effective period cap
+        = this value x rolling_windows. ... UNIQUE_ROLLOUTS_CAP = 5000 ;
+        UNIQUE_ROLLOUTS_CAP_ENABLED = True
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "grail/validation/service.py"
+      line_ref: "866-872"
+      quote: >-
+        await self._subtensor.set_weights( wallet=self._wallet, netuid=self._netuid,
+        uids=list(meta.uids), weights=weights, wait_for_inclusion=False, )
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "grail/validation/service.py"
+      line_ref: "69-70"
+      quote: >-
+        WEIGHT_SUBMISSION_INTERVAL_BLOCKS = 360 ; WEIGHT_ROLLING_WINDOWS =
+        int(WEIGHT_SUBMISSION_INTERVAL_BLOCKS / WINDOW_LENGTH)
+    - claim_field: "/weight_setting/smoothing/window"
+      source_path: "docs/incentive-mechanism.md"
+      line_ref: "9"
+      quote: >-
+        set weights on-chain every 360 blocks (~1 hour, 12 windows).
+    - claim_field: "/weight_setting/cadence"
+      source_path: "docs/incentive-mechanism.md"
+      line_ref: "9"
+      quote: >-
+        Validators process the previous complete window (30 blocks, ~6 minutes) ...
+        and set weights on-chain every 360 blocks
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "grail/protocol/constants.py"
+      line_ref: "21-46"
+      quote: >-
+        PRIME_Q = 2_147_483_647 ... CHALLENGE_K = 32 ... PROOF_TOPK = 16 ...
+        PROOF_NUM_BUCKETS = 8
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "grail/validation/copycat_service.py"
+      line_ref: "51-52"
+      quote: "COPYCAT_WINDOW_THRESHOLD = 0.05 ; COPYCAT_INTERVAL_THRESHOLD = 0.03"
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "grail/protocol/constants.py"
+      line_ref: "115-117"
+      quote: >-
+        # Minimum EOS probability for valid termination. ... MIN_EOS_PROBABILITY = 0.02
+    - claim_field: "/anti_gaming/4/description"
+      source_path: "docs/incentive-mechanism.md"
+      line_ref: "129"
+      quote: >-
+        Any verification failure or copycat flag in the last 14 windows
+        (`FAILURE_LOOKBACK_WINDOWS`).
+    - claim_field: "/anti_gaming/5/description"
+      source_path: "grail/protocol/constants.py"
+      line_ref: "169"
+      quote: "FAILURE_LOOKBACK_WINDOWS = 14"
+    - claim_field: "/per_miner_state/notes"
+      source_path: "grail/validation/service.py"
+      line_ref: "145-146"
+      quote: >-
+        self._selection_history: deque[set[str]] = deque(maxlen=WEIGHT_ROLLING_WINDOWS)
+        ; self._availability_history: deque[set[str]] = deque(maxlen=WEIGHT_ROLLING_WINDOWS)
+    - claim_field: "/documentation/source_version"
+      source_path: "grail/protocol/constants.py"
+      line_ref: "15"
+      quote: 'GRAIL_PROOF_VERSION = "v5"'
+  unresolved:
+    - "subnet.netuid: not found in source (netuid passed in via runtime config)."
+    - >-
+      Uncapped scoring mode exists (score = unique^exponent / sum(all_scores)) but
+      capped mode is the hardcoded current default; the active toggle value at
+      deploy time is UNIQUE_ROLLOUTS_CAP_ENABLED = True.
+    - >-
+      STOCHASTIC_CHECK_FAILURE_THRESHOLD=0.51 cited in docs/constants reference but
+      its constant definition site was not opened; treated as documentation value.

@@ -1,0 +1,329 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  King-of-the-hill duel tournament is live and active. Validator weight is
+  distributed across a rolling window of the last 5 kings (1/5 each). Empty
+  bootstrap slots or slots pointing at a deregistered hotkey roll their share
+  to burn UID 0, so emissions are partially burned only until/unless the
+  window fills with live registered kings. This is a fallback burn, not a
+  dormant documented mechanism, hence status active.
+
+subnet:
+  name: "tau (unarbos)"
+  owner_repo: "unarbos__tau"
+  netuid: 66
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners submit an editable single-file SWE agent (agent.py defining
+    solve(repo_path, issue, model, api_base, api_key)) via a PR to the public
+    unarbos/ninja harness, committed on-chain as a github-pr commitment. The
+    validator runs a king-of-the-hill duel: the challenger agent and the
+    reigning king agent each solve the same mined GitHub-commit repair tasks
+    inside Docker. Each round is scored as a blend of changed-line similarity
+    to a Cursor baseline solution plus an LLM diff judgment. The challenger
+    that wins more decisive rounds than the king (and then wins a separate
+    retest pool) is promoted to king and receives validator weight.
+  submission_format: [source_code, commitment_hash]
+
+scoring_signals:
+  - name: cursor_baseline_similarity
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 0.5
+    normalization: none
+    notes: >-
+      Per-round changed-lines-only similarity (difflib SequenceMatcher) of the
+      agent's patch to the saved Cursor baseline solution. Cursor is only the
+      measuring stick. Contributes cursor_weight = 1.0 - _DIFF_JUDGE_WEIGHT =
+      0.5 to the combined round score.
+  - name: llm_diff_judgment
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: 0.5
+    normalization: none
+    notes: >-
+      Per-round LLM diff judge using openai/gpt-5.4 via OpenRouter at
+      temperature 0, medium reasoning effort, 16000-token output cap. Scores
+      king and challenger patches against the task/reference context. Neutral
+      fallback score 0.5 when unavailable. _DIFF_JUDGE_WEIGHT = 0.5.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Each task is mined from a real GitHub commit: task/original is the repo
+      before the commit, task/reference is the repo after, task/reference.patch
+      filters out tiny tasks. Solutions are scored against the Cursor baseline.
+    source_identifier: "mined GitHub commits; solutions/baseline (Cursor)"
+    trust_model: trusted
+    notes: >-
+      Cursor baseline solution (solutions/baseline) is the per-round scoring
+      target for the similarity signal.
+  - kind: llm_judgment
+    description: >-
+      LLM diff judge reviewing king vs challenger patches against the
+      task/reference context.
+    source_identifier: "openai/gpt-5.4 via OpenRouter"
+    trust_model: oracle
+    notes: "temperature 0, medium reasoning, 16000-token cap."
+
+aggregation:
+  method: tournament_bracket
+  composition: tournament
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "uid-0"
+    fraction: null
+    dynamic: true
+    notes: >-
+      Burn UID is _BURN_KING_UID = 0. Weight is split into `window` slots of
+      1/window each (window = validate_king_window_size = 5, slot = 1/5).
+      Each slot maps to one of the last N kings; empty (bootstrap) slots or
+      slots whose king hotkey is deregistered/not in neurons add their slot
+      share to the burn UID. Burn fraction is therefore a dynamic residual of
+      unfilled slots, not a fixed constant.
+  notes: >-
+    Winner-take-window distribution. Within a duel, the challenger wins iff
+    wins > losses + margin (margin = validate_win_margin = 0); ties ignored.
+    Per-round combined score = 0.5*cursor_similarity + 0.5*llm_score; round
+    winner is whichever of king/challenger has the higher combined score.
+    Promotion additionally requires winning a separate retest pool. On
+    promotion the new king is prepended to the rolling recent_kings window
+    (capped at window length).
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    _maybe_set_weights distributes weight across the last N kings (rolling
+    window). slot = 1.0/window per king; the same hotkey can hold multiple
+    slots if it reclaimed the throne (shares accumulate). Unfilled or
+    deregistered slots roll to burn UID 0. Skips if current_block -
+    last_weight_block < validate_weight_interval_blocks unless forced.
+  on_chain_call: set_weights
+  tempo_or_interval: "360 blocks"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA/SMA smoothing of the final reward in the validator. Temporal
+      smoothing instead comes from the rolling king window (last 5 kings),
+      not an exponential average.
+
+anti_gaming:
+  - kind: plagiarism_detection
+    enforcement: rejection
+    description: >-
+      Copy detection: a duel is rejected when mean king-vs-challenger patch
+      similarity >= _COPY_MEAN_SIMILARITY_THRESHOLD = 0.90, or when at least
+      _COPY_NEAR_EXACT_MIN_ROUNDS = 3 rounds have similarity >=
+      _COPY_NEAR_EXACT_SIMILARITY_THRESHOLD = 0.98.
+  - kind: challenge_period
+    enforcement: barrier
+    description: >-
+      Promotion requires winning the primary 50-task duel pool AND a separate
+      50-task retest pool before the king changes (confirmation retest).
+  - kind: code_inspection
+    enforcement: rejection
+    description: >-
+      Miner PRs to unarbos/ninja must pass required CI checks 'PR Scope Guard'
+      (rejects edits outside agent.py, breaking the solve contract, or
+      forbidden provider/sampling control) and 'OpenRouter PR Judge' (gpt-5.4
+      review requiring a score above JUDGE_MIN_SCORE) before being queued.
+  - kind: rate_limit
+    enforcement: barrier
+    description: >-
+      A hotkey may submit only once per registration period: any prior on-chain
+      commitment at or after the hotkey-spent cutoff block (default 8,104,340,
+      VALIDATE_HOTKEY_SPENT_SINCE_BLOCK) spends the current registration; a
+      hotkey must be freshly registered to resubmit.
+  - kind: stake_weighting
+    enforcement: rejection
+    description: >-
+      Commitment must come from a registered subnet hotkey; PR title must start
+      with the exact committing hotkey, base must be unarbos/ninja:main, PR
+      open and not draft, and committed SHA must match the current PR head.
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Managed inference proxy forwards solver calls to OpenRouter and enforces
+      the validator-selected model, temperature=0.0, top_p=1.0, strips
+      miner-controlled sampling fields (top_k, seed, penalties, logit_bias,
+      logprobs) and enforces request/token/cost budgets. Solver Docker
+      containers run with network disabled, resource limits, and reach the
+      proxy via a local socket bridge.
+
+sub_competitions:
+  structure: tournament
+  stages:
+    - name: primary_duel
+      role: main
+      advancement_rule: >-
+        Challenger vs king over validate_duel_rounds (50) tasks from the
+        primary pool; challenger advances iff wins > losses + win_margin (0).
+    - name: confirmation_retest
+      role: final
+      advancement_rule: >-
+        Challenger must also win a separate 50-task retest pool to be promoted
+        to king; otherwise the king is retained.
+  count: 2
+  notes: >-
+    King-of-the-hill: continuously draining queued PR candidates in queue
+    order; each duel runs up to 25 round workers, challenger timeout 600s, and
+    5 consecutive round timeouts abandon the challenger.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [status_enum, registration_age]
+  status_values: [king, challenger, burn]
+  reset_policy: >-
+    On promotion, _record_king_transition sets current_king and prepends to
+    recent_kings (capped at window=5, burn excluded). On king change the task
+    pool is flushed and the winning PR is auto-merged into unarbos/ninja main.
+    A hotkey's submission eligibility resets only on fresh registration.
+  notes: >-
+    recent_kings is a rolling window of the last 5 kings used to distribute
+    weight; the same hotkey may appear multiple times if it reclaims the
+    throne. Burn king (uid 0, hotkey 'burn-uid-0') is the fallback occupant of
+    unfilled/deregistered slots.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs: ["README.md"]
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "src/config.py"
+      line_ref: "141"
+      quote: "validate_netuid: int = 66"
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "src/validate.py"
+      line_ref: "1-1"
+      quote: "Python implementation; 34 code files, src/validate.py is 8653 lines of Python."
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "123-141"
+      quote: "The live validator can score miner edits from the public `unarbos/ninja` harness repo... They open a PR against `unarbos/ninja`, then commit the PR head on-chain. Miner commitment format: github-pr:unarbos/ninja#<pr-number>@<head-sha>"
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "32-39"
+      quote: "`agent.py` must define: def solve(repo_path: str, issue: str, model: str, api_base: str, api_key: str) -> dict:"
+      confidence: high
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "src/validate.py"
+      line_ref: "1217-1219"
+      quote: "def _combined_round_score(cursor_similarity: float, llm_score: float) -> float:\n    cursor_weight = 1.0 - _DIFF_JUDGE_WEIGHT\n    return cursor_weight * _clamp01(cursor_similarity) + _DIFF_JUDGE_WEIGHT * _clamp01(llm_score)"
+      confidence: high
+    - claim_field: "/scoring_signals/0/normalization"
+      source_path: "src/compare.py"
+      line_ref: "7"
+      quote: "from difflib import SequenceMatcher"
+      confidence: high
+    - claim_field: "/scoring_signals/1/weight"
+      source_path: "src/validate.py"
+      line_ref: "94-95"
+      quote: "_DIFF_JUDGE_MODEL = \"openai/gpt-5.4\"\n_DIFF_JUDGE_WEIGHT = 0.5"
+      confidence: high
+    - claim_field: "/scoring_signals/1/metric_kind"
+      source_path: "README.md"
+      line_ref: "270"
+      quote: "Round score is now blended: 1/2 Cursor-baseline similarity plus 1/2 LLM diff judgment. The diff judge uses `openai/gpt-5.4` through OpenRouter at temperature 0 with medium reasoning effort and a 16000-token output cap"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "README.md"
+      line_ref: "266-268"
+      quote: "Each validation task still starts from a mined GitHub commit: `task/original` is the repo before the commit, `task/reference` is the repo after it... the scoring target is the Cursor baseline solution, saved as `solutions/baseline`."
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "README.md"
+      line_ref: "192-199"
+      quote: "The validator keeps two independent 50-task pools: a primary pool for the first challenger-vs-king duel, and a retest pool used only when the challenger wins the primary duel. Promotion requires the challenger to also win the retest"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/enabled"
+      source_path: "src/validate.py"
+      line_ref: "7978-7984"
+      quote: "else:\n            burn_share += slot\n    if burn_share > 0:\n        if _BURN_KING_UID not in uid_set:\n            log.error(\"Burn UID %s not in neurons; skipping set_weights\", _BURN_KING_UID)\n            return\n        weights_by_uid[_BURN_KING_UID] += burn_share"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "src/validate.py"
+      line_ref: "90"
+      quote: "_BURN_KING_UID = 0"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/dynamic"
+      source_path: "src/validate.py"
+      line_ref: "7953-7979"
+      quote: "window = max(1, int(config.validate_king_window_size))\n    slot = 1.0 / window\n    ... if uid is not None and uid in uid_set:\n            weights_by_uid[uid] += slot\n        else:\n            burn_share += slot"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "src/validate.py"
+      line_ref: "274-280"
+      quote: "def _challenger_wins(wins: int, losses: int, margin: int) -> bool:\n    ... With the default margin of zero, the challenger only needs more decisive round wins than the king.\n    return wins > losses + margin"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "src/validate.py"
+      line_ref: "7933-7954"
+      quote: "def _maybe_set_weights(...):\n    \"\"\"Distribute weights across the last N kings (rolling window).\n    Each window slot is worth 1/N of total emissions. Slots that are empty (bootstrap) or point at a deregistered hotkey roll their share to the burn UID."
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "src/validate.py"
+      line_ref: "7991-7993"
+      quote: "resp = subtensor.extrinsics.set_weights(\n            wallet=wallet, netuid=config.validate_netuid, uids=uids, weights=weights,\n            wait_for_inclusion=True, wait_for_finalization=False,\n        )"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "src/config.py"
+      line_ref: "156"
+      quote: "validate_weight_interval_blocks: int = 360"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "src/validate.py"
+      line_ref: "111-114"
+      quote: "_COPY_MEAN_SIMILARITY_THRESHOLD = 0.90\n_COPY_NEAR_EXACT_SIMILARITY_THRESHOLD = 0.98\n_COPY_NEAR_EXACT_MIN_ROUNDS = 3"
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "README.md"
+      line_ref: "181-187"
+      quote: "PRs are checked against required CI checks: `PR Scope Guard` `OpenRouter PR Judge` ... `OpenRouter PR Judge` reviews the diff with `openai/gpt-5.4` through OpenRouter and requires a score above `JUDGE_MIN_SCORE`."
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "README.md"
+      line_ref: "158-162"
+      quote: "the hotkey has not committed since the later of the configured hotkey-spent cutoff or its current registration block ... any prior on-chain commitment at or after block `8,104,340` spends the current registration period"
+      confidence: high
+    - claim_field: "/anti_gaming/5/description"
+      source_path: "README.md"
+      line_ref: "280-288"
+      quote: "The proxy forwards to OpenRouter and enforces: the validator-selected model ... `temperature=0.0` `top_p=1.0` removal of miner-controlled sampling fields such as `top_k`, `seed`, penalties, `logit_bias`, and `logprobs` request, token, and cost budgets"
+      confidence: high
+    - claim_field: "/sub_competitions/stages/0/advancement_rule"
+      source_path: "src/config.py"
+      line_ref: "144-145"
+      quote: "validate_duel_rounds: int = 50\n    validate_win_margin: int = 0"
+      confidence: high
+    - claim_field: "/per_miner_state/state_kinds"
+      source_path: "src/validate.py"
+      line_ref: "1154-1172"
+      quote: "def _record_king_transition(...): ... state.current_king = new_king ... state.recent_kings.insert(0, new_king)\n    if window > 0:\n        del state.recent_kings[window:]"
+      confidence: high
+    - claim_field: "/per_miner_state/notes"
+      source_path: "src/config.py"
+      line_ref: "157"
+      quote: "validate_king_window_size: int = 5"
+      confidence: high
+  unresolved:
+    - "JUDGE_MIN_SCORE numeric threshold for the OpenRouter PR Judge is enforced in the external unarbos/ninja CI, not present in this repo; left unquantified."
+    - "Exact retest/promotion win-count logic beyond 'win the retest' is described in README; the specific retest duel comparison code path was not exhaustively read."

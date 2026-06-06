@@ -1,0 +1,256 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Validator computes a real per-miner final_score (quality 0.65 + speed 0.35) and sets
+  on-chain weights as final_score ** (3 * ALPHA_SCORING_MULTIPLICATOR), normalized to sum
+  to 1. No burn / zeroing logic was found in set_weights.py; if all scores are zero the
+  validator distributes weight evenly across nodes.
+
+subnet:
+  name: "Score Vision (SN44 / GSR)"
+  owner_repo: "score-technologies__score-vision"
+  netuid: 44
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners perform Game State Recognition on football video: per-frame object detection and
+    tracking (players, goalkeepers, referees, ball) plus pitch keypoint detection. Validators
+    download a challenge video, select frames, and score the miner's returned detections/
+    keypoints. Reward combines a quality score (CLIP-based bbox confidence + homography/keypoint
+    consistency) with a processing-time-based speed score.
+  submission_format: [signals]
+
+scoring_signals:
+  - name: bbox_score
+    metric_kind: vlm_judgment
+    direction: higher_is_better
+    weight: 0.5
+    normalization: none
+    notes: >-
+      Average CLIP-based bounding-box confidence score over selected frames
+      (evaluate_bboxes / evaluate_frame in bbox_clip.py). Forms half of quality_score.
+      Also acts as a gate: bbox_score <= 0.2 forces speed_score to 0.
+  - name: keypoints_final_score
+    metric_kind: composite
+    direction: higher_is_better
+    weight: 0.5
+    normalization: none
+    notes: >-
+      Keypoint/homography quality score (calculate_final_score_keypoints), divided by 100.
+      Weighted blend of keypoint_score 0.25, mean_on_line 0.4, mean_inside 0.2,
+      keypoint_stability 0.05, player_final_score 0.1, then multiplied by
+      kpts_stability_weighted_avg and (mean_scale+scale_valid)/2. Returns 0 if mean_on_line<=0.2.
+      Forms half of quality_score.
+  - name: speed_score
+    metric_kind: latency
+    direction: higher_is_better
+    weight: 0.35
+    normalization: min_max
+    notes: >-
+      Exponential decay of normalized processing_time: exp(-5 * normalized_time) where
+      normalized_time = (processing_time - min_time)/(MAX_PROCESSING_TIME - min_time).
+      Zeroed if bbox_score<=0.2 or processing_time>=MAX_PROCESSING_TIME (15.0s).
+
+ground_truth_sources:
+  - kind: reference_model
+    description: >-
+      CLIP (openai/clip-vit-base-patch32) used for semantic verification of bounding-box class
+      labels, plus geometric/homography consistency checks (RANSAC homography to a fixed
+      SoccerPitchConfiguration) for keypoints. No external labeled ground-truth dataset; quality
+      is assessed via model + geometric plausibility checks.
+    source_identifier: "openai/clip-vit-base-patch32"
+    trust_model: oracle
+    notes: >-
+      Keypoint scoring is reference-free (self-consistency: reprojection error, stability,
+      on-line/inside fractions). bbox scoring uses CLIP as the judge model.
+
+aggregation:
+  method: proportional
+  composition: hybrid
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: >-
+      No burn found. If total weight is 0 (no positive scores), weights are distributed evenly
+      across all nodes rather than burned.
+  notes: >-
+    quality_score = bbox_score*0.5 + keypoints_final_score*0.5;
+    final_score = quality_score*0.65 + speed_score*0.35. On-chain weight per node =
+    final_score ** (3 * ALPHA_SCORING_MULTIPLICATOR) with ALPHA_SCORING_MULTIPLICATOR=4
+    (exponent 12), then normalized so weights sum to 1.0. Composition is hybrid: quality
+    signals are additive among themselves but speed gating/zeroing is multiplicative/gated.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    set_weights() reads per-miner final_score from the DB (last 24h), raises each to the
+    power (3*ALPHA_SCORING_MULTIPLICATOR), normalizes to sum 1.0, and calls
+    fiber weights.set_node_weights on chain with wait_for_inclusion/finalization.
+  on_chain_call: set_weights
+  tempo_or_interval: "WEIGHTS_INTERVAL = 30 minutes"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA/SMA smoothing of the final reward in code. Scores are pulled from the DB over the
+      last 24 hours; raising to a high power (exponent 12) sharpens the distribution toward top
+      miners.
+
+anti_gaming:
+  - kind: liveness_check
+    enforcement: rejection
+    description: >-
+      Validators select random frames (select_random_frames) from a downloaded challenge video
+      to validate against, and enforce MAX_PROCESSING_TIME (15.0s); responses with bbox_score<=0.2
+      or processing_time>=MAX_PROCESSING_TIME get speed_score 0.
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      Geometric plausibility / self-consistency checks penalize implausible outputs: RANSAC
+      homography requiring >=4 valid keypoints, player movement plausibility (max_speed_pixels),
+      scene-transition detection, keypoint stability, and scoreboard-zone / min-size bbox filtering.
+      keypoints_final_score returns 0 when mean_on_line<=0.2.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: true
+  state_kinds: [performance_ledger, cumulative_score]
+  status_values: []
+  reset_policy: >-
+    set_weights uses get_miner_scores_with_node_id over the last 24 hours of stored task scores;
+    miners with no scores default to final_score 0.0.
+  notes: >-
+    Per-response scores (quality_score, speed_score, final_score, processing_time) are stored in
+    the validator DB and aggregated per node for weight setting.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "validator/README.md"
+    - "miner/README.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "92"
+      quote: "mainnet deploy on netuid 44 week commencing 13 January"
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "validator/config.py"
+      line_ref: "1-5"
+      quote: "import os / from datetime import timedelta / from pathlib import Path / from dotenv import load_dotenv"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "34-36"
+      quote: >-
+        Each frame undergoes processing for object detection and tracking ... validators verify
+        miners' outputs through filtered frame selection and hybrid scoring. Keypoints are assessed
+        globally for stability and plausibility, while object detections undergo semantic verification
+      confidence: high
+    - claim_field: "/scoring_signals/0/name"
+      source_path: "validator/evaluation/calculate_score.py"
+      line_ref: "50-57"
+      quote: "bbox_score = result['validation_result'].score ... quality_score= (bbox_score*0.5) + (keypoints_final_score*0.5)"
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "validator/evaluation/keypoint_scoring.py"
+      line_ref: "968-998"
+      quote: >-
+        weights = { 'keypoint_score': 0.25, 'mean_on_line': 0.4, 'keypoint_stability': 0.05,
+        'player_final_score': 0.1, 'mean_inside': 0.2 }
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "validator/evaluation/evaluation.py"
+      line_ref: "225"
+      quote: "keypoints_final_score = scoring_result.get(\"final_score\", 0.0)/100"
+      confidence: high
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "validator/evaluation/calculate_score.py"
+      line_ref: "60-63"
+      quote: "if bbox_score <= 0.2 or processing_time >= MAX_PROCESSING_TIME: speed_score = 0.0 else: speed_score = calculate_speed_score(processing_time, min_time, max_time)"
+      confidence: high
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "validator/evaluation/calculate_score.py"
+      line_ref: "128-132"
+      quote: "normalized_time = (processing_time - min_time) / (MAX_PROCESSING_TIME - min_time) ... exp_score = math.exp(-5 * normalized_time)"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "validator/evaluation/calculate_score.py"
+      line_ref: "66-70"
+      quote: "final_score = ( quality_score * 0.65 + speed_score * 0.35 )"
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "validator/evaluation/set_weights.py"
+      line_ref: "92-100"
+      quote: "adjusted_score = final_score ** (3 * ALPHA_SCORING_MULTIPLICATOR) ... node_weights = [w / total_weight for w in node_weights]"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "validator/evaluation/set_weights.py"
+      line_ref: "101-103"
+      quote: "# If no scores, distribute evenly / node_weights = [1.0 / len(nodes) for _ in nodes]"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "validator/evaluation/set_weights.py"
+      line_ref: "35-46"
+      quote: "weights.set_node_weights, substrate, keypair, node_ids, node_weights, NETUID, validator_node_id, version_key, True, # wait_for_inclusion True, # wait_for_finalization"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "validator/config.py"
+      line_ref: "46"
+      quote: "WEIGHTS_INTERVAL = timedelta(minutes=30)"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "validator/config.py"
+      line_ref: "29"
+      quote: "ALPHA_SCORING_MULTIPLICATOR = 4"
+      confidence: high
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "validator/config.py"
+      line_ref: "31"
+      quote: "MAX_PROCESSING_TIME = 15.0"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "validator/evaluation/bbox_clip.py"
+      line_ref: "26-27"
+      quote: "clip_model = CLIPModel.from_pretrained(\"openai/clip-vit-base-patch32\").to(\"cpu\")"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "validator/evaluation/keypoint_scoring.py"
+      line_ref: "964-965"
+      quote: "if round(mean_on_line, 2) <= 0.2: return 0.0"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "validator/evaluation/set_weights.py"
+      line_ref: "76-91"
+      quote: "miner_scores = db_manager.get_miner_scores_with_node_id() ... final_score=score_data['final_score']"
+      confidence: high
+  unresolved:
+    - "Documented GS-HOTA metric (README) is not used in the code scoring path; actual reward uses CLIP bbox + homography keypoint scores."
+    - "Whether the live mainnet validator burns or zeroes emissions could not be confirmed from source; no burn logic present in set_weights.py."
+    - "Exact mapping of validator-stored scores to the 24h aggregation window (get_miner_scores_with_node_id implementation in db/operations not read)."
+  extractor_notes: >-
+    Code is authoritative for scoring. README describes a GS-HOTA metric and a more elaborate
+    miner/validator reward split than the implemented per-miner final_score path. Weight sharpening
+    via exponent 12 (3*ALPHA_SCORING_MULTIPLICATOR) is the dominant winner-favoring mechanism.

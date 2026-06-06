@@ -1,0 +1,342 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  The live validator hardcodes a fixed weight budget that sends 60% of emission to
+  the burn UID (burn_pct = .6) and only 20% to generator miners plus 20% to a video
+  escrow hotkey; image and audio escrow allocations are set to 0.0. Discriminator
+  rewards (get_discriminator_rewards / sn34_score) are documented but are NOT computed
+  in the validator's update_scores path — only generator base_reward * fool-multiplier
+  scores flow on-chain, with discriminator emission delivered to escrow hotkeys rather
+  than per-UID scoring. Hence partial_burn with a largely dormant discriminator scoring path.
+
+subnet:
+  name: "GAS — Generative Adversarial Subnet (BitMind)"
+  owner_repo: "BitMind-AI__bitmind-subnet"
+  netuid: 34
+  implementation_lang: python
+
+task:
+  summary: >-
+    Two parallel tracks. Discriminative miners submit AI-generated-content detection
+    models (image, video, audio), evaluated on cloud infrastructure. Generative miners
+    run a server that produces synthetic media on demand; they are rewarded by a base
+    reward for content that passes validator verification checks, multiplied by an
+    adversarial "fool rate" multiplier reflecting how often their content fools
+    discriminators in benchmark runs.
+  submission_format: [model_weights, compute_service, content_link]
+
+scoring_signals:
+  - name: generator_pass_rate
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      pass_rate from verification stats; base reward = pass_rate * volume taper
+      (min(verified,10) + log2 of overflow). Combined multiplicatively with the fool
+      multiplier, so no additive weight.
+  - name: generator_fool_rate
+    metric_kind: win_rate
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      fool_rate = total_fooled / (total_fooled + total_not_fooled), scaled by a
+      log sample-size multiplier (capped at 2.0) and clamped to [0, 2.0]. Multiplies
+      the generator base reward.
+  - name: generator_model_tier_multiplier
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      sqrt(model_price / baseline_price) averaged over a miner's verified submissions;
+      rewards use of higher-cost generation models. Multiplies the base reward.
+  - name: discriminator_binary_mcc
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.75
+    normalization: none
+    notes: >-
+      binary_score_weight default 0.75 (config scoring.binary-weight). Part of
+      get_discriminator_rewards, which is NOT invoked in the live update_scores path.
+  - name: discriminator_multiclass_mcc
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.25
+    normalization: none
+    notes: >-
+      multiclass_score_weight default 0.25 (config scoring.multiclass-weight). Part of
+      get_discriminator_rewards, not invoked in the live weight-setting path.
+  - name: sn34_score
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Documented discriminator metric: geometric mean of normalized MCC and normalized
+      Brier score, sqrt(MCC_norm * Brier_norm) with alpha=1.2, beta=1.8. Described only
+      in docs/Incentive.md; not present in the repo's reward code (computed in external
+      cloud benchmark / gasbench).
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Benchmark datasets per modality (image/video/audio) mixing real, synthetic and
+      semi-synthetic content, including public gasbench datasets plus non-public holdout
+      datasets refreshed each round.
+    source_identifier: "gasbench image/video/audio_datasets.yaml + holdout datasets"
+    trust_model: trusted
+    notes: "Datasets refresh weekly; holdout data mitigates overfitting."
+  - kind: real_engagement
+    description: >-
+      Adversarial fool counts: whether generator-submitted content fooled discriminator
+      models in benchmark runs (fooled_count / not_fooled_count from the benchmark API).
+    source_identifier: "benchmark API (https://gas.bitmind.ai), get_benchmark_results"
+    trust_model: adversarial
+    notes: ""
+
+aggregation:
+  method: weighted_average
+  composition: multiplicative
+  normalization: l1
+  normalization_other: ""
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "5HjBSeeoz52CLfvDWDkzupqrYLHz1oToDPHjdmJjc4TF68LQ"
+    fraction: 0.6
+    dynamic: false
+    notes: >-
+      Hardcoded burn_pct = .6 in validator.set_weights. Remaining budget: video_pct=.2,
+      image_pct=.0, audio_pct=.0, generator_pct=.2. Video/image/audio allocations go to
+      fixed escrow hotkeys; only the generator_pct portion is distributed per-UID by L1
+      normalization of EMA scores.
+  notes: >-
+    Generator reward = base_reward * fool_multiplier. Per-UID scores are L1-normalized
+    (np.linalg.norm ord=1) over active generator UIDs then scaled by generator_pct (.2).
+    Burn and escrow UIDs receive fixed fractions.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    on_block_interval(epoch_length): update_scores() computes EMA of generator rewards,
+    then set_weights builds a fixed budget (burn .6 / video .2 / image .0 / audio .0 /
+    generator .2), L1-normalizes generator scores, assigns escrow/burn UIDs their fixed
+    fractions, and calls subtensor.set_weights.
+  on_chain_call: set_weights
+  tempo_or_interval: 360
+  smoothing:
+    kind: ema
+    alpha: 0.5
+    window: null
+    notes: >-
+      update_scores: self.scores = alpha * reward_arr + (1 - alpha) * self.scores with
+      alpha = 0.5 (hardcoded). Config also exposes scoring.moving-average-alpha default
+      0.05, but that value is not used in this generator-scoring EMA path. epoch_length
+      default 360 (12s blocks).
+
+anti_gaming:
+  - kind: liveness_check
+    enforcement: penalty
+    enforcement_other: ""
+    description: >-
+      Generators not seen within max_inactive_hours (24h) are filtered to 0 reward, and
+      update_scores hard-zeroes EMA scores for hotkeys not in the liveness set.
+  - kind: deduplication
+    enforcement: rejection
+    enforcement_other: ""
+    description: >-
+      Duplicate detection on generated media: CLIP embedding cosine-similarity threshold
+      0.96 and global perceptual-hash Hamming threshold 4 (verification.* config).
+  - kind: deterministic_check
+    enforcement: rejection
+    enforcement_other: ""
+    description: >-
+      Temporal tampering check on videos: perceptual-hash frame-jump Hamming threshold 30,
+      flag tampered when fraction of jump frames exceeds 0.10.
+  - kind: rate_limit
+    enforcement: penalty
+    enforcement_other: ""
+    description: >-
+      Volume taper on base reward: first 10 verified samples count linearly, beyond 10
+      log2 takes over so high-throughput miners cannot farm volume indefinitely.
+
+sub_competitions:
+  structure: multi_mechanism
+  stages:
+    - name: discriminative_mining
+      role: main
+      advancement_rule: >-
+        Winner-take-all per modality per round: highest sn34_score discriminator per
+        modality (image/video/audio) wins the round's alpha reward (per docs/Incentive.md).
+      multipliers: {}
+    - name: generative_mining
+      role: main
+      advancement_rule: >-
+        Continuous per-epoch scoring: base reward (pass rate x volume x model tier) times
+        fool-rate multiplier.
+      multipliers: {}
+  count: 2
+  notes: >-
+    Two parallel tracks (discriminative + generative) across three modalities
+    (image/video/audio). Discriminator track is documented as per-round winner-take-all
+    but its scoring is not exercised in the validator's on-chain weight path.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, other]
+  status_values: []
+  reset_policy: >-
+    EMA score persisted to scores.npy across restarts; hard-reset to 0 when a generator
+    hotkey falls outside the 24h liveness window.
+  notes: >-
+    self.scores numpy vector, EMA-updated, saved/loaded with one backup. The 'other'
+    state kind is the 24h liveness window that gates whether a generator's EMA score is
+    retained or hard-zeroed.
+
+documentation:
+  status: docs_and_code
+  source_version: "SN34 (mainnet netuid 34)"
+  primary_docs:
+    - "README.md"
+    - "docs/Incentive.md"
+    - "docs/Validating.md"
+  completeness: medium
+
+provenance:
+  confidence_overall: medium
+  extracted_by: "im-extract / Claude Opus 4.8"
+  extractor_notes: >-
+    Live on-chain weight path (validator.set_weights + update_scores) only scores
+    generators; discriminator rewards (get_discriminator_rewards, sn34_score) are
+    documented and present in rewards.py but not wired into update_scores, and
+    discriminator emission is delivered to fixed escrow hotkeys. 60% burn is hardcoded.
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "gas/config.py"
+      line_ref: "5"
+      quote: "MAINNET_UID = 34"
+      confidence: high
+    - claim_field: "/subnet/name"
+      source_path: "README.md"
+      line_ref: "4-5"
+      quote: "GAS<br><small>Generative Adversarial Subnet</small> ... Bittensor SN34"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "31-35"
+      quote: >-
+        Discriminative Mining | Submit AI-generated content detection models ...
+        Generative Mining | Run a server that generates synthetic media on demand |
+        Base reward for valid content × multiplier for fooling discriminators
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "gas/evaluation/rewards.py"
+      line_ref: "246-247"
+      quote: "volume = min(verified_count, 10) + max(0.0, math.log2(max(1, verified_count - 9)))\n            base_reward = pass_rate * volume"
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "gas/evaluation/rewards.py"
+      line_ref: "356-372"
+      quote: "fool_rate = total_fooled / total_count ... base_reward = fool_rate * sample_size_multiplier\n                    rewards[uid] = max(0, min(2.0, base_reward))"
+      confidence: high
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "gas/evaluation/rewards.py"
+      line_ref: "118-121"
+      quote: "total += math.sqrt(price / _GENERATOR_BASELINE_PRICE)\n    return total / len(model_names)"
+      confidence: high
+    - claim_field: "/scoring_signals/3/weight"
+      source_path: "gas/config.py"
+      line_ref: "356-360"
+      quote: "--scoring.binary-weight ... default=0.75"
+      confidence: high
+    - claim_field: "/scoring_signals/4/weight"
+      source_path: "gas/config.py"
+      line_ref: "363-368"
+      quote: "--scoring.multiclass-weight ... default=0.25"
+      confidence: high
+    - claim_field: "/scoring_signals/5/notes"
+      source_path: "docs/Incentive.md"
+      line_ref: "121-129"
+      quote: "sn34_{score} = \\sqrt{MCC_{norm} \\cdot Brier_{norm}} ... With default parameters \\alpha = 1.2 and \\beta = 1.8"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "neurons/validator/validator.py"
+      line_ref: "207-211"
+      quote: "burn_pct      = .6\n                video_pct     = .2\n                image_pct     = .0\n                audio_pct     = .0\n                generator_pct = .2"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "neurons/validator/validator.py"
+      line_ref: "46-47"
+      quote: "\"burn\": \"5HjBSeeoz52CLfvDWDkzupqrYLHz1oToDPHjdmJjc4TF68LQ\""
+      confidence: high
+    - claim_field: "/aggregation/normalization"
+      source_path: "neurons/validator/validator.py"
+      line_ref: "240"
+      quote: "norm[active_uids] = np.linalg.norm(self.scores[active_uids], ord=1)"
+      confidence: high
+    - claim_field: "/aggregation/composition"
+      source_path: "neurons/validator/validator.py"
+      line_ref: "312-316"
+      quote: "rewards = {\n            uid: generator_base_rewards.get(uid, 0)\n            * reward_multipliers.get(uid, DEFAULT_FOOL_RATE_FALLBACK)"
+      confidence: high
+    - claim_field: "/weight_setting/cadence"
+      source_path: "neurons/validator/validator.py"
+      line_ref: "175-176"
+      quote: "@on_block_interval(\"epoch_length\")\n    async def set_weights(self, block):"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "gas/config.py"
+      line_ref: "47-52"
+      quote: "--epoch-length ... how often we set weights, measured in 12 second blocks ... default=360"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "gas/utils/metagraph.py"
+      line_ref: "58-67"
+      quote: "result, message = subtensor.set_weights(\n                wallet=wallet,\n                netuid=netuid,\n                uids=processed_weight_uids,"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "neurons/validator/validator.py"
+      line_ref: "337-338"
+      quote: "alpha = 0.5\n        self.scores = alpha * reward_arr + (1 - alpha) * self.scores"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "neurons/validator/validator.py"
+      line_ref: "292-294"
+      quote: "max_inactive_hours = 24  # Hours of inactivity before generator rewards are zeroed"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "gas/config.py"
+      line_ref: "454-466"
+      quote: "--verification.embedding-dup-threshold ... default=0.96 ... --verification.global-dup-hamming-threshold ... default=4"
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "gas/config.py"
+      line_ref: "440-452"
+      quote: "--verification.temporal-phash-jump-threshold ... default=30 ... --verification.temporal-tamper-ratio ... default=0.10"
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "gas/evaluation/rewards.py"
+      line_ref: "244-247"
+      quote: "First 10 count linearly; beyond 10, log₂ takes over so high-\n            # throughput miners still see gains but can't farm volume indefinitely."
+      confidence: high
+    - claim_field: "/sub_competitions/stages/0/advancement_rule"
+      source_path: "docs/Incentive.md"
+      line_ref: "146-150"
+      quote: "Each round is winner-take-all -- only the top-scoring discriminator for each modality receives the alpha reward for that round."
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "neurons/validator/validator.py"
+      line_ref: "342-351"
+      quote: "if hotkey not in generator_liveness and self.scores[uid] > 0:\n                        self.scores[uid] = 0"
+      confidence: high
+  unresolved:
+    - "sn34_score alpha=1.2/beta=1.8 and the Brier-based discriminator scoring are documented only; the computation lives in external gasbench/cloud, not in this repo."
+    - "get_discriminator_rewards exists in rewards.py but is not invoked in validator update_scores; whether/where it is used on-chain is unresolved from this repo."
+    - "Per-modality escrow distribution (video_escrow/image_escrow/audio_escrow) maps modality emission to fixed hotkeys; the downstream split among discriminator miners is not in this repo."
+    - "scoring.moving-average-alpha default 0.05 in config is unused in the generator EMA path (which hardcodes 0.5); its intended use is unresolved."

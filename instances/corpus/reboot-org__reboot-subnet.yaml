@@ -1,0 +1,191 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: full_burn
+mechanism_status_notes: >-
+  The documented scoring (camera image similarity via pixelmatch) is implemented in
+  reboot/validator/reward.py but is NOT invoked by the live validator forward pass.
+  reboot/validator/forward.py initializes every miner reward to zero and assigns a
+  hardcoded score of 1000 to a single hardcoded subnet-owner hotkey
+  (5D5Yw1NzfxLDQDP8D9jthkTNnJRKBfKSRTwnVBvg6RQymonx), then sets weights from those
+  scores. All emission is therefore directed to the owner; competitive scoring is dormant.
+
+subnet:
+  name: "Reboot Subnet (Robotics)"
+  owner_repo: "reboot-org__reboot-subnet"
+  netuid: 47
+  implementation_lang: python
+
+task:
+  summary: >-
+    As documented, a miner receives a RobotSynapse (action sequences + a validator camera
+    image) and returns a rendered/predicted camera image (img_b64); the reward function
+    scores the structural similarity between the miner's image and the validator's image.
+    In the actual running validator, however, no miner work is scored: rewards are zeroed
+    and a fixed subnet-owner hotkey is hardcoded to receive the full reward.
+  submission_format: [api_response]
+
+scoring_signals:
+  - name: camera_image_similarity
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      DOCUMENTED/DEAD-CODE signal only. reward() returns the pixelmatch similarity score
+      (1 - mismatch/(w*h)); scores below 0.95 are floored to 0. This function is defined in
+      reward.py but the live forward.py never calls get_rewards()/reward(); it is not part
+      of the operative mechanism.
+
+ground_truth_sources:
+  - kind: other
+    kind_other: validator_rendered_camera_image
+    description: >-
+      The validator's own camera image bytes, compared pixel-by-pixel against the miner's
+      returned image. (Documented path only; not used by the live validator.)
+    source_identifier: "validator_image_bytes"
+    trust_model: trusted
+    notes: "Used only inside the unused reward()/get_rewards() code path."
+
+aggregation:
+  method: winner_take_all
+  composition: other
+  composition_other: >-
+    Hardcoded override: all miner rewards set to 0, a single hardcoded owner hotkey set to 1000;
+    no combination of signals occurs.
+  normalization: l1
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "5D5Yw1NzfxLDQDP8D9jthkTNnJRKBfKSRTwnVBvg6RQymonx"
+    fraction: 1.0
+    dynamic: false
+    notes: >-
+      Not a literal burn-to-null; rather a full diversion of emission to the hardcoded
+      subnet-owner hotkey. Every other miner receives reward 0 in forward.py, so after L1
+      normalization in set_weights the owner receives effectively all weight.
+  notes: >-
+    set_weights() L1-normalizes self.scores (raw_weights = scores / ||scores||_1) before
+    process_weights_for_netuid. Since only the owner has a non-zero score, the owner gets
+    weight ~1.0.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    self.scores updated each forward via EMA (update_scores), then L1-normalized and emitted
+    via subtensor.set_weights with version_key=spec_version.
+  on_chain_call: set_weights
+  tempo_or_interval: "100 blocks (neuron.epoch_length default)"
+  smoothing:
+    kind: ema
+    alpha: 0.1
+    window: null
+    notes: >-
+      update_scores applies scores = alpha*rewards + (1-alpha)*scores with
+      alpha = config.neuron.moving_average_alpha (default 0.1). Applied to the hardcoded
+      owner reward in the live path.
+
+anti_gaming: []
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score]
+  status_values: []
+  reset_policy: >-
+    A miner's score is zeroed when its hotkey is replaced in the metagraph (resync_metagraph);
+    state (step, scores, hotkeys) is persisted to state.npz.
+  notes: >-
+    self.scores is an EMA moving-average array over miner UIDs, but in the live mechanism it
+    is dominated entirely by the hardcoded owner override.
+
+documentation:
+  status: docs_and_code
+  source_version: "0.1.1"
+  primary_docs:
+    - "README.md"
+    - "docs/quickstart.md"
+  completeness: low
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "88"
+      quote: "**Network Stats** – [Taostats Subnet 47](https://taostats.io/subnets/47/chart)"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "reboot/validator/forward.py"
+      line_ref: "22-23"
+      quote: "import numpy as np\nimport bittensor as bt"
+    - claim_field: "/documentation/source_version"
+      source_path: "reboot/__init__.py"
+      line_ref: "20"
+      quote: "__version__ = \"0.1.1\""
+    - claim_field: "/task/summary"
+      source_path: "reboot/protocol.py"
+      line_ref: "22-31"
+      quote: "class RobotInput(bt.Synapse):\n    action_seqs: typing.List[str] = []\n    validator_image_b64: str = \"\"\n\nclass RobotOutput(bt.Synapse):\n    img_b64: str"
+    - claim_field: "/scoring_signals/0/metric_kind"
+      source_path: "reboot/validator/reward.py"
+      line_ref: "27-29"
+      quote: "def calculate_image_similarity(img1_bytes: bytes, img2_bytes: bytes) -> float:\n    \"\"\"\n    Calculate similarity between two images using structural similarity index (SSIM)."
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "reboot/validator/reward.py"
+      line_ref: "51-57"
+      quote: "mismatch = pixelmatch(img1_resized, img2_resized, img_diff)\n\n        score = float(1-(mismatch/(min_width*min_height)))\n        \n        if score < 0.95:\n            score = 0\n        return score"
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "reboot/validator/reward.py"
+      line_ref: "94"
+      quote: "final_reward = similarity_score"
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "reboot/validator/reward.py"
+      line_ref: "81-82"
+      quote: "validator_camera_bytes = validator_image_bytes\n        miner_camera_bytes = base64.b64decode(synapse.output.img_b64)"
+    - claim_field: "/mechanism_status"
+      source_path: "reboot/validator/forward.py"
+      line_ref: "32-49"
+      quote: "rewards = np.zeros(len(miner_uids), dtype=np.float32)\n    bt.logging.info(f\"Initialized all miner rewards to zero: {rewards}\")\n    \n    # Try to get subnet owner and set their score to 1\n    subnet_owner_address = \"5D5Yw1NzfxLDQDP8D9jthkTNnJRKBfKSRTwnVBvg6RQymonx\"\n    ...\n                rewards[owner_index] = 1000"
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "reboot/validator/forward.py"
+      line_ref: "37"
+      quote: "subnet_owner_address = \"5D5Yw1NzfxLDQDP8D9jthkTNnJRKBfKSRTwnVBvg6RQymonx\""
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "reboot/validator/forward.py"
+      line_ref: "48"
+      quote: "rewards[owner_index] = 1000"
+    - claim_field: "/aggregation/normalization"
+      source_path: "reboot/base/validator.py"
+      line_ref: "199-206"
+      quote: "norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True)\n...\n        raw_weights = self.scores / norm"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "reboot/base/validator.py"
+      line_ref: "235-243"
+      quote: "result, msg = self.subtensor.set_weights(\n            wallet=self.wallet,\n            netuid=self.config.netuid,\n            uids=uint_uids,\n            weights=uint_weights,\n            wait_for_finalization=False,\n            wait_for_inclusion=False,\n            version_key=self.spec_version,\n        )"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "reboot/utils/config.py"
+      line_ref: "84-89"
+      quote: "\"--neuron.epoch_length\",\n        type=int,\n        help=\"The default epoch length (how often we set weights, measured in 12 second blocks).\",\n        default=100,"
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "reboot/base/validator.py"
+      line_ref: "331-334"
+      quote: "alpha: float = self.config.neuron.moving_average_alpha\n        self.scores: np.ndarray = (\n            alpha * scattered_rewards + (1 - alpha) * self.scores\n        )"
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "reboot/utils/config.py"
+      line_ref: "211-216"
+      quote: "\"--neuron.moving_average_alpha\",\n        type=float,\n        help=\"Moving average alpha parameter, how much to add of the new observation.\",\n        default=0.1,"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "reboot/base/validator.py"
+      line_ref: "268-271"
+      quote: "for uid, hotkey in enumerate(self.hotkeys):\n            # Zero out all hotkeys that have been replaced.\n            if hotkey != self.metagraph.hotkeys[uid]:\n                self.scores[uid] = 0  # hotkey has been replaced"
+  unresolved:
+    - "Whether validators run forward.py (owner-burn) or the dead reward.py path cannot be confirmed from source alone, but forward.py is the only forward implementation wired into the run loop."
+    - "Exact tournament/sample query behavior is moot because forward.py never queries miners before zeroing rewards."

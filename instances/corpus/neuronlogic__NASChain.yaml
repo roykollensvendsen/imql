@@ -1,0 +1,260 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Active Pareto-based scoring. Validators evaluate downloaded miner models, compute the
+  Pareto-optimal set over (accuracy, params, flops), then assign exponential rewards to the
+  Pareto front and set weights directly (no EMA smoothing — the moving-average alpha is
+  commented out in update_scores). No burn allocation found in the source.
+
+subnet:
+  name: "NASChain"
+  owner_repo: "neuronlogic__NASChain"
+  netuid: 31
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners run Neural Architecture Search (NAS) to design small neural networks that maximize
+    test-set accuracy while minimizing the number of parameters and FLOPs. Miners upload their
+    best models to Hugging Face and commit the metadata on-chain. Validators download and
+    evaluate each model, identify the Pareto-optimal architectures over (accuracy, params,
+    flops), retrain Pareto candidates to detect test-set leakage, and reward miners whose
+    models lie on the Pareto-optimal front.
+  submission_format: [model_weights, commitment_hash]
+
+scoring_signals:
+  - name: accuracy
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: null
+    normalization: min_max
+    notes: >-
+      Validator-measured test-set accuracy. Models below vali_config.min_accuracy (70.0) are
+      excluded from the Pareto front. Used both as a Pareto objective and as norm_accuracy in
+      the exponential reward combined_score.
+  - name: params
+    metric_kind: other
+    metric_kind_other: parameter_count
+    direction: lower_is_better
+    weight: null
+    normalization: min_max
+    notes: >-
+      Number of model parameters. A Pareto objective (minimized) and contributes via
+      -0.25 * norm_params to the combined_score.
+  - name: flops
+    metric_kind: throughput
+    direction: lower_is_better
+    weight: null
+    normalization: min_max
+    notes: >-
+      Floating-point operations of the model. Models with flops >= vali_config.max_flops
+      (280000000) are excluded from the Pareto front. Contributes via -0.5 * norm_flops to
+      the combined_score.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Validators evaluate miner models on a fixed test set with deterministic (fixed-seed)
+      training/evaluation. Pareto candidates are retrained by validators with a standard
+      train/valid split to detect test-set leakage (disqualified if validator-measured
+      accuracy is lower than the miner-claimed accuracy).
+    source_identifier: "vali_trainer.py / vali_config.py"
+    trust_model: trusted
+    notes: >-
+      Validator hardware fixed to RTX 4090 with fixed seed for deterministic results.
+
+aggregation:
+  method: softmax
+  composition: weighted_sum
+  normalization: softmax
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: "No burn allocation found in source."
+  notes: >-
+    combined_score = norm_accuracy - 0.25*norm_params - 0.5*norm_flops, computed only over
+    the rewarded (Pareto-optimal) models; reward = exp(combined_score) / sum(exp(combined_score)).
+    This is a softmax over a weighted-sum combined score with the literal coefficients 0.25 and
+    0.5 (temperature is implicitly 1, not a named constant). Only models flagged reward==True
+    (the Pareto front) participate.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    raw_weights = L1-normalize(self.scores); processed via
+    bt.utils.weight_utils.process_weights_for_netuid then convert_weights_and_uids_for_emit;
+    set on chain with subtensor.set_weights(version_key=self.spec_version).
+  on_chain_call: set_weights
+  tempo_or_interval: "100 blocks (neuron.epoch_length, ~12s blocks)"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      update_scores zeros self.scores and scatters the current rewards directly; the EMA
+      moving-average update (alpha * scattered + (1-alpha)*scores) is commented out in source.
+
+anti_gaming:
+  - kind: code_inspection
+    enforcement: elimination
+    description: >-
+      Test-set leakage check: Pareto top models have weights reinitialized and are retrained by
+      the validator on a standard train-test split. If the submitted model's accuracy is lower
+      than the validator's retrained accuracy, the miner is disqualified.
+  - kind: deduplication
+    enforcement: rejection
+    description: >-
+      Duplicate architectures (same accuracy, params, flops) on the Pareto front are deduplicated
+      via filter_pareto_by_commit_date / filter_pareto_by_lowest_block: only the oldest commit
+      date (or lowest block / lowest ext_idx) keeps pareto=True; others are set to non-Pareto.
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      File-size limit (vali_config.max_download_file_size = 5.5*1024*1024); models exceeding the
+      limit are rejected. Models must be loadable via torch.jit.load (TorchScript) to be evaluated.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: true
+  state_kinds: [performance_ledger, status_enum]
+  status_values: []
+  reset_policy: >-
+    eval_frame persisted to state/state.csv; scores zeroed each step before scattering current
+    rewards; scores for replaced hotkeys are reset to 0 in resync_metagraph.
+  notes: >-
+    Per-UID eval_frame DataFrame tracks uid, params, flops, accuracy, score, pareto (bool),
+    reward (bool), commit, commit_date, block, ext_idx, hf_account, evaluate, vali_evaluated.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs: ["README.md"]
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "105"
+      quote: "python neurons/miner.py --netuid 31 --wallet.name <wallet_coldkey_name>"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "src/validator/forward.py"
+      line_ref: "330-347"
+      quote: "def find_pareto(df, vali_config):"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "21-28"
+      quote: >-
+        The objective of the NAS is to minimize the number of parameters while maximizing
+        accuracy on the test set.
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "24"
+      quote: >-
+        Miners upload their best models to Hugging Face with the miner code and submit the
+        metadata for the commit to the blockchain.
+    - claim_field: "/scoring_signals/0/name"
+      source_path: "src/validator/forward.py"
+      line_ref: "333-336"
+      quote: "if row_i['accuracy'] < vali_config.min_accuracy:"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "model/vali_config.py"
+      line_ref: "7"
+      quote: "self.min_accuracy = 70.0"
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "model/vali_config.py"
+      line_ref: "11"
+      quote: "self.max_flops = 280000000"
+    - claim_field: "/scoring_signals/2/direction"
+      source_path: "src/validator/forward.py"
+      line_ref: "335-336"
+      quote: "if row_i['flops'] >= vali_config.max_flops:"
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "README.md"
+      line_ref: "38"
+      quote: >-
+        Models selected as top models due to their high accuracy on the test set will have their
+        weights reinitialized and retrained with a standard train-test split by the validators.
+    - claim_field: "/aggregation/notes"
+      source_path: "src/validator/forward.py"
+      line_ref: "557"
+      quote: >-
+        rewarded_models['combined_score'] = rewarded_models['norm_accuracy'] - 0.25 *
+        rewarded_models['norm_params'] - 0.5 * rewarded_models['norm_flops']
+    - claim_field: "/aggregation/method"
+      source_path: "src/validator/forward.py"
+      line_ref: "560-564"
+      quote: "exp_scores = np.exp(rewarded_models['combined_score'].to_numpy())"
+    - claim_field: "/aggregation/burn_allocation/enabled"
+      source_path: "src/base/validator.py"
+      line_ref: "301"
+      quote: "raw_weights = torch.nn.functional.normalize(self.scores, p=1, dim=0)"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "src/base/validator.py"
+      line_ref: "329-337"
+      quote: "result, msg = self.subtensor.set_weights("
+    - claim_field: "/weight_setting/method"
+      source_path: "src/base/validator.py"
+      line_ref: "308-314"
+      quote: ") = bt.utils.weight_utils.process_weights_for_netuid("
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "src/utils/config.py"
+      line_ref: "73-78"
+      quote: >-
+        "--neuron.epoch_length", type=int, help="The default epoch length (how often we set
+        weights, measured in 12 second blocks).", default=100,
+    - claim_field: "/weight_setting/cadence"
+      source_path: "src/base/neuron.py"
+      line_ref: "174-178"
+      quote: "(self.block - self.metagraph.last_update[self.uid]) > self.config.neuron.epoch_length"
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "src/base/validator.py"
+      line_ref: "398-409"
+      quote: >-
+        self.scores = torch.zeros_like(self.scores) ... # alpha: float =
+        self.config.neuron.moving_average_alpha
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "README.md"
+      line_ref: "38"
+      quote: >-
+        If the submitted model's accuracy is lower than the accuracy achieved by retraining by
+        the validator, the miner will be disqualified.
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "src/validator/forward.py"
+      line_ref: "402-411"
+      quote: >-
+        oldest_row_index = group['commit_date'].idxmin() ... df.loc[... & (df.index !=
+        oldest_row_index), 'pareto'] = False
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "model/vali_config.py"
+      line_ref: "9"
+      quote: "self.max_download_file_size = 5.5*1024*1024"
+    - claim_field: "/per_miner_state/notes"
+      source_path: "src/base/validator.py"
+      line_ref: "118-136"
+      quote: >-
+        'uid': pd.Series(dtype='int'), ... 'score': pd.Series(dtype='float'), 'pareto':
+        pd.Series(dtype='bool'), 'reward': pd.Series(dtype='bool'),
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "src/base/validator.py"
+      line_ref: "110-113"
+      quote: "self.eval_frame.to_csv(state_path, index=False)"
+  unresolved:
+    - "Exact dataset identity (test/train set) is not named in the read source files; described only via vali_trainer.py / vali_config.py references in README."
+    - "Softmax temperature is implicitly 1 (np.exp of raw combined_score); no named temperature constant exists, so /aggregation/temperature left null."
+    - "min/max_parameters in vali_config are 0 (unset); whether a param bound is enforced elsewhere not confirmed."
+    - "spec_version / version_key literal value is in src/__init__.py __spec_version__ tuple but exact integer not transcribed."

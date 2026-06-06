@@ -1,0 +1,365 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  As of the current code path (after 2025-04-01 16:00 UTC), the Burn pseudo-model
+  receives 71% of incentive (model_incentive_weight 0.71), routed by setting weight 1.0
+  on the subnet owner coldkey's UID. The remaining ~29% is distributed across live
+  scored categories (GoJourney 4%, FluxSchnell 10%, OpenGeneral 5%,
+  OpenTraditionalArtSketch 5%, DeepSeek_R1_Distill_Llama_70B 5%). So a large fixed
+  fraction is burned alongside live scoring.
+
+subnet:
+  name: "NicheImage (SocialTensor)"
+  owner_repo: "SocialTensor__SocialTensorSubnet"
+  netuid: 23
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners commit to a model type (image-generation or text-generation category) and a
+    generation volume, then serve generation requests. Validators issue synthetic
+    challenges (prompts/images) per model category and score each miner's response
+    against a reference reproduction or quality metric. Categories include fixed image
+    models (GoJourney, FluxSchnell), open image categories (OpenGeneral,
+    OpenTraditionalArtSketch) scored by image quality + prompt adherence, and a text
+    category (DeepSeek_R1_Distill_Llama_70B). Rewards are scaled by committed volume and
+    penalized by processing time.
+  submission_format: [api_response, content_link]
+
+scoring_signals:
+  - name: matching_result
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      For fixed/recreatable image categories, miner image is compared to the validator's
+      reproduction via ViT CLIP cosine similarity: reward 1.0 if similarity > threshold
+      (0.9), (sim + (1-threshold))**3 if sim > 0.4, else 0.0. README: matching_result is
+      0 or 1 based on similarity match. NSFW/black-image checks can yield -5 or 0.
+  - name: t2i_open_category_score
+    metric_kind: composite
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      Open category score = 0.5*prompt_adherence + 0.5*iqa. prompt_adherence from a
+      binary VQA (MiniCPM-V) over a structured DSG question graph; iqa from pyiqa
+      (nima-vgg16-ava) normalized to [0,1] over [3.5, 7.0]. weights = {iqa:0.5,
+      prompt_adherence:0.5}.
+  - name: gojourney_process_mode_reward
+    metric_kind: reward
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      GoJourney reward from process_mode of the fetched Midjourney task:
+      turbo=1.0, fast=0.5, relax=0.1; 0 if task failed or prompt mismatch.
+  - name: upscale_quality
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      Upscale pipeline scored by PSNR (threshold 30) and SSIM (threshold 0.9); 1.0 if
+      both pass, 0.0 if both fail, else penalty_factor 0.6 * (psnr_penalty+ssim_penalty)/2.
+  - name: time_penalty
+    metric_kind: latency
+    direction: lower_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Subtracted penalty: max_penalty(0.4) * process_time**1.5 / timeout**1.5, capped at
+      0.4. README: time_penalty = 0.4 * (processing_time / timeout)**3 (exponent differs
+      from code which uses **1.5).
+  - name: volume_scale
+    metric_kind: volume
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      reward_scale = max(min(total_volume**0.5 / 256**0.5, 1), 0); final reward
+      multiplied by (0.6 + 0.4 * reward_scale). total_volume clipped to [40, 256].
+
+ground_truth_sources:
+  - kind: reference_model
+    description: >-
+      Validator reproduces the challenge with the same generation model/seed and the
+      miner output is matched against it via CLIP cosine similarity (fixed image
+      categories) or PSNR/SSIM (upscale).
+    source_identifier: "vit_base_patch16_clip_384.laion2b_ft_in12k_in1k"
+    trust_model: trusted
+    notes: "CosineSimilarityReward model in services/rewarding/cosine_similarity_compare.py"
+  - kind: llm_judgment
+    description: >-
+      Open-category prompt adherence judged by a binary VQA model (MiniCPM-V-2_6) over a
+      structured question graph derived from the prompt; combined with a no-reference
+      image quality metric (pyiqa nima-vgg16-ava).
+    source_identifier: "openbmb/MiniCPM-V-2_6 ; pyiqa nima-vgg16-ava"
+    trust_model: trusted
+    notes: "OpenCategoryReward in services/rewarding/open_category_reward.py"
+  - kind: organic_traffic
+    description: >-
+      GoJourney rewards verified by fetching the Midjourney task status/input from an
+      external API and comparing prompt and process_mode.
+    source_identifier: "https://api.midjourneyapi.xyz/mj/v2/fetch"
+    trust_model: oracle
+    notes: "fetch_GoJourney / get_reward_GoJourney"
+
+aggregation:
+  method: weighted_average
+  composition: hybrid
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "5GvTa4JUKbUHqeJH8YLUDaV7jHChrfUy4n5zWrcCiU7bySoc"
+    fraction: 0.71
+    dynamic: false
+    notes: >-
+      Burn pseudo-model has model_incentive_weight 0.71 (and temp_incentive_weight Burn
+      0.71 in the current/else branch). get_model_specific_weights sets weight 1.0 on the
+      owner coldkey's UID for the Burn model, so 71% of incentive is routed to the owner
+      (burned).
+  notes: >-
+    Per-model the validator averages each miner's last-10 scores (sum/10, clipped [0,1]),
+    adds registration bonus, normalizes per model, multiplies by the model's incentive
+    weight, and sums across models. Open-category models additionally blend rank
+    (0.5*raw + 0.5*ranked, then 0.8 + 0.2*combined). Final weight vector L1-normalized in
+    set_weights.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    update_scores_on_chain() builds a weight vector by summing per-model normalized
+    weights scaled by model incentive weights; set_weights() L1-normalizes, runs
+    process_weights_for_netuid, and calls subtensor.set_weights. Forward loop runs roughly
+    every loop_base_time (600s) querying miners in batches.
+  on_chain_call: set_weights
+  tempo_or_interval: "loop_base_time 600 seconds; epoch_length default 100 (12s blocks)"
+  smoothing:
+    kind: sma
+    alpha: null
+    window: 10
+    notes: >-
+      Per-miner reward smoothed as a simple mean over the last 10 scores
+      (scores kept as [-10:], get_model_specific_weights sums last 10 / 10). Stake_based
+      model (now deprecated/0%) used an EMA with w=0.02. Recycle (now 0%) decayed as
+      0.9 ** days_since_registration.
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      NSFW/black-image hash check: if validator image is non-black and miner returns a
+      black image -> reward 0; if validator is black and miner is non-black -> reward -5.
+      Uses imagehash average_hash.
+  - kind: rate_limit
+    enforcement: barrier
+    description: >-
+      Per-miner rate_limit / total_volume governs how many synthetic queries are issued;
+      total_volume clipped to [40, 256]; ~80% of volume used for synthetic, ~20% proxy.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      min_stake (default 10000) gating via get_volume_per_validator; deprecated
+      Stake_based model scored miners by alpha_stake EMA + sigmoid of change.
+  - kind: data_augmentation
+    enforcement: penalty
+    description: >-
+      Validator reuses/recreates challenge synapses with probabilities (80% reuse
+      existing rewarded synapse, 10% reuse with new seed, 10% new) and random seeds/image
+      sizes to deter precomputation.
+
+sub_competitions:
+  structure: multi_mechanism
+  stages: []
+  count: 5
+  notes: >-
+    Multiple model categories each with its own reward_type and fixed incentive weight:
+    GoJourney (custom_offline, 4%), FluxSchnell (image, 10%), OpenGeneral (open_category,
+    5%), OpenTraditionalArtSketch (open_category, 5%), DeepSeek_R1_Distill_Llama_70B
+    (text, 5%); plus pseudo-models Recycle, Stake_based, Burn. count reflects the 5 live
+    scored categories.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [performance_ledger, registration_age, cumulative_score]
+  status_values: []
+  reset_policy: >-
+    scores and process_time reset when a miner's reported model_name changes; scores
+    kept to last 10, process_time to last 500 (reset on store). Recycle miners' scores
+    set to 0.9**days_since_registration.
+  notes: >-
+    all_uids_info per UID tracks scores, process_time, model_name, total_volume,
+    reward_scale, rate_limit, registration_time, ema_previous/staking_score (for
+    deprecated Stake_based). Registration age drives a bonus of (10-day)/100 for
+    day<10. State persisted via pickle to state.pkl.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/open_category_reward_mechanism.md"
+    - "services/rewarding/README.md"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8[1m]"
+  extracted_at: "2026-06-06"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "11"
+      quote: "SN23-SocialTensor-Docs"
+      confidence: medium
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "neurons/validator/validator.py"
+      line_ref: "12-18"
+      quote: "import bittensor as bt\nimport numpy as np\nimport torch"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "28-37"
+      quote: "Volume Commitment: Miners commit to a model type and generation volume. ... new_reward = (category_score - time_penalty) * (0.6 + 0.4 * volume_scale)"
+      confidence: high
+    - claim_field: "/mechanism_status"
+      source_path: "neurons/validator/validator.py"
+      line_ref: "686-697"
+      quote: "\"Burn\": 0.71,\n\n                # Deprecated\n                \"Stake_based\": 0.0,\n                \"Recycle\": 0.0,"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "neurons/validator/validator.py"
+      line_ref: "213-218"
+      quote: "\"Burn\": {\n            \"model_incentive_weight\": 0.71,"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "image_generation_subnet/validator/miner_manager.py"
+      line_ref: "227-233"
+      quote: "elif model_name == \"Burn\":\n            owner_coldkey = \"5GvTa4JUKbUHqeJH8YLUDaV7jHChrfUy4n5zWrcCiU7bySoc\"\n            ... model_specific_weights[owner_hotkey_uid] = 1.0"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "services/rewarding/cosine_similarity_compare.py"
+      line_ref: "49-55"
+      quote: "if cosine_similarity.item() > self.threshold:\n                reward = 1.0\n            elif cosine_similarity.item() > 0.4:\n                reward = (cosine_similarity.item() + (1 - self.threshold)) ** 3\n            else:\n                reward = 0.0"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "services/rewarding/cosine_similarity_compare.py"
+      line_ref: "27"
+      quote: "self.threshold = threshold"
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "services/rewarding/open_category_reward.py"
+      line_ref: "421"
+      quote: "self.weights = {\"iqa\": 0.5, \"prompt_adherence\": 0.5}"
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "services/rewarding/open_category_reward.py"
+      line_ref: "479-481"
+      quote: "iqa_scores = OpenCategoryReward.normalize_score(\n            iqa_scores, max_val=7.0, min_val=3.5\n        )"
+      confidence: high
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "image_generation_subnet/validator/offline_reward.py"
+      line_ref: "55-59"
+      quote: "reward_distribution = {\n        \"turbo\": 1.0,\n        \"fast\": 0.5,\n        \"relax\": 0.1,\n    }"
+      confidence: high
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "services/rewarding/cosine_similarity_compare.py"
+      line_ref: "135-144"
+      quote: "if psnr_value >= psnr_threshold and ssim_value >= ssim_threshold:\n            reward = 1.0\n        ... penalty_factor = 0.6\n            reward = penalty_factor * (psnr_penalty + ssim_penalty) / 2"
+      confidence: high
+    - claim_field: "/scoring_signals/4/notes"
+      source_path: "image_generation_subnet/validator/forward.py"
+      line_ref: "150-158"
+      quote: "penalties = [\n        max_penalty * pow(process_time, 1.5) / pow(factor, 1.5)\n        for process_time in process_times\n    ]\n    penalties = [min(penalty, max_penalty) for penalty in penalties]"
+      confidence: high
+    - claim_field: "/scoring_signals/5/notes"
+      source_path: "image_generation_subnet/validator/miner_manager.py"
+      line_ref: "143-145"
+      quote: "miner_state[\"reward_scale\"] = max(\n                min(miner_state[\"total_volume\"] ** 0.5 / 256**0.5, 1), 0\n            )"
+      confidence: high
+    - claim_field: "/scoring_signals/5/notes"
+      source_path: "neurons/validator/validator.py"
+      line_ref: "542-548"
+      quote: "rewards[i] = rewards[i] * (\n                                0.6\n                                + 0.4\n                                * self.miner_manager.all_uids_info[uid][\"reward_scale\"]\n                            )"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "services/rewarding/cosine_similarity_compare.py"
+      line_ref: "17"
+      quote: "model_name=\"vit_base_patch16_clip_384.laion2b_ft_in12k_in1k\","
+      confidence: high
+    - claim_field: "/ground_truth_sources/1/source_identifier"
+      source_path: "services/rewarding/open_category_reward.py"
+      line_ref: "22-23"
+      quote: "self.model = AutoModel.from_pretrained(\n            \"openbmb/MiniCPM-V-2_6\","
+      confidence: high
+    - claim_field: "/ground_truth_sources/2/source_identifier"
+      source_path: "image_generation_subnet/validator/offline_reward.py"
+      line_ref: "42"
+      quote: "endpoint = \"https://api.midjourneyapi.xyz/mj/v2/fetch\""
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "image_generation_subnet/validator/miner_manager.py"
+      line_ref: "238-244"
+      quote: "model_specific_weights[int(uid)] = (\n                    sum(self.all_uids_info[uid][\"scores\"][-num_past_to_check:])\n                    / num_past_to_check\n                )\n            model_specific_weights = np.clip(model_specific_weights, a_min=0, a_max=1)"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "neurons/validator/validator.py"
+      line_ref: "712-716"
+      quote: "model_specific_weights = (\n                    model_specific_weights * 0.5 + ranked_model_specific_weights * 0.5\n                )\n                model_specific_weights = 0.8 + 0.2 * model_specific_weights"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "neurons/validator/validator.py"
+      line_ref: "886-893"
+      quote: "result, log = self.subtensor.set_weights(\n            wallet=self.wallet,\n            netuid=self.config.netuid,\n            uids=uint_uids,\n            weights=uint_weights,"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "image_generation_subnet/utils/config.py"
+      line_ref: "121-124"
+      quote: "\"--loop_base_time\",\n            ...\n            default=600,"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/window"
+      source_path: "image_generation_subnet/validator/miner_manager.py"
+      line_ref: "185-188"
+      quote: "self.all_uids_info[uid][\"scores\"].append(reward)\n            self.all_uids_info[uid][\"scores\"] = self.all_uids_info[uid][\"scores\"][-10:]"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "services/rewarding/cosine_similarity_compare.py"
+      line_ref: "83-85"
+      quote: "nsfw_check = self.nsfw_filter(validator_image, miner_image)\n                if nsfw_check:\n                    reward = -5 if nsfw_check == 2 else 0"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "image_generation_subnet/validator/miner_manager.py"
+      line_ref: "137-141"
+      quote: "min_allowed_volume = 40\n            max_allowed_volume = 256\n            miner_state[\"total_volume\"] = min(\n                max(raw_volume, min_allowed_volume), max_allowed_volume\n            )"
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "neurons/validator/validator.py"
+      line_ref: "597-603"
+      quote: "if len(self.rewarded_synapses[model_name]) > 0 and rand_val < 0.9:\n                        if rand_val < 0.8:  # 80% chance to use existing synapse"
+      confidence: high
+    - claim_field: "/sub_competitions/notes"
+      source_path: "neurons/validator/validator.py"
+      line_ref: "222-277"
+      quote: "\"GoJourney\": {\n            \"model_incentive_weight\": 0.04, ... \"FluxSchnell\": {... \"model_incentive_weight\": 0.10, ... \"DeepSeek_R1_Distill_Llama_70B\": {"
+      confidence: high
+    - claim_field: "/per_miner_state/notes"
+      source_path: "image_generation_subnet/validator/miner_manager.py"
+      line_ref: "302-313"
+      quote: "bonus_percent_dict = {\n            day: (10 - day) / 100  # Generates 0.10 to 0.01 for days 0-9\n            for day in range(10)\n        }"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "image_generation_subnet/validator/miner_manager.py"
+      line_ref: "157-161"
+      quote: "if miner_state[\"model_name\"] == model_name:\n                continue\n            miner_state[\"model_name\"] = model_name\n            miner_state[\"scores\"] = []"
+      confidence: high
+  unresolved:
+    - "Exact live netuid not in code (config default --netuid is 1, a placeholder); inferred as 23 from README docs link 'SN23-SocialTensor-Docs'."
+    - "README states time_penalty exponent **3 (0.4*(t/timeout)**3) but code add_time_penalty uses **1.5; the operative value is the code's 1.5 exponent. Both recorded in notes; no single canonical constant."
+    - "Whether validators run offline_reward (Redis) path vs inline reward_url affects which scoring code executes; both paths feed update_scores."

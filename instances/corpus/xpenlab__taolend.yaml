@@ -1,0 +1,270 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+# The validator does not compute scores locally. It GETs a precomputed weight vector
+# from a centralized off-chain API (api.taolend.io/v1/weights) and writes it on chain.
+# On any failure / stale response it falls back to uids=[0], weights=[1.0]. The documented
+# allocation algorithm (deposit 20% / lending 80%, fee multiplier, min-balance sampling,
+# excess burn) runs off-chain on the operator's backend, not in this repo. Hence "mixed":
+# a centralized off-chain mechanism with a hard fallback to a single-UID weight.
+mechanism_status: mixed
+mechanism_status_notes: >-
+  Weights are fetched from a centralized HTTP API (https://api.taolend.io/v1/weights) and set on
+  chain verbatim; no scoring logic exists in this repo. On API error or stale/empty data the
+  validator falls back to uids=[0], weights=[1.0]. The documented allocation algorithm (deposit
+  20% / lending 80%, 1.5x lender fee multiplier, min-balance sampling, excess-ALPHA burn) is an
+  off-chain backend process described in README.md, not implemented here. README also notes that
+  excess ALPHA is "permanently burned" after deposit/lending/gas allocation.
+
+subnet:
+  name: "TaoLend"
+  owner_repo: "xpenlab__taolend"
+  netuid: 116
+  implementation_lang: none_docs_only
+
+task:
+  summary: >-
+    TaoLend is a decentralized peer-to-peer TAO lending protocol on Bittensor SN116. "Miners" are
+    market participants (TAO depositors and active lenders) who interact with an EVM smart contract,
+    not nodes running mining software. ALPHA rewards are distributed off-chain to participants based
+    on their contribution to protocol trading activity: 20% to TAO depositors (by historical
+    minimum balance) and 80% to active lenders (proportional to protocol fees earned, i.e. 30% of
+    interest, scaled by a 1.5x multiplier). The subnet owner registers placeholder miners on SN116;
+    a backend computes a weight vector and the validator in this repo merely fetches and submits it.
+  submission_format: [other]
+  submission_format_other: >-
+    On-chain DeFi activity (TAO deposits and P2P loans via the LendingPool EVM contract); rewards
+    are credited to userAlphaBalance and withdrawn via withdrawAlpha(). No model/code/signal is
+    submitted to validators.
+
+# No scoring is computed in this repo. The signals below are the documented off-chain reward
+# drivers (README "Weight Allocation Algorithm"), each backed by a verbatim README quote.
+scoring_signals:
+  - name: protocol_fees_earned
+    metric_kind: volume
+    direction: higher_is_better
+    weight: 0.80
+    normalization: none
+    notes: >-
+      Lending reward (80% share). Each lender receives lending_actual_alpha *
+      (lender_protocol_fee / total_protocol_fees). Protocol fee is 30% of interest; lender rewards
+      from fees are scaled by a 1.5x LENDER_FEE_MULTIPLIER before the 80% cap is applied.
+  - name: tao_deposit_min_balance
+    metric_kind: volume
+    direction: higher_is_better
+    weight: 0.20
+    normalization: none
+    notes: >-
+      Deposit reward (20% share). user_deposit_reward = deposit_max_alpha *
+      (user_min_balance / total_min_balances), where user_min_balance is the MINIMUM on-chain
+      balance across blocks sampled every 360 blocks (~1 hour) over the epoch, to resist gaming.
+
+ground_truth_sources:
+  - kind: market_data
+    description: >-
+      On-chain state of the TaoLend EVM LendingPool contract: protocol fees from repaid loans (in
+      TAO) and historical TAO deposit balances sampled on chain.
+    source_identifier: "TaoLend LendingPoolV2 contract (SN116) + on-chain balance sampling"
+    trust_model: oracle
+    notes: >-
+      ALPHA price (SN116_alpha_price) is also read for TAO<->ALPHA conversion. The weight vector
+      itself is delivered to the validator by the centralized API https://api.taolend.io/v1/weights.
+
+aggregation:
+  method: proportional
+  composition: weighted_sum
+  normalization: none
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: null
+    fraction: null
+    dynamic: true
+    notes: >-
+      README: "Excess ALPHA (after deposit + lending + gas) is permanently burned." Burn is the
+      computed residual: remaining = miner_allocatable_alpha - deposit_max_alpha -
+      lending_actual_alpha; burn_alpha = remaining - gas_fee. This off-chain ALPHA burn is distinct
+      from the validator's on-chain fallback (uids=[0], weights=[1.0]) on API failure.
+  notes: >-
+    Reward is split deposit (20%) + lending (80%) of miner_allocatable_alpha, where the latter is a
+    dual-cap min(fixed pool cap, TAO emission cap). Lenders share the lending pool proportionally to
+    protocol fees; depositors share the deposit pool proportionally to min sampled balance. The
+    actual weight vector is computed off-chain and only fetched by this repo's validator.
+
+weight_setting:
+  cadence: daily
+  method: >-
+    Validator GETs a precomputed weight vector (uids, weights, block_number) from
+    https://api.taolend.io/v1/weights and calls subtensor.set_weights with it verbatim. On API
+    error, stale data (no block_number), or length mismatch it falls back to uids=[0], weights=[1.0].
+    Weights are set only when (block - metagraph.last_update[uid]) > epoch_length (default 100 blocks).
+  on_chain_call: set_weights
+  tempo_or_interval: "epoch_length default 100 blocks; reward distribution daily at 08:00 UTC+8"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: ""
+
+anti_gaming:
+  - kind: other
+    kind_other: historical_minimum_balance_sampling
+    enforcement: other
+    enforcement_other: effective_balance_reduction
+    description: >-
+      Deposit rewards use the MINIMUM on-chain balance across blocks sampled every 360 blocks
+      (~1 hour) over the epoch as the effective balance, preventing users from temporarily inflating
+      deposits during allocation. README example: 10 TAO for 23h + 1000 TAO for 1h => effective 10 TAO.
+
+sub_competitions:
+  structure: multi_mechanism
+  stages:
+    - name: tao_depositors
+      role: other
+    - name: active_lenders
+      role: other
+  count: 2
+  notes: >-
+    Two reward tracks share one allocatable pool: 20% to TAO depositors, 80% to active lenders.
+    Not a competitive tournament; a fixed-fraction split of the reward pool.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [debt_ledger, other]
+  status_values: []
+  reset_policy: >-
+    Per-day epochs (rewards for 00:00-23:59 UTC distributed next day 08:00 UTC+8). ALPHA allocations
+    below the 10-ALPHA minimum transfer threshold accumulate in a database across days until total
+    >= 10 ALPHA, then are deposited in a single transaction.
+  notes: >-
+    Off-chain per-user state: userAlphaBalance[address][netuid] (credited rewards, withdrawn via
+    withdrawAlpha()) and accumulated sub-threshold pending rewards. Loan/debt state lives in the
+    EVM LendingPool contract. None of this is tracked in this repo's validator.
+
+documentation:
+  status: docs_only
+  source_version: "validator 1.0.3"
+  primary_docs:
+    - "README.md"
+    - "CONTRACT.md"
+    - "docs/CONTRACT.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8[1m]"
+  extracted_at: "2026-06-06"
+  confidence_overall: low
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "neurons/validator.py"
+      line_ref: "23"
+      quote: 'parser.add_argument("--netuid", type=int, help="Subnet netuid", default=116)'
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "README.md"
+      line_ref: "55"
+      quote: "**No Command Line Tools Required** - All operations available through the web interface at [www.taolend.io](https://www.taolend.io)."
+      confidence: high
+    - claim_field: "/mechanism_status"
+      source_path: "neurons/validator.py"
+      line_ref: "217-249"
+      quote: 'url = "https://api.taolend.io/v1/weights" ... except Exception as e: ... uids = [0] ; weights = [1.0]'
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "neurons/validator.py"
+      line_ref: "229-249"
+      quote: "resp = requests.get(url, headers=headers, timeout=10) ... uids = weights_data.get(\"uids\", [0]) ; weights = weights_data.get(\"weights\", [1])"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "neurons/validator.py"
+      line_ref: "260-267"
+      quote: "result, msg = self.subtensor.set_weights(wallet=self.wallet, netuid=self.config.netuid, uids=uids, weights=weights,"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "neurons/validator.py"
+      line_ref: "32-37"
+      quote: '"--neuron.epoch_length", ... help="The default epoch length (how often we set weights, measured in 12 second blocks).", default=100,'
+      confidence: high
+    - claim_field: "/documentation/source_version"
+      source_path: "neurons/validator.py"
+      line_ref: "13"
+      quote: '__validator_version__ = "1.0.3"'
+      confidence: high
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "README.md"
+      line_ref: "46"
+      quote: "- **80% to Active Lenders**: Users who actively provide loans to borrowers (based on actual protocol fees earned)"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "README.md"
+      line_ref: "216-221"
+      quote: "lender_alpha_reward = lending_actual_alpha × (lender_protocol_fee / total_protocol_fees)"
+      confidence: high
+    - claim_field: "/scoring_signals/1/weight"
+      source_path: "README.md"
+      line_ref: "45"
+      quote: "- **20% to TAO Depositors**: Users who deposit TAO into the protocol to provide offer liquidity"
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "README.md"
+      line_ref: "228-234"
+      quote: "Take MINIMUM balance across all samples as effective balance ... user_deposit_reward = deposit_max_alpha × (user_min_balance / total_min_balances)"
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "README.md"
+      line_ref: "162"
+      quote: "2. **Proportional Distribution**: Rewards proportional to deposits and protocol fees earned"
+      confidence: medium
+    - claim_field: "/aggregation/burn_allocation/dynamic"
+      source_path: "README.md"
+      line_ref: "73"
+      quote: "Excess ALPHA (after deposit + lending + gas) is **permanently burned**"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "README.md"
+      line_ref: "169-187"
+      quote: "miner_allocatable_alpha = min( EPOCH_DAILY_ALPHA × ALLOCATION_RATE × 0.41, total_emission_tao × 0.41 × ALLOCATION_RATE / alpha_price )"
+      confidence: medium
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "README.md"
+      line_ref: "229-240"
+      quote: "Sample blocks every 360 blocks (~1 hour) throughout the epoch ... Take MINIMUM balance across all samples as effective balance"
+      confidence: high
+    - claim_field: "/sub_competitions/structure"
+      source_path: "README.md"
+      line_ref: "45-46"
+      quote: "- **20% to TAO Depositors** ... - **80% to Active Lenders**"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "README.md"
+      line_ref: "80-84"
+      quote: "**Threshold**: 10 ALPHA per address ... Allocations accumulate in the database until total ≥ 10 ALPHA"
+      confidence: high
+    - claim_field: "/per_miner_state/notes"
+      source_path: "README.md"
+      line_ref: "76-78"
+      quote: "ALPHA is credited to users' contract balances (`userAlphaBalance[address][netuid]`) ... Users can withdraw anytime using the `withdrawAlpha()` function"
+      confidence: high
+    - claim_field: "/weight_setting/cadence"
+      source_path: "README.md"
+      line_ref: "65-68"
+      quote: "Distribution executes **8 hours after the end of each day** (UTC+8, 08:00 AM) ... Calculates rewards for the previous day's activity"
+      confidence: medium
+  unresolved:
+    - "No scoring/reward code exists in this repo; the documented allocation algorithm runs on an off-chain backend (api.taolend.io). Constants in the README table (EPOCH_DAILY_ALPHA=7200, MINER_EMISSION_RATE=41%, LENDER_FEE_MULTIPLIER=1.5, etc.) are documented but not verifiable against source code here."
+    - "The on-chain fallback weight (uids=[0], weights=[1.0]) target UID 0 is presumably a burn/owner UID but is not labelled as such in source; aggregation.burn_allocation.address_or_uid left null."
+    - "ALLOCATION_RATE is documented as a configurable 20-50% range, not a single literal value."
+    - "Aggregation normalization to the on-chain weight vector format is opaque (computed by the off-chain API); not derivable from this repo."
+  extractor_notes: >-
+    Docs-only repo: only neurons/validator.py and start_validator.py are code, and the validator
+    contains no scoring logic. It fetches a precomputed weight vector from a centralized API and sets
+    it on chain, with a hard fallback to a single UID on failure. All scoring/reward detail comes from
+    the README "Weight Allocation Algorithm" section describing an off-chain backend process. Enum
+    'other' was needed for: task.submission_format (on-chain DeFi activity, no validator submission),
+    anti_gaming.kind/enforcement (min-balance sampling), per_miner_state.state_kinds (off-chain ALPHA
+    ledger), and sub_competition stage roles (reward-share tracks, not tournament stages). Numeric
+    constants from the README table were intentionally NOT placed in structured numeric fields since
+    they describe an off-chain process not present in this repo; only the 20/80 documented split was
+    recorded as signal weights.

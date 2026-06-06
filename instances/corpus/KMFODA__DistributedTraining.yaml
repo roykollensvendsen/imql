@@ -1,0 +1,266 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Live scoring is implemented and wired into weight-setting: update_total_scores combines a
+  train.score (OpenSkill-rated loss improvement) and an all_reduce.score, normalises, and feeds
+  total.score into update_scores -> set_weights. No burn allocation or weight-copying short-circuit
+  found in the source.
+
+subnet:
+  name: "Distributed Training Subnet"
+  owner_repo: "KMFODA__DistributedTraining"
+  netuid: null
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners collaboratively pre-train a shared LLM (default global_model_name "llama-4b-ws-4"): each
+    miner runs inner training steps and uploads a pseudo-gradient (gradients.pt) to a Cloudflare R2
+    bucket. Validators score a miner by applying that miner's pseudo-gradient to the shared model and
+    measuring the loss improvement on random unseen data and on the miner's assigned data, plus whether
+    the miner participated successfully in the periodic all-reduce round.
+  submission_format: [model_weights]
+  # miners submit pseudo-gradient tensors (gradients.pt) for the shared model; closest schema enum is model_weights
+
+scoring_signals:
+  - name: train_random_loss_improvement
+    metric_kind: loss
+    direction: higher_is_better
+    weight: 0.75
+    normalization: rank
+    notes: >-
+      Relative loss improvement (before-after)/before from applying the miner's pseudo-gradient on a
+      random unseen evaluation block, fed into an OpenSkill PlackettLuce rating; train.random.score is
+      the OpenSkill ordinal. Part of train.score which carries TRAIN_SCORE_WEIGHT = 0.75 in
+      update_total_scores. weight reflects TRAIN_SCORE_WEIGHT (combined train signal).
+  - name: train_assigned_loss_gate
+    metric_kind: loss
+    direction: higher_is_better
+    weight: null
+    normalization: ema
+    notes: >-
+      Binary indicator (assigned.absolute > random.absolute) smoothed by an EMA with
+      assigned_loss_score_moving_average_alpha = 0.05. train.score = max(0, random.score *
+      assigned.score), so this acts multiplicatively (gate) rather than additively -> weight null.
+  - name: all_reduce_participation
+    metric_kind: uptime
+    direction: higher_is_better
+    weight: 0.25
+    normalization: rank
+    notes: >-
+      all_reduce.score = 1 if the miner's allreduce_status_dict entry is SUCCESS or NON_PARTICIPATING,
+      else 0. Carries ALL_REDUCE_SCORE_WEIGHT = 0.25 in update_total_scores. normalization rank is the
+      closest enum to the L1-norm normalisation applied across all miners.
+  - name: repo_validity
+    metric_kind: uptime
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      train.is_valid (score_repo) checks that the miner's R2 gradients.pt manifest exists and its age
+      is below max_upload_interval (MAX_UPLOAD_INTERVAL = 4800 s). total.score is multiplied by
+      repo_valid_score, so it is a 0/1 gate -> weight null.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Evaluation data fetched via DatasetLoader.next_pages over fineweb-style pages, seeded by block /
+      uid; loss is computed by the shared model with labels=inputs (next-token LM loss).
+    source_identifier: "DatasetLoader (distributed_training/data/dataset.py)"
+    trust_model: trusted
+    notes: >-
+      Both 'random' unseen blocks and the miner's 'assigned' blocks are drawn deterministically from
+      the dataset/block seeds; the shared global model provides the reference loss.
+
+aggregation:
+  method: weighted_average
+  composition: hybrid
+  normalization: l1
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: "No burn allocation found in reward.py or set_weights."
+  notes: >-
+    update_total_scores: normalized_train_score = (0.75 * train.score)/L1(train_scores),
+    normalized_all_reduce_score = (0.25 * all_reduce.score)/L1(all_reduce_scores), and
+    total.score = (normalized_train_score + normalized_all_reduce_score) * repo_valid_score. Hybrid:
+    train and all_reduce combine additively (weighted), while repo_valid acts as a multiplicative gate
+    and the assigned-loss signal gates train.score.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    set_weights normalises self.scores by its L1 norm to raw_weights, runs process_weights_for_netuid
+    (quantile exclusion + normalize_max_weight), converts to uint16 and calls subtensor.set_weights.
+  on_chain_call: set_weights
+  tempo_or_interval: "epoch_length (default 160 blocks)"
+  smoothing:
+    kind: ema
+    alpha: 0.6
+    window: null
+    notes: >-
+      update_scores applies self.scores = alpha*scattered_rewards + (1-alpha)*self.scores with
+      alpha = moving_average_alpha (default 0.6) on total.score before weights are set.
+
+anti_gaming:
+  - kind: liveness_check
+    enforcement: penalty
+    description: >-
+      score_repo / benchmark_uids require a recent R2 gradients.pt manifest (age < MAX_UPLOAD_INTERVAL
+      = 4800 s); stale or missing manifest sets train.is_valid False, zeroing total.score.
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      score_uids resets a UID's train.random/train.assigned scores to 0 (reset_uid_train_scores) on any
+      evaluation error, on a revision with 0 inner steps, or if the score_status all-reduce across
+      ranks does not equal world_size.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      vpermit_tao_limit (default 40960) caps the TAO a vpermit validator may be queried with;
+      failed_is_alive_counter above threshold zeroes a UID's score in update_scores.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: true
+  state_kinds: [reputation, cumulative_score, performance_ledger]
+  status_values: []
+  reset_policy: >-
+    UidTracker reset on hotkey replacement / metagraph growth (resync_metagraph); per-round train
+    scores reset to 0 on evaluation failure (reset_uid_train_scores).
+  notes: >-
+    Per-UID UidTracker holds train (random/assigned scores, openskill_rating mu/sigma, is_valid,
+    revision), all_reduce (score, count) and total.score. OpenSkill PlackettLuce ratings
+    (beta=7, tau=0.1) persist per UID across rounds.
+
+documentation:
+  status: code_authoritative
+  source_version: null
+  primary_docs: ["README.md"]
+  completeness: low
+
+provenance:
+  extracted_by: "im-extract"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "distributed_training/validator/reward.py"
+      line_ref: "28-32"
+      quote: "import bittensor as bt\nimport numpy as np\nimport pytz\nimport torch\nimport torch.nn.functional as F"
+    - claim_field: "/task/summary"
+      source_path: "distributed_training/validator/reward.py"
+      line_ref: "175-187"
+      quote: "async def evaluate_with_gradient(self, uid, model_base, blocks, revision, prefix):\n    \"\"\"\n    Apply pseudo gradient for a UID and evaluate loss before and after."
+    - claim_field: "/task/summary"
+      source_path: "distributed_training/utils/config.py"
+      line_ref: "168-173"
+      quote: "\"--neuron.global_model_name\",\n        type=str,\n        help=\"The model to be trained\",\n        default=\"llama-4b-ws-4\","
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "distributed_training/validator/reward.py"
+      line_ref: "60-62"
+      quote: "# Set scoring weights\nTRAIN_SCORE_WEIGHT = 0.75\nALL_REDUCE_SCORE_WEIGHT = 0.25"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "distributed_training/validator/reward.py"
+      line_ref: "697-699"
+      quote: "self.uid_tracker[uid].train.random.score = float(\n            self.openskill_ratings[uid].ordinal()\n        )"
+    - claim_field: "/scoring_signals/1/normalization"
+      source_path: "distributed_training/validator/reward.py"
+      line_ref: "700-709"
+      quote: "self.uid_tracker[uid].train.assigned.score = (\n            (1 - self.config.neuron.assigned_loss_score_moving_average_alpha)\n            * self.uid_tracker[uid].train.assigned.score\n        ) + (\n            self.config.neuron.assigned_loss_score_moving_average_alpha\n            * (\n                self.uid_tracker[uid].train.assigned.absolute\n                > self.uid_tracker[uid].train.random.absolute\n            )\n        )"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "distributed_training/utils/config.py"
+      line_ref: "424-429"
+      quote: "\"--neuron.assigned_loss_score_moving_average_alpha\",\n            type=float,\n            help=\"The value of the alpha for the assinged loss score moving average.\",\n            default=0.05,"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "distributed_training/validator/reward.py"
+      line_ref: "710-716"
+      quote: "self.uid_tracker[uid].train.score = max(\n            0,\n            (\n                self.uid_tracker[uid].train.random.score\n                * self.uid_tracker[uid].train.assigned.score\n            ),\n        )"
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "distributed_training/validator/reward.py"
+      line_ref: "731-742"
+      quote: "if (self.allreduce_status_dict[uid] == \"SUCCESS\") or (\n                    self.allreduce_status_dict[uid] == \"NON_PARTICIPATING\"\n                ):\n                    score = 1\n                else:\n                    score = 0"
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "distributed_training/validator/reward.py"
+      line_ref: "546-550"
+      quote: "age_seconds = (datetime.now(timezone.utc) - last_modified).total_seconds()\n        ...\n        return age_seconds < self.max_upload_interval"
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "distributed_training/validator/reward.py"
+      line_ref: "63"
+      quote: "MAX_UPLOAD_INTERVAL = 4800  # Seconds"
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "distributed_training/validator/reward.py"
+      line_ref: "86-101"
+      quote: "pages = await DatasetLoader.next_pages(\n                offset=block,\n                n_pages=n_pages,\n                seed=uid + self.local_rank,\n            )"
+    - claim_field: "/aggregation/notes"
+      source_path: "distributed_training/validator/reward.py"
+      line_ref: "798-806"
+      quote: "normalized_train_score = (\n            TRAIN_SCORE_WEIGHT * train_score\n        ) / train_scores_normalised\n        normalized_all_reduce_score = (\n            ALL_REDUCE_SCORE_WEIGHT * all_reduce_score\n        ) / all_reduce_scores_normalised\n        uid_data.total.score = (\n            normalized_train_score + normalized_all_reduce_score\n        ) * repo_valid_score"
+    - claim_field: "/aggregation/normalization"
+      source_path: "distributed_training/validator/reward.py"
+      line_ref: "766-770"
+      quote: "train_scores_normalised = (\n        np.linalg.norm(train_scores, ord=1, axis=0, keepdims=True)\n        if any(train_scores)\n        else np.array(1.0)\n    ).item()"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "distributed_training/base/validator.py"
+      line_ref: "354-362"
+      quote: "result, msg = self.subtensor.set_weights(\n            wallet=self.wallet,\n            netuid=self.config.netuid,\n            uids=uint_uids,\n            weights=uint_weights,"
+    - claim_field: "/weight_setting/method"
+      source_path: "distributed_training/base/validator.py"
+      line_ref: "315-338"
+      quote: "norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True)\n        ...\n        raw_weights = self.scores / norm\n        ...\n        ) = process_weights_for_netuid("
+    - claim_field: "/weight_setting/cadence"
+      source_path: "distributed_training/base/neuron.py"
+      line_ref: "333-335"
+      quote: "return (\n            self.block - self.metagraph.last_update[self.uid]\n        ) > self.config.neuron.epoch_length and self.neuron_type != \"MinerNeuron\""
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "distributed_training/utils/config.py"
+      line_ref: "137-142"
+      quote: "\"--neuron.epoch_length\",\n        type=int,\n        help=\"The default epoch length (how often we set weights, measured in 12 second blocks).\",\n        default=160,"
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "distributed_training/base/validator.py"
+      line_ref: "480-481"
+      quote: "alpha: float = self.config.neuron.moving_average_alpha\n        self.scores: np.ndarray = alpha * scattered_rewards + (1 - alpha) * self.scores"
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "distributed_training/utils/config.py"
+      line_ref: "386-391"
+      quote: "\"--neuron.moving_average_alpha\",\n            type=float,\n            help=\"Moving average alpha parameter, how much to add of the new observation.\",\n            default=0.6,"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "distributed_training/validator/reward.py"
+      line_ref: "530-550"
+      quote: "def score_repo(self, uid: int, prefix: str) -> bool:\n    \"\"\"\n    Check if the miner's R2 manifest exists and is recent enough."
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "distributed_training/validator/reward.py"
+      line_ref: "509-511"
+      quote: "if (score_status[0].item() != self.world_size) and self.master:\n                reset_uid_train_scores(self, uid)"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "distributed_training/utils/config.py"
+      line_ref: "403-408"
+      quote: "\"--neuron.vpermit_tao_limit\",\n            type=int,\n            ...\n            default=40960,"
+    - claim_field: "/per_miner_state/notes"
+      source_path: "distributed_training/base/validator.py"
+      line_ref: "68-79"
+      quote: "self.openskill_model = PlackettLuce(\n                beta=self.config.neuron.openskill_beta,\n                tau=self.config.neuron.openskill_tau,\n            )\n            ...\n            self.uid_tracker = {\n                uid: UidTracker(uid=uid) for uid in self.metagraph.uids.tolist()\n            }"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "distributed_training/base/validator.py"
+      line_ref: "397-402"
+      quote: "for uid, hotkey in enumerate(self.hotkeys):\n            if hotkey != self.metagraph.hotkeys[uid]:\n                self.scores[uid] = 0  # hotkey has been replaced\n                self.uid_tracker[uid] = UidTracker(\n                    uid=uid\n                )  # reset uid_tracker for this uid"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "distributed_training/utils/config.py"
+      line_ref: "410-422"
+      quote: "\"--neuron.openskill_beta\",\n            ...\n            default=7,\n        )\n        ...\n            \"--neuron.openskill_tau\",\n            ...\n            default=0.1,"
+  unresolved:
+    - "/subnet/netuid — netuid not pinned in source; config default is 1 (placeholder), real finney netuid not stated in repo."
+    - "/aggregation/method — train uses OpenSkill rank-based rating while all_reduce/repo are linear; modelled as weighted_average but no single documented method name exists."
+    - "/scoring_signals/0/normalization — train.random.score is an OpenSkill ordinal (rank-derived) but no explicit normalization label; 'rank' is an approximation."
+    - "/documentation/source_version — README has no version tag for the incentive mechanism."

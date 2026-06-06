@@ -1,0 +1,259 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+# BURNING_RATE = 1.0 means 100% of weight goes to OWNER_HOTKEY; the documented genomics
+# scoring pipeline is fully implemented but its weight output is multiplied by (1 - 1.0) = 0.
+# The forward loop also short-circuits to a burn-only set_weights when BURNING_RATE == 1.0.
+mechanism_status: full_burn
+mechanism_status_notes: >-
+  BURNING_RATE is hard-coded to 1.0. In set_weights, miner weights are scaled by
+  (1 - BURNING_RATE) = 0 and the owner UID receives the full BURNING_RATE = 1.0. The
+  forward() loop additionally branches to a burn-only path (set_weights([], "") then
+  subtensor.set_weights) whenever BURNING_RATE == 1.0, so the genomic VCF scoring
+  pipeline does not currently influence on-chain emissions.
+
+subnet:
+  name: "NIOME (Privacy-Safe Genomic Intelligence)"
+  owner_repo: "genomesio__subnet-niome"
+  netuid: 55
+  implementation_lang: python
+
+task:
+  summary: >-
+    Validators fetch a synthetic genomic simulation task (paired-end FASTQ reads plus
+    expected variant count) from the NIOME backend and broadcast it to miners. Each miner
+    runs a variant-calling / generative genomics pipeline and returns a VCF file of called
+    variants. Validators score the miner VCF against a held-out ground-truth VCF using
+    depth-weighted precision, recall and F1.
+  submission_format: [content_link]   # VCF content returned in the GenomicsTaskSynapse response (vcf_content)
+  submission_format_other: ""
+
+scoring_signals:
+  - name: weighted_precision
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.3
+    normalization: none
+    notes: >-
+      Depth-weighted precision tp_w / (tp_w + fp_w + 1e-9); variants weighted by a
+      difficulty heuristic (variant_weight: 0.3/0.6/1.0 by read depth). Contributes 0.3
+      to the final score.
+  - name: weighted_recall
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.3
+    normalization: none
+    notes: >-
+      Depth-weighted recall tp_w / (tp_w + fn_w + 1e-9). Contributes 0.3 to final score.
+  - name: weighted_f1
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.4
+    normalization: none
+    notes: >-
+      Depth-weighted F1 = 2*p*r/(p+r+1e-9). Contributes 0.4 to final score
+      (final_score = 0.4*f1 + 0.3*p + 0.3*r).
+  - name: response_time
+    metric_kind: latency
+    direction: lower_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      response_time is recorded and passed to final_score(), but the time-penalty term
+      (score2) is commented out, so response time currently does NOT affect the score.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Held-out truth VCF and reference FASTA fetched from the NIOME backend per task,
+      normalized via bcftools and compared as exact variant sets.
+    source_identifier: "https://niome-api.genomes.io/api/tasks/ground_truth"
+    trust_model: trusted
+    notes: >-
+      Ground truth (truth_vcf, ref) is downloaded from the centralized genomes.io backend;
+      depth map derived from a BAM built by aligning task reads with bwa/samtools.
+
+aggregation:
+  method: rank_based
+  composition: weighted_sum            # final_score is a weighted sum of f1/precision/recall
+  normalization: sum_to_one
+  normalization_other: ""
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "5DJ5fT174AY8GzbYHnamYQCJd4cTcj2Zf7ogUvBhry1KfYVd"   # OWNER_HOTKEY
+    fraction: 1.0                      # BURNING_RATE = 1.0
+    dynamic: false
+    notes: >-
+      final_weights = full_miner_weights * (1 - BURNING_RATE); owner gets += BURNING_RATE.
+      With BURNING_RATE = 1.0 the owner receives 100% of emissions.
+  notes: >-
+    SCORING_SYSTEM = "top": process_scores_top keeps only the top TOP_MINER_COUNT (10)
+    positive-scoring miners and assigns weights from SCORE_DISTRIBUTION
+    [0.6, 0.2, 0.05, 0.04, 0.03, 0.02, 0.02, 0.02, 0.01, 0.01] (renormalized), ranked by
+    descending final_score. A "linear" proportional alternative exists but is not selected.
+
+weight_setting:
+  cadence: other
+  cadence_other: "block-phased within a fixed INTERVAL_BLOCKS cycle"
+  method: >-
+    Phased loop keyed off chain block: fetch miners' VCFs at FETCHING_BLOCK offset, run
+    validation/scoring at VALIDATION_BLOCK offset, within each INTERVAL_BLOCKS cycle since
+    BASE_BLOCK_NUMBER. set_weights builds a normalized weight vector then applies burn.
+  on_chain_call: set_weights
+  tempo_or_interval: "INTERVAL_BLOCKS = 2400 (FETCHING_BLOCK=0, VALIDATION_BLOCK=750, WEIGHT_SET_BLOCK=900)"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA/moving average of the final reward; scores are recomputed fresh each cycle and
+      converted directly to weights.
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Miner responses whose non-header variant line count != task.expected_variant_count are
+      skipped (continue) and never scored. Axons with ip == '0.0.0.0' are also skipped.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      Validator task/ground-truth requests to the backend are signed with the validator
+      hotkey (build_signature_headers / canonical JSON signature) to authenticate the caller.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: false
+  state_kinds: []
+  status_values: []
+  reset_policy: ""
+  notes: >-
+    Per-cycle scoring only; self.scores array is reset to zero on hotkey replacement in
+    resync_metagraph but is not used as a moving average for weight setting.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/validator_guide.md"
+  completeness: medium
+
+provenance:
+  confidence_overall: high
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  extractor_notes: >-
+    Code-authoritative extraction. The genomics scoring pipeline is fully implemented but
+    operationally dormant because BURNING_RATE == 1.0 routes all emissions to the owner.
+  evidence:
+    - claim_field: "/mechanism_status"
+      source_path: "niome_subnet/utils/constants.py"
+      line_ref: "34"
+      quote: "BURNING_RATE = 1.0"
+      confidence: high
+    - claim_field: "/mechanism_status_notes"
+      source_path: "niome_subnet/validator/forward.py"
+      line_ref: "288-298"
+      quote: "if BURNING_RATE == 1.0 and not self.is_validating: ... self.set_weights([], \"\") ... self.subtensor.set_weights("
+      confidence: high
+    - claim_field: "/subnet/netuid"
+      source_path: "niome_subnet/utils/constants.py"
+      line_ref: "3"
+      quote: "MAINNET_UID = 55"
+      confidence: high
+    - claim_field: "/subnet/name"
+      source_path: "README.md"
+      line_ref: "1"
+      quote: "# NIOME : Bittensor Subnet(SN55) for Privacy-Safe Genomic Inteligence"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "niome_subnet/validator/forward.py"
+      line_ref: "183-223"
+      quote: "Fetching miners' vcf... response.vcf_content ... if variant_count != task.expected_variant_count: continue"
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "niome_subnet/genomics/scoring.py"
+      line_ref: "138-139"
+      quote: "with open(miner_origin_vcf, \"w\") as f: f.write(miner_submission.vcf_content)"
+      confidence: high
+    - claim_field: "/scoring_signals/2/weight"
+      source_path: "niome_subnet/genomics/scoring.py"
+      line_ref: "127"
+      quote: "score1 = 0.4 * f1 + 0.3 * p + 0.3 * r"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "niome_subnet/genomics/scoring.py"
+      line_ref: "116-118"
+      quote: "precision = tp_w / (tp_w + fp_w + 1e-9); recall = tp_w / (tp_w + fn_w + 1e-9); f1 = 2 * precision * recall / (precision + recall + 1e-9)"
+      confidence: high
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "niome_subnet/genomics/scoring.py"
+      line_ref: "126-129"
+      quote: "def final_score(p, r, f1, response_time): score1 = 0.4 * f1 + 0.3 * p + 0.3 * r; # score2 = (max(FORWARD_TIMEOUT - response_time, 0) / FORWARD_TIMEOUT) ** 2 * score1; return score1"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "niome_subnet/genomics/scoring.py"
+      line_ref: "98-105"
+      quote: "def variant_weight(depth): if depth < 10: return 0.3 elif depth < 20: return 0.6 else: return 1.0"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "niome_subnet/utils/constants.py"
+      line_ref: "18"
+      quote: "GROUND_TRUTH_URL = f\"{BASE_URL}/api/tasks/ground_truth\""
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "niome_subnet/utils/constants.py"
+      line_ref: "10-11,33"
+      quote: "TOP_MINER_COUNT = 10; SCORE_DISTRIBUTION = [0.6, 0.2, 0.05, 0.04, 0.03, 0.02, 0.02, 0.02, 0.01, 0.01]; SCORING_SYSTEM = \"top\""
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "niome_subnet/utils/weight_utils.py"
+      line_ref: "241-268"
+      quote: "Only the top TOP_MINER_COUNT miners (with positive scores) receive weight. Weights are assigned according to SCORE_DISTRIBUTION"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "niome_subnet/base/validator.py"
+      line_ref: "290-293"
+      quote: "final_weights = full_miner_weights * (1 - BURNING_RATE) ... final_weights[owner_uid] += BURNING_RATE"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "niome_subnet/utils/constants.py"
+      line_ref: "35"
+      quote: "OWNER_HOTKEY = \"5DJ5fT174AY8GzbYHnamYQCJd4cTcj2Zf7ogUvBhry1KfYVd\""
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "niome_subnet/base/validator.py"
+      line_ref: "163-170"
+      quote: "result, msg = self.subtensor.set_weights(wallet=self.wallet, netuid=self.config.netuid, uids=self.uids, weights=self.weights,"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "niome_subnet/utils/constants.py"
+      line_ref: "37-41"
+      quote: "BASE_BLOCK_NUMBER = 8034230; INTERVAL_BLOCKS = 2400; FETCHING_BLOCK = 0; VALIDATION_BLOCK = 750; WEIGHT_SET_BLOCK = 900"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "niome_subnet/validator/forward.py"
+      line_ref: "300-305"
+      quote: "if (self.block - BASE_BLOCK_NUMBER) % INTERVAL_BLOCKS == FETCHING_BLOCK ... elif (self.block - BASE_BLOCK_NUMBER) % INTERVAL_BLOCKS == VALIDATION_BLOCK"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "niome_subnet/validator/forward.py"
+      line_ref: "206-219"
+      quote: "if axon.ip == '0.0.0.0': continue ... if variant_count != task.expected_variant_count: continue"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "niome_subnet/validator/forward.py"
+      line_ref: "52-66"
+      quote: "signature = self.wallet.hotkey.sign(canonical).hex() ... headers=self.build_signature_headers(signature=signature, hotkey=..."
+      confidence: high
+  unresolved:
+    - "Exact emission/normalization parameters enforced by subtensor (min_allowed_weights, max_weight_limit) are chain-side, not in repo."
+    - "Whether BURNING_RATE is intended to be temporary (bootstrap) vs permanent is not documented in the source."

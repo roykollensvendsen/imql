@@ -1,0 +1,220 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: mixed
+mechanism_status_notes: >-
+  Documented scoring is delegated to an external service API (/sapi/node/task/validate) whose logic
+  is not in this repo; the in-repo reward() in template/validator/reward.py is the unmodified
+  Yuma-template dummy (response == query*2) and is not called. The live validator blends external
+  API rewards with stake-based rewards (default 50/50) and falls back to pure stake-weighting when
+  the external API returns no usable values, so on-chain emission can be stake-driven rather than
+  performance-driven.
+
+subnet:
+  name: "Bittensor Subnet Taoillium"
+  owner_repo: "taoillium__bittensor-subnet-taoillium"
+  netuid: null
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners serve an axon answering a ServiceProtocol synapse (health/ping message types). The
+    validator selects miner UIDs (from an external service API list or random sampling), pings them,
+    then submits the uids/responses to an external service API endpoint (/sapi/node/task/validate)
+    which returns per-uid numeric values. Those values are normalized to rewards. What is actually
+    rewarded (the substance of the task) lives in the off-repo service backend, not in this template.
+  submission_format: [api_response]
+
+scoring_signals:
+  - name: external_service_value
+    metric_kind: other
+    metric_kind_other: "per-uid numeric value returned by external service API /sapi/node/task/validate"
+    direction: higher_is_better
+    weight: 0.5
+    normalization: min_max
+    notes: >-
+      Validator computes rewards = [x/total for x in values] (proportional normalization), then in
+      update_scores weights this by external_reward_weight (default 0.5). The semantics of the value
+      are defined by the off-repo service, not in this codebase.
+  - name: stake_share
+    metric_kind: other
+    metric_kind_other: "normalized on-chain stake share (metagraph.S[uids] / sum)"
+    direction: higher_is_better
+    weight: 0.5
+    normalization: min_max
+    notes: >-
+      _calculate_stake_rewards normalizes metagraph stake to sum-to-one; weighted by
+      (1 - external_reward_weight) = 0.5 by default, and used alone when external rewards sum to 0.
+
+ground_truth_sources:
+  - kind: other
+    kind_other: "external service API (off-repo backend)"
+    description: >-
+      The validator POSTs uids/responses to /sapi/node/task/validate via ServiceApiClient and trusts
+      the returned 'values' as the scoring ground truth. The scoring logic is not in this repository.
+    source_identifier: "/sapi/node/task/validate"
+    trust_model: oracle
+    notes: "Also fetches the candidate uid list from /sapi/node/neuron/list-valid."
+  - kind: other
+    kind_other: "on-chain stake (metagraph.S)"
+    description: "Stake values read from the metagraph, used as the fallback/secondary scoring source."
+    source_identifier: "metagraph.S"
+    trust_model: trusted
+    notes: ""
+
+aggregation:
+  method: weighted_average
+  composition: hybrid
+  normalization: l1
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: "No burn / no UID-zero allocation present in code."
+  notes: >-
+    combined_rewards = external_weight * rewards + (1 - external_weight) * stake_rewards, with
+    external_weight = external_reward_weight (default 0.5). If sum(external rewards) <= 0, combined =
+    stake_rewards only. The per-step combined rewards feed an EMA (see weight_setting.smoothing).
+    In set_weights, the EMA scores are L1-normalized (norm = ||scores||_1) before being passed to
+    process_weights_for_netuid.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    raw_weights = scores / L1-norm(scores); process_weights_for_netuid(); convert_weights_and_uids_for_emit();
+    subtensor.set_weights(version_key=spec_version).
+  on_chain_call: set_weights
+  tempo_or_interval: "epoch_length default 100 blocks (clamped to chain tempo if smaller)"
+  smoothing:
+    kind: ema
+    alpha: 0.1
+    window: null
+    notes: >-
+      self.scores = alpha * scattered_rewards + (1 - alpha) * self.scores, alpha =
+      neuron.moving_average_alpha (default 0.1).
+
+anti_gaming:
+  - kind: stake_weighting
+    enforcement: other
+    enforcement_other: "stake mixed into score (default 50%) and used as sole fallback"
+    description: >-
+      Stake-based rewards are blended at (1 - external_reward_weight) = 0.5 of the score and become
+      the entire score when external rewards are invalid/empty, biasing emission toward higher stake.
+  - kind: liveness_check
+    enforcement: rejection
+    description: >-
+      _filter_valid_axons drops UIDs whose axon is 0.0.0.0 or port 0; validator's own UID is filtered
+      out of the scored set; dendrite ping has a 15s timeout producing success=False responses.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score]
+  status_values: []
+  reset_policy: >-
+    On metagraph resync, scores[uid] is zeroed when the hotkey at that uid changes; scores array is
+    grown (zero-filled) when the metagraph grows. State (step, scores, hotkeys) persisted to state.npz.
+  notes: "EMA moving-average score per uid is the only tracked per-miner state."
+
+documentation:
+  status: code_authoritative
+  source_version: "template __version__ 0.0.1"
+  primary_docs:
+    - "README.md"
+    - "template/base/validator.py"
+    - "neurons/validator.py"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "neurons/validator.py"
+      line_ref: "27"
+      quote: "import bittensor as bt"
+    - claim_field: "/mechanism_status"
+      source_path: "neurons/validator.py"
+      line_ref: "186-189"
+      quote: "When validation conditions are not met, use empty rewards (will trigger stake-only scoring) ... empty_rewards = [0.0] * len(uids)  # Empty rewards to trigger stake-only mode"
+    - claim_field: "/task/submission_format"
+      source_path: "neurons/validator.py"
+      line_ref: "163-168"
+      quote: "result = self.api_post(\"/sapi/node/task/validate\", data) ... values = result.get('values', [])"
+    - claim_field: "/scoring_signals/0/normalization"
+      source_path: "neurons/validator.py"
+      line_ref: "173-176"
+      quote: "if len(values) == len(uids) and result.get('uids') == uids and total > 0: ... rewards = [x / total for x in values]"
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "template/utils/config.py"
+      line_ref: "218-223"
+      quote: "--neuron.external_reward_weight ... Weight for external rewards in hybrid scoring (0.0 to 1.0). The remaining weight goes to stake-based rewards. default=0.5"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "template/base/validator.py"
+      line_ref: "486-487"
+      quote: "# Normalize stake values to [0, 1] range (sum to 1)\n        stake_rewards = stake_values / total_stake"
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "neurons/validator.py"
+      line_ref: "106"
+      quote: "result = client.get(\"/sapi/node/neuron/list-valid\")"
+    - claim_field: "/aggregation/notes"
+      source_path: "template/base/validator.py"
+      line_ref: "437-438"
+      quote: "stake_weight = 1.0 - external_weight\n            combined_rewards = external_weight * rewards + stake_weight * stake_rewards"
+    - claim_field: "/aggregation/method"
+      source_path: "template/base/validator.py"
+      line_ref: "444-447"
+      quote: "# Use only stake-based rewards when external rewards are invalid\n            combined_rewards = stake_rewards"
+    - claim_field: "/aggregation/normalization"
+      source_path: "template/base/validator.py"
+      line_ref: "294-301"
+      quote: "norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True) ... raw_weights = self.scores / norm"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "template/base/validator.py"
+      line_ref: "328-336"
+      quote: "result, msg = self.subtensor.set_weights(wallet=self.wallet, netuid=self.config.netuid, uids=uint_uids, weights=uint_weights, ... version_key=self.spec_version,)"
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "template/base/validator.py"
+      line_ref: "457-463"
+      quote: "alpha: float = self.config.neuron.moving_average_alpha ... self.scores = (alpha * scattered_rewards + (1 - alpha) * self.scores)"
+    - claim_field: "/weight_setting/smoothing/alpha#default"
+      source_path: "template/utils/config.py"
+      line_ref: "211-216"
+      quote: "--neuron.moving_average_alpha ... Moving average alpha parameter, how much to add of the new observation. default=0.1"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "template/utils/config.py"
+      line_ref: "84-89"
+      quote: "--neuron.epoch_length ... The default epoch length (how often we set weights, measured in 12 second blocks). default=100"
+    - claim_field: "/weight_setting/cadence"
+      source_path: "template/base/neuron.py"
+      line_ref: "289-290"
+      quote: "if (self.block - self.metagraph.last_update[self.uid]) > self.get_epoch_length():"
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "neurons/validator.py"
+      line_ref: "308-311"
+      quote: "if axon.ip == \"0.0.0.0\" or axon.port == 0: ... else: valid_uids.append(uid_int)"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "template/base/validator.py"
+      line_ref: "371-373"
+      quote: "for uid, hotkey in enumerate(self.hotkeys): if hotkey != self.metagraph.hotkeys[uid]: self.scores[uid] = 0  # hotkey has been replaced"
+    - claim_field: "/per_miner_state/notes"
+      source_path: "template/base/validator.py"
+      line_ref: "499-504"
+      quote: "np.savez(self.config.neuron.full_path + \"/state.npz\", step=self.step, scores=self.scores, hotkeys=self.hotkeys,)"
+    - claim_field: "/mechanism_status_notes"
+      source_path: "template/validator/reward.py"
+      line_ref: "33-35"
+      quote: "rewards val: {1.0 if response == query * 2 else 0} ... return 1.0 if response == query * 2 else 0"
+  unresolved:
+    - "subnet.netuid: not pinned in repo (config default --netuid 1 is the Yuma-template placeholder, not an asserted live netuid)."
+    - "Substance of the external service scoring (/sapi/node/task/validate): logic lives in an off-repo backend; cannot cite its scoring formula."
+    - "min_weight_floor / decay_rate / temperature: no such constants present in code."

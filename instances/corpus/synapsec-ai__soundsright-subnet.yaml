@@ -1,0 +1,318 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Live scoring path runs each competition: determine_competition_scores -> calculate_overall_scores
+  -> commit_weights -> subtensor.set_weights. No burn allocation present in code. Winner-takes-all per
+  competition with a smaller proportional 'remainder' pool split among non-winning models.
+
+subnet:
+  name: "SoundsRight"
+  owner_repo: "synapsec-ai__soundsright-subnet"
+  netuid: 105
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners fine-tune speech-enhancement models (denoising and dereverberation, at 16 kHz and 48 kHz)
+    and upload them to HuggingFace. Validators download each model, run it on a freshly generated TTS +
+    noise/reverb dataset, and benchmark output quality with metrics (PESQ, ESTOI, SI_SDR, SI_SIR,
+    SI_SAR). Each competition is winner-takes-all: the best-performing model for a given competition/
+    metric receives the competition score, with a smaller remainder pool distributed proportionally to
+    the other valid models by performance ratio.
+  submission_format: [model_weights]
+
+scoring_signals:
+  - name: PESQ
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 0.6
+    normalization: none
+    notes: >-
+      Perceptual quality metric. Weight 0.6 within DENOISING_16000HZ and DEREVERBERATION_16000HZ
+      competitions via metric_proportions. Higher average is better (best model selected by highest
+      average).
+  - name: ESTOI
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 0.4
+    normalization: none
+    notes: >-
+      Intelligibility metric. Weight 0.4 in 16 kHz competitions, 0.4 in DENOISING_48000HZ, 0.6 in
+      DEREVERBERATION_48000HZ via metric_proportions.
+  - name: SI_SDR
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Scale-invariant signal-to-distortion ratio. metric_proportions weight differs per competition
+      (0.2 DENOISING_48000HZ, 0.4 DEREVERBERATION_48000HZ); per-signal additive weight not single-valued.
+  - name: SI_SIR
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 0.2
+    normalization: none
+    notes: "Scale-invariant signal-to-interference ratio. Weight 0.2 in DENOISING_48000HZ."
+  - name: SI_SAR
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 0.2
+    normalization: none
+    notes: "Scale-invariant signal-to-artifact ratio. Weight 0.2 in DENOISING_48000HZ."
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Validator generates a fresh TTS dataset (ElevenLabs) each competition and mixes with WHAM noise
+      and Arni RIR reverb, seeded deterministically from a block-extrinsics hash. SGMSE+ is benchmarked
+      as a reference/exclusion baseline so models cannot just reproduce its output.
+    source_identifier: "ElevenLabs TTS + WHAM noise + Arni RIR; SGMSE+ baseline"
+    trust_model: trusted
+    notes: >-
+      Seed derived from sha256 of extrinsics of a block divisible by seed_interval (100), making the
+      dataset hard to predict. sgmse_value excluded in get_best_current_model_from_list.
+
+aggregation:
+  method: winner_take_all
+  composition: weighted_sum
+  normalization: other
+  normalization_other: >-
+    Final self.scores divided by max(weights) in normalize_weights_list before set_weights (peak
+    normalized to 1.0, not sum-to-one). Per-competition scores are summed across competitions first.
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: "No burn allocation in scoring or weight-setting code."
+  notes: >-
+    Per competition/metric, competition_metric_score = competition_max_scores[competition] *
+    metric_proportions[competition][metric] is assigned to the single best model. A separate
+    '_remainder' pool (competition_max_scores[<comp>_remainder]) is split proportionally among other
+    valid models by performance_ratio (model_avg/best_avg) in assign_remainder_scores. Overall score =
+    sum of competition_scores across all competitions. competition_max_scores: DENOISING_16000HZ=10,
+    DEREVERBERATION_16000HZ=10, DENOISING_48000HZ=45, DEREVERBERATION_48000HZ=20; remainder pools 3/2/5/5.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    handle_weight_setting triggers commit_weights when current_block >= last_updated_block + 350.
+    weights = self.scores; negative weights clamped to 0; normalized so peak = max_weight_limit;
+    optionally mutated by anti-weight-copying algorithm (softmax / power-scaling / identity) when
+    wc_prevention_protcool is enabled.
+  on_chain_call: set_weights
+  tempo_or_interval: "350 blocks (last_updated_block + 350)"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      Scores fully recomputed (init_default_scores then determine_competition_scores) each competition;
+      no EMA over the final reward. Competitions recur every period_days at 09:00 GMT.
+
+anti_gaming:
+  - kind: deduplication
+    enforcement: rejection
+    description: >-
+      filter_models_with_same_hash, filter_models_with_same_ckpt_hash and
+      filter_models_with_same_metadata remove duplicate models (same directory hash, checkpoint hash,
+      or namespace/name/revision), keeping the model uploaded to chain first (lowest block).
+  - kind: deterministic_check
+    enforcement: barrier
+    description: >-
+      A new model must beat the current best historical model by an improvement_factor (linear-decay
+      from 0.0035 to 0.0015 over 50400 blocks) to take the win; otherwise the historical winner keeps
+      the score (new_model_surpasses_historical_model).
+  - kind: data_augmentation
+    enforcement: barrier
+    description: >-
+      Dataset regenerated each competition with a seed derived from a sha256 hash of block extrinsics
+      (block divisible by seed_interval=100), so miners cannot precompute outputs for a known dataset.
+  - kind: code_inspection
+    enforcement: penalty
+    description: >-
+      Anti weight-copying (wc_prevention) protocol: validator commits a trusted-validator bitmap to
+      chain and mutates its own weight vector via softmax (alg1), power-scaling (alg2, power=0.63), or
+      identity (alg3) chosen from aggregated miner nonces.
+
+sub_competitions:
+  structure: per_task_type
+  stages:
+    - name: DENOISING_16000HZ
+      role: main
+      advancement_rule: "best avg metric (PESQ 0.6 / ESTOI 0.4) wins; max score 10, remainder 3"
+    - name: DEREVERBERATION_16000HZ
+      role: main
+      advancement_rule: "best avg metric (PESQ 0.6 / ESTOI 0.4) wins; max score 10, remainder 2"
+    - name: DENOISING_48000HZ
+      role: main
+      advancement_rule: "best avg metric (ESTOI 0.4 / SI_SDR 0.2 / SI_SIR 0.2 / SI_SAR 0.2) wins; max score 45, remainder 5"
+    - name: DEREVERBERATION_48000HZ
+      role: main
+      advancement_rule: "best avg metric (ESTOI 0.6 / SI_SDR 0.4) wins; max score 20, remainder 5"
+  count: 4
+  notes: >-
+    Four parallel competitions (task x sample rate). Scores summed across all to form overall score.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, performance_ledger]
+  status_values: []
+  reset_policy: >-
+    Scores reset each new competition (init_default_scores) then recomputed. best_miner_models tracks
+    the prior competition's winner per competition (carried via pickle state). Per-hotkey score reset to
+    0.0 when a hotkey is replaced in the metagraph (check_hotkeys / reset_hotkey_scores).
+  notes: >-
+    best_miner_models and miner_models persisted in pickle files; blacklisted_miner_models tracked but
+    no status enum.
+
+documentation:
+  status: code_authoritative
+  source_version: "module_version 2.1.4, score_version 7"
+  primary_docs: ["README.md"]
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8"
+  extracted_at: "2026-06-06"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "1"
+      quote: "SoundsRight (SN 105)"
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "soundsright/base/benchmarking/scoring.py"
+      line_ref: "1-3"
+      quote: "import bittensor as bt\nimport numpy as np"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "8-12"
+      quote: "Miners in the subnet will upload their fine-tuned models to HuggingFace, and the subnet's validators are in charge of downloading the models and benchmarking their performance. **Each competition is winner-takes-all.**"
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "10"
+      quote: "Miners in the subnet will upload their fine-tuned models to HuggingFace"
+      confidence: high
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "soundsright/core/validator/validator.py"
+      line_ref: "118-137"
+      quote: "\"DENOISING_16000HZ\":{\n                \"PESQ\":0.6,\n                \"ESTOI\":0.4,"
+      confidence: high
+    - claim_field: "/scoring_signals/2/name"
+      source_path: "soundsright/core/validator/validator.py"
+      line_ref: "127-136"
+      quote: "\"DENOISING_48000HZ\":{\n                \"ESTOI\":0.4,\n                \"SI_SDR\":0.2,\n                \"SI_SIR\":0.2,\n                \"SI_SAR\":0.2,"
+      confidence: high
+    - claim_field: "/scoring_signals/0/direction"
+      source_path: "soundsright/base/benchmarking/scoring.py"
+      line_ref: "16-17"
+      quote: "It is assumed that the higher the metric value, the better the performance."
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "soundsright/core/validator/validator.py"
+      line_ref: "244-254"
+      quote: "Data.create_noise_and_reverb_data_for_all_sampling_rates("
+      confidence: medium
+    - claim_field: "/ground_truth_sources/0/notes"
+      source_path: "soundsright/core/validator/validator.py"
+      line_ref: "664-688"
+      quote: "Obtains a seed based on a hash of the extrinsics the most \n        recent block with a block number divisible by 50."
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "README.md"
+      line_ref: "12"
+      quote: "**Each competition is winner-takes-all.**"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "soundsright/core/validator/validator.py"
+      line_ref: "108-117"
+      quote: "self.competition_max_scores = {\n            'DENOISING_16000HZ':10,\n            'DEREVERBERATION_16000HZ':10,\n            'DENOISING_16000HZ_remainder':3,\n            'DEREVERBERATION_16000HZ_remainder':2,\n            'DENOISING_48000HZ':45,\n            'DEREVERBERATION_48000HZ':20,\n            'DENOISING_48000HZ_remainder':5,\n            'DEREVERBERATION_48000HZ_remainder':5,"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "soundsright/base/benchmarking/scoring.py"
+      line_ref: "326"
+      quote: "competition_metric_score = competition_max_scores[competition] * metric_proportions[competition][metric_name]"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "soundsright/base/benchmarking/scoring.py"
+      line_ref: "248-253"
+      quote: "ratio_sum = sum([m[\"performance_ratio\"] for m in model_tracker_list])\n            remainder_key = f\"{competition}_remainder\"\n            remainder_score = competition_max_scores[remainder_key] * metric_proportions[competition][metric]"
+      confidence: high
+    - claim_field: "/aggregation/normalization_other"
+      source_path: "soundsright/core/validator/validator.py"
+      line_ref: "1446-1452"
+      quote: "def normalize_weights_list(weights, max_value:int):\n            if all(x==1 for x in weights):\n                return [(x/max_value) for x in weights]\n            elif all(x==0 for x in weights):\n                return [0.01 for x in weights]\n            else:\n                return [(x/max(weights)) for x in weights]"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/enabled"
+      source_path: "soundsright/core/validator/validator.py"
+      line_ref: "1456-1503"
+      quote: "weights = self.scores"
+      confidence: medium
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "soundsright/core/validator/validator.py"
+      line_ref: "1496-1503"
+      quote: "result = self.subtensor.set_weights(\n                netuid=self.neuron_config.netuid,"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "soundsright/core/validator/validator.py"
+      line_ref: "1393"
+      quote: "if self.subtensor.get_current_block() >= self.last_updated_block + 350 and not self.debug_mode:"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "soundsright/core/validator/validator.py"
+      line_ref: "1470-1493"
+      quote: "weights = normalize_weights_list(\n                weights=weights,\n                max_value=max_value,\n            )\n\n            weights = filter_negative_weights(weights = weights)"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/kind"
+      source_path: "soundsright/core/validator/validator.py"
+      line_ref: "2300-2320"
+      quote: "self.init_default_scores()\n\n                    # Calculate scores for each competition\n                    self.best_miner_models, self.competition_scores = Benchmarking.determine_competition_scores("
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "soundsright/base/benchmarking/scoring.py"
+      line_ref: "655-672"
+      quote: "Filter out model results if there are two models with the same model (namspace, name, revision and class).\n    \n    We keep the model whose metadata was uploaded to the chain first."
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "soundsright/base/benchmarking/scoring.py"
+      line_ref: "9-13"
+      quote: "def calculate_improvement_factor(new_model_block, old_model_block, start_improvement = 0.0035, end_improvement = 0.0015, decay_block = 50400) -> float:"
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "soundsright/core/validator/validator.py"
+      line_ref: "664-693"
+      quote: "seed = int(hash_obj.hexdigest()[:8], 16)"
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "soundsright/core/validator/validator.py"
+      line_ref: "1415-1437"
+      quote: "def weights_mutation_alg2(self, weights: list, max_value: int) -> list:\n        \"\"\"Power Scaling\"\"\"\n        if not weights:\n            return []\n        \n        power = 0.63"
+      confidence: high
+    - claim_field: "/sub_competitions/structure"
+      source_path: "soundsright/core/validator/validator.py"
+      line_ref: "88-95"
+      quote: "self.sample_rates = [16000, 48000]\n        self.tasks = ['DENOISING','DEREVERBERATION']\n        self.miner_models = {\n            'DENOISING_16000HZ':[],\n            'DEREVERBERATION_16000HZ':[],\n            'DENOISING_48000HZ':[],\n            'DEREVERBERATION_48000HZ':[],"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "soundsright/core/validator/validator.py"
+      line_ref: "835-838"
+      quote: "def reset_hotkey_scores(self, hotkey_index) -> None:\n        self.scores[hotkey_index] = 0.0\n        for competition in self.competition_scores: \n            self.competition_scores[competition][hotkey_index] = 0.0"
+      confidence: high
+    - claim_field: "/documentation/source_version"
+      source_path: "soundsright/base/utils/config.py"
+      line_ref: "16-19"
+      quote: "self.__version__ = \"2.1.4\"\n\n        # Determine the score version\n        self.__score_version__ = \"7\""
+      confidence: high
+  unresolved:
+    - "period_days / start_date competition recurrence interval are set elsewhere (BaseNeuron); literal value not found in read files."
+    - "Per-signal additive weight for SI_SDR varies by competition (0.2 vs 0.4); recorded as null."
+    - "max_weight_limit value comes from on-chain subnet hyperparameters at runtime, not a source literal."

@@ -1,0 +1,261 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  The validator splits each epoch's weight between the winning miner and the
+  subnet owner's burn UID using a dynamically-fetched burn_ratio in [0,1]
+  (winner gets 1-burn_ratio, burn UID gets burn_ratio). On any error
+  (no metrics, all-invalid metrics, unreachable burn-ratio endpoint, winner not
+  in metagraph) it falls back to setting 100% weight on the burn UID. With a
+  default burn_ratio of 1.0 when parsing fails, the live behaviour skews toward
+  burning, hence partial_burn rather than active.
+
+subnet:
+  name: "TalkHead Subnet"
+  owner_repo: "talkheadai__talkhead-subnet"
+  netuid: 108
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners submit a Dockerized talking-head model identified by a Docker image
+    digest (repo@sha256:...). An external GPU executor service pulls each image,
+    runs warmup and scoring phases against a standardized challenge set, and
+    produces per-miner metrics (final_score, quality_score, efficiency such as
+    peak VRAM and inference time). The validator fetches these metrics and, via
+    a winner-take-all policy, assigns chain weight to the single highest-scoring
+    miner (the rest of the non-burned weight). The actual scoring computation
+    lives in a separate repository (talkheadai/talkhead-executor) and is not
+    present in this source tree.
+  submission_format: [content_link]
+  # Miners submit a Docker image digest reference (repo@sha256:...), i.e. a link
+  # to a container image rather than weights or code in-repo.
+
+scoring_signals:
+  - name: final_score
+    metric_kind: composite
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      The validator picks the winner as the miner with the maximum finite,
+      non-zero final_score. final_score is computed off-repo by the executor;
+      its internal composition (quality_score, efficiency/latency) is not
+      defined in this repository. README states lower latency produces a better
+      score and highest score wins.
+
+ground_truth_sources:
+  - kind: hardware_probe
+    description: >-
+      An external sandboxed GPU executor service pulls each miner's Docker image
+      and runs it against a standardized challenge set (warmup + scoring phases),
+      measuring quality and efficiency (peak VRAM, inference time) and emitting
+      a final_score per miner. The executor has no blockchain interaction and is
+      implemented in a separate repo (talkheadai/talkhead-executor).
+    source_identifier: "talkheadai/talkhead-executor"
+    trust_model: trusted
+    notes: >-
+      Validators read scores from the executor over HTTP (/metrics) using signed
+      subnet headers; the scoring logic itself is not in this repo.
+
+aggregation:
+  method: winner_take_all
+  composition: other
+  composition_other: >-
+    Single signal selected by argmax; no multi-signal composition in this repo.
+    Non-burned weight is assigned entirely to the single highest-final_score
+    miner.
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "burn_uid = metagraph index of subnet owner_hotkey"
+    fraction: null
+    dynamic: true
+    notes: >-
+      burn_ratio is fetched per cycle from the subnet API endpoint /burn_ratio
+      and clamped to [0,1]. Winner receives (1.0 - burn_ratio); burn UID
+      receives burn_ratio. If the winner UID equals the burn UID, that UID
+      receives 1.0. On failure to fetch/parse burn_ratio it defaults to 1.0
+      (full burn). Numerous error paths call _set_burn_only_weights() which
+      assigns 100% weight to the burn UID.
+  notes: >-
+    Weights are normalized to sum to one before set_weights (divided by total
+    when the sum deviates from 1.0 by more than 1e-9).
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Every INTERVAL_BLOCKS (180) blocks the validator fetches executor /metrics,
+    picks the single winner by max final_score, fetches burn_ratio, and sets
+    weights {winner: 1-burn_ratio, burn_uid: burn_ratio}. Error/empty/invalid
+    cases burn all weight to the burn UID.
+  on_chain_call: set_weights
+  tempo_or_interval: "180 blocks"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No temporal smoothing/EMA of the final reward in this repo. On a 304
+      (metrics Not Modified) response the validator keeps the latest weights and
+      re-sets them, but this is cache reuse rather than smoothing.
+
+anti_gaming:
+  - kind: rate_limit
+    enforcement: rejection
+    description: >-
+      Submissions from the same hotkey must be at least two days apart;
+      submitting again sooner returns HTTP 429 (Too Many Requests) from the
+      subnet API (enforced server-side, documented in README).
+  - kind: code_inspection
+    enforcement: other
+    enforcement_other: signed_request_authentication
+    description: >-
+      Validator requests to the subnet API and executor are authenticated with
+      signed subnet headers (signed_subnet_headers using the validator hotkey),
+      gating access to submissions, metrics, and burn_ratio endpoints.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: false
+  state_kinds: []
+  status_values: []
+  reset_policy: ""
+  notes: >-
+    The validator caches the previous winner UID and metrics etag in memory for
+    the 304-Not-Modified fast path, but maintains no persistent per-miner
+    ledger/reputation in this repo.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "config.py"
+      line_ref: "34"
+      quote: "netuid: int = 108"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "pyproject.toml"
+      line_ref: "1"
+      quote: "neurons/validator.py (python source tree; config.py, neurons/, utils/)"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "14"
+      quote: >-
+        TalkHead is a subnet where miners submit Dockerized talking-head models,
+        and validators evaluate them in a secure GPU executor to rank
+        performance and set weights.
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "16"
+      quote: "Miners submit Docker image digests that identify model runtime containers."
+    - claim_field: "/scoring_signals/0/name"
+      source_path: "neurons/validator.py"
+      line_ref: "163"
+      quote: "final_score = float(metrics.get(\"final_score\"))"
+    - claim_field: "/scoring_signals/0/direction"
+      source_path: "neurons/validator.py"
+      line_ref: "172-174"
+      quote: "return max(valid, key=lambda item: item[1])"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "README.md"
+      line_ref: "123-124"
+      quote: "Lower latency produces a better score."
+    - claim_field: "/ground_truth_sources/0/kind"
+      source_path: "README.md"
+      line_ref: "106-118"
+      quote: >-
+        The executor handles model evaluation: Pulls miner Docker images. Runs
+        images in a sandboxed environment. Sends challenge inputs and captures
+        outputs. Measures performance and updates a score table.
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "README.md"
+      line_ref: "104"
+      quote: "Github repo => [talkheadai/talkhead-executor](https://github.com/talkheadai/talkhead-executor)"
+    - claim_field: "/aggregation/method"
+      source_path: "README.md"
+      line_ref: "135-139"
+      quote: >-
+        Winner-take-all policy: Highest score wins. Winning miner receives
+        weight. All other miners receive zero.
+    - claim_field: "/aggregation/burn_allocation/enabled"
+      source_path: "neurons/validator.py"
+      line_ref: "288-291"
+      quote: >-
+        weight_by_uid: dict[int, float] = { self._winner_uid: (1.0 -
+        burn_ratio), self.burn_uid: burn_ratio, }
+    - claim_field: "/aggregation/burn_allocation/dynamic"
+      source_path: "neurons/validator.py"
+      line_ref: "266-283"
+      quote: >-
+        burn_status, burn_response = _http_json(
+        f"{self.subnet_api_url.rstrip('/')}/burn_ratio", ... burn_ratio_value =
+        burn_response.get("burn_ratio"); burn_ratio = max(0.0, min(1.0,
+        float(burn_ratio_value)))
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "neurons/validator.py"
+      line_ref: "101-103"
+      quote: >-
+        self.burn_uid = self.metagraph.hotkeys.index(
+        self.subtensor.subnet(netuid=self.netuid).owner_hotkey )
+    - claim_field: "/aggregation/normalization"
+      source_path: "neurons/validator.py"
+      line_ref: "300-301"
+      quote: "if abs(total - 1.0) > 1e-9: weight_by_uid = {uid: value / total for uid, value in weight_by_uid.items()}"
+    - claim_field: "/mechanism_status"
+      source_path: "neurons/validator.py"
+      line_ref: "284-286"
+      quote: >-
+        except Exception as e: bt.logging.warning(f"Failed to parse burn ratio:
+        {e}") burn_ratio = 1.0
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "neurons/validator.py"
+      line_ref: "309-316"
+      quote: >-
+        response = self.subtensor.set_weights( wallet=self.wallet,
+        netuid=self.netuid, uids=uids, weights=weights, ... )
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "neurons/validator.py"
+      line_ref: "27"
+      quote: "INTERVAL_BLOCKS = 180"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "README.md"
+      line_ref: "76"
+      quote: >-
+        Submissions from the same hotkey must be at least two days apart;
+        submitting again sooner returns HTTP **429** (Too Many Requests) from
+        the subnet API.
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "neurons/validator.py"
+      line_ref: "183-184"
+      quote: "headers=signed_subnet_headers(self.wallet, \"/submissions\"),"
+    - claim_field: "/per_miner_state/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "107-109"
+      quote: >-
+        self._winner_uid: int | None = None; self._metrics_etag: str | None =
+        ""; self._metrics_cache: list | None = None
+    - claim_field: "/documentation/status"
+      source_path: "README.md"
+      line_ref: "102-133"
+      quote: "## Executor and Scoring ... Validator behavior is split into two loops"
+  unresolved:
+    - "Internal composition of final_score (how quality_score, peak VRAM, inference time / latency combine) — computed in the off-repo talkheadai/talkhead-executor, not present in this tree."
+    - "Default/typical value of burn_ratio served by the subnet API /burn_ratio endpoint — not in this repo (only the [0,1] clamp and the 1.0 fallback-on-error are visible)."
+    - "Executor challenge set contents and warmup/scoring run parameters — off-repo."

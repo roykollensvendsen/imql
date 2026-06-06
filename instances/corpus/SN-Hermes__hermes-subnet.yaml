@@ -1,0 +1,275 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: mixed
+mechanism_status_notes: >-
+  The documented dual-scoring mechanism (synthetic fact-score x latency weight, plus
+  organic workload score, smoothed via overall EMA) is fully implemented in code. However the
+  live weight-setting path has several burn fallbacks: a remote-config burn_ratio (default 0,
+  but can be raised to 1.0 for full burn), an all-zero-scores burn to burn_uid, and a guard that
+  burns to burn_uid after 5 consecutive unchanged rounds. Whether the subnet currently scores or
+  burns depends on the runtime meta-config, which is not in the repo.
+
+subnet:
+  name: "SubQuery Hermes Subnet"
+  owner_repo: "SN-Hermes__hermes-subnet"
+  netuid: null
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners run a decentralized GraphQL query / blockchain-data-indexing agent. A validator poses
+    synthetic numerical questions about project schemas (counts, sums, averages) and also forwards
+    organic user requests; the miner returns a numerical answer. Rewards combine factual accuracy
+    of the answer against a validator-generated ground truth, scaled by response latency, plus an
+    organic-workload quality/quantity term.
+  submission_format: [api_response]
+
+scoring_signals:
+  - name: factual_accuracy_score
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      "Fact score" produced by a strict fact-checking LLM prompt comparing the miner response to
+      the validator's ground truth, on a 0-10 scale; clamped to max 10.0 in code. Multiplicative
+      with the latency weight (zip_scores = fact_score * elapse_weight), so weight is not additive.
+  - name: latency_weight
+    metric_kind: latency
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Quadratic weight w = 1 / (1 + elapsed_time/ground_truth_cost)^2, in [0,1]. Returns 0 if the
+      miner is not at least min_latency_improvement_ratio (default 0.2) faster than ground-truth
+      cost. Multiplies the fact score (gating/multiplicative, not additive).
+  - name: organic_workload_score
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: min_max
+    notes: >-
+      Per-miner organic score = min(0.5 * quality_ema + 0.5 * normalized_workload, 5). quality_ema
+      is an EMA (alpha=0.7) over up to 20 sampled organic fact*latency scores; normalized_workload
+      is min-max over miners of a 3-hour windowed completion count. Summed in as an extra row of the
+      score matrix alongside synthetic project scores.
+
+ground_truth_sources:
+  - kind: llm_judgment
+    description: >-
+      Validator generates the ground-truth numerical answer with its own GraphQL agent
+      (generate_ground_truth), then a separate scoring LLM grades the miner response against it.
+    source_identifier: "hermes/validator/challenge_manager.py:generate_ground_truth ; scorer_manager.cal_ground_truth_score"
+    trust_model: oracle
+    notes: >-
+      Default models google/gemini-3-flash-preview for both synthetic generation and scoring;
+      scoring LLM temperature 0. Project schemas pulled from SubQuery / IPFS.
+
+aggregation:
+  method: weighted_average
+  composition: hybrid
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "burn_uid (env BURN_UID, default 0)"
+    fraction: null
+    dynamic: true
+    notes: >-
+      burn_ratio from remote meta-config (default 0). If burn_ratio >= 1.0 or all scores are zero,
+      all weight goes to burn_uid (=1.0). For 0 < burn_ratio < 1.0, burn_weight =
+      scores_sum * burn_ratio / (1 - burn_ratio) is assigned to burn_uid. Also burns to burn_uid
+      after 5 consecutive unchanged rounds.
+  notes: >-
+    Per-signal: fact_score * latency_weight is multiplicative; project scores are summed across
+    projects (matrix sum axis=0); workload score is summed in as an extra row; final per-miner
+    score is then EMA-smoothed (overall EMA alpha default 0.5). On-chain normalization via
+    bt.utils.weight_utils.process_weights_for_netuid (sum-to-one).
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    Final per-miner overall-EMA scores sorted by uid become raw weights; burn logic applied;
+    process_weights_for_netuid normalizes; subtensor.set_weights submitted with version_key 10010.
+    Also force-submits near epoch boundary (epoch-guard) within a buffer of blocks.
+  on_chain_call: set_weights
+  tempo_or_interval: "SET_WEIGHT_INTERVAL env, default 1800 seconds (30 min)"
+  smoothing:
+    kind: ema
+    alpha: 0.5
+    window: null
+    notes: >-
+      overall_ema = EMAUpdater(alpha=0.5); synthetic_ema also alpha=0.5. Alpha overridable via
+      remote ema_score_alpha (default 0.5). Quality EMA inside workload uses alpha=0.7 (separate).
+      Note docs/incentive.md states overall/synthetic alpha 0.7 but the code constructs both with
+      alpha=0.5.
+
+anti_gaming:
+  - kind: deduplication
+    enforcement: penalty
+    description: >-
+      Multi-coldkey penalty: miners sharing a coldkey beyond the first uid have zip_scores
+      multiplied by multi_coldkey_penalty (remote default 1, i.e. no-op unless configured).
+  - kind: rate_limit
+    enforcement: rejection
+    description: >-
+      Duplicate-IP miners get DUPLICATED_IP error and are not scored; suspicious_uids (remote
+      config) are zeroed in EMA and rejected during scoring.
+  - kind: liveness_check
+    enforcement: rejection
+    description: >-
+      Periodic CapacitySynapse availability check; only miners reporting role 'miner' with
+      capacity are queried. Latency gate (min_latency_improvement_ratio) zeros slow responses.
+
+sub_competitions:
+  structure: per_task_type
+  stages: []
+  count: null
+  notes: >-
+    Per-project (cid_hash) synthetic challenges scored and summed across projects; an extra
+    organic workload track is merged in. CODEX node_type uses weight_a=100/weight_b=0 question mix
+    vs default 70/30. Projects have phases (e.g. WARMUP excluded from score matrix).
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, performance_ledger]
+  status_values: []
+  reset_policy: >-
+    EMA scores reset to current value when a uid's hotkey changes; suspicious uids zeroed.
+    Persisted state (score/workload) only loaded if within 3 days.
+  notes: >-
+    overall/synthetic EMA score dicts persisted to .data/{role}_score_state.pt; organic workload
+    bucket counters persisted to .data/{role}_workload_state.pt; quality-sample deque (maxlen 20)
+    per miner.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "docs/incentive.md"
+    - "README.md"
+    - "docs/validator.md"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: /subnet/implementation_lang
+      source_path: "hermes/validator/scorer_manager.py"
+      line_ref: "1-12"
+      quote: "import asyncio\nimport json\nimport os ... import numpy as np\nimport torch"
+    - claim_field: /task/summary
+      source_path: "README.md"
+      line_ref: "38"
+      quote: "SubQuery Hermes Subnet is a specialized Bittensor subnet that creates a decentralized infrastructure for GraphQL query processing and blockchain data indexing."
+    - claim_field: /scoring_signals/0/notes
+      source_path: "hermes/validator/scorer_manager.py"
+      line_ref: "91"
+      quote: "ground_truth_scores = [min(utils.fix_float(utils.safe_float_convert(s)), 10.0) for s in ground_truth_scores_value]"
+    - claim_field: /scoring_signals/0/metric_kind
+      source_path: "docs/incentive.md"
+      line_ref: "18-19"
+      quote: "Miner responses are evaluated using a strict fact-checking LLM prompt ... The scoring prompt evaluates factual consistency on a 0-10 scale with one decimal place precision"
+    - claim_field: /scoring_signals/1/notes
+      source_path: "common/utils.py"
+      line_ref: "200-203"
+      quote: "time_ratio = elapsed_time / ground_truth_cost\n    weight = 1.0 / ((1.0 + time_ratio) ** 2)\n    return min(1.0, max(0.0, weight))"
+    - claim_field: /scoring_signals/1/notes
+      source_path: "common/utils.py"
+      line_ref: "195-198"
+      quote: "max_allowed_time = ground_truth_cost * (1.0 - min_latency_improvement_ratio)\n    if elapsed_time > max_allowed_time:\n        return 0.0"
+    - claim_field: /scoring_signals/2/notes
+      source_path: "hermes/validator/workload_manager.py"
+      line_ref: "201"
+      quote: "scores[idx] = utils.fix_float(min(0.5 * quality_ema + 0.5 * normalized_workload, 5))"
+    - claim_field: /scoring_signals/2/normalization
+      source_path: "hermes/validator/workload_manager.py"
+      line_ref: "199"
+      quote: "normalized_workload = (quantity - min_workload) / (max_workload - min_workload)"
+    - claim_field: /aggregation/composition
+      source_path: "hermes/validator/scorer_manager.py"
+      line_ref: "92"
+      quote: "zip_scores = [utils.fix_float(s * w) for s, w in zip(ground_truth_scores, elapse_weights)]"
+    - claim_field: /aggregation/notes
+      source_path: "hermes/validator/scorer_manager.py"
+      line_ref: "217"
+      quote: "synthetic_scores = np.array(project_score_matrix).sum(axis=0).tolist()"
+    - claim_field: /aggregation/notes
+      source_path: "hermes/validator/scorer_manager.py"
+      line_ref: "221-226"
+      quote: "merged = project_score_matrix + [workload_score]\n ... score_matrix = np.array(merged)\n        score_matrix = score_matrix.sum(axis=0)"
+    - claim_field: /weight_setting/smoothing/alpha
+      source_path: "hermes/validator/scorer_manager.py"
+      line_ref: "29-30"
+      quote: "self.overall_ema = EMAUpdater(alpha=0.5)\n        self.synthetic_ema = EMAUpdater(alpha=0.5)"
+    - claim_field: /weight_setting/smoothing/notes
+      source_path: "hermes/validator/ema.py"
+      line_ref: "42"
+      quote: "new_scores[uid] = (utils.fix_float((1 - alpha) * last_val + alpha * cur_val), cur_hk)"
+    - claim_field: /weight_setting/on_chain_call
+      source_path: "hermes/validator/challenge_manager.py"
+      line_ref: "866-873"
+      quote: "[suc, msg] = self.settings.subtensor.set_weights(\n            wallet=self.settings.wallet,\n            netuid=self.settings.netuid,\n            uids=processed_weight_uids,\n            weights=processed_weights,\n            wait_for_finalization=False,\n            version_key=10010,\n        )"
+    - claim_field: /weight_setting/tempo_or_interval
+      source_path: "hermes/validator/challenge_manager.py"
+      line_ref: "164"
+      quote: "self.set_weight_interval = int(os.getenv(\"SET_WEIGHT_INTERVAL\", 60 * 30))  # seconds"
+    - claim_field: /weight_setting/method
+      source_path: "hermes/validator/challenge_manager.py"
+      line_ref: "851-861"
+      quote: "process_weights_for_netuid(\n                    uids=np.array(uids, dtype=np.int64),\n                    weights=scores_np,\n                    netuid=self.settings.netuid,"
+    - claim_field: /aggregation/burn_allocation/notes
+      source_path: "hermes/validator/challenge_manager.py"
+      line_ref: "805-811"
+      quote: "if np.all(scores_np == 0) or burn_ratio >= 1.0:\n ... burn_uids_np = np.array([burn_uid], dtype=np.int64)\n            burn_weights_np = np.array([1.0], dtype=np.float32)"
+    - claim_field: /aggregation/burn_allocation/notes
+      source_path: "hermes/validator/challenge_manager.py"
+      line_ref: "839"
+      quote: "burn_weight = scores_sum * burn_ratio / (1.0 - burn_ratio)"
+    - claim_field: /mechanism_status_notes
+      source_path: "hermes/validator/challenge_manager.py"
+      line_ref: "707-710"
+      quote: "if consecutive_unchanged_rounds >= 5:\n ... uids = [self.settings.burn_uid]\n                    scores = [1.0]"
+    - claim_field: /aggregation/burn_allocation/address_or_uid
+      source_path: "common/settings.py"
+      line_ref: "113-114"
+      quote: "def burn_uid(self) -> int:\n        return int(os.environ.get(\"BURN_UID\", 0))"
+    - claim_field: /anti_gaming/0/description
+      source_path: "hermes/validator/challenge_manager.py"
+      line_ref: "433-435"
+      quote: "if uid != first_uid:\n                                    zip_scores[idx] *= multi_coldkey_penalty"
+    - claim_field: /anti_gaming/1/description
+      source_path: "hermes/validator/scorer_manager.py"
+      line_ref: "110-114"
+      quote: "if miner_synapse.uid in suspicious_uids:\n ... miner_synapse.status_code = ErrorCode.SUSPICIOUS.value\n            miner_synapse.error = \"Miner is suspicious\"\n            return \"0.0\", \"Miner is suspicious\""
+    - claim_field: /anti_gaming/2/description
+      source_path: "neurons/validator.py"
+      line_ref: "184"
+      quote: "if r.is_success and r.response.get(\"role\", \"\") == \"miner\":"
+    - claim_field: /per_miner_state/reset_policy
+      source_path: "hermes/validator/ema.py"
+      line_ref: "33-36"
+      quote: "if cur_hk and last_hk and cur_hk != last_hk:\n ... # hotkey changed, reset last_val to cur_val\n                last_val = cur_val"
+    - claim_field: /per_miner_state/notes
+      source_path: "hermes/validator/scorer_manager.py"
+      line_ref: "268-273"
+      quote: "torch.save(\n                {\n                    \"timestamp\": int(time.time()),\n                    \"scores\": new_scores,\n                },"
+    - claim_field: /ground_truth_sources/0/notes
+      source_path: "hermes/validator/challenge_manager.py"
+      line_ref: "106"
+      quote: "score_model_name = score_model_name or os.getenv(\"SCORE_LLM_MODEL\", \"google/gemini-3-flash-preview\")"
+    - claim_field: /sub_competitions/notes
+      source_path: "hermes/validator/challenge_manager.py"
+      line_ref: "306-308"
+      quote: "if p.node_type == GraphqlProvider.CODEX:\n                            weight_a = 100\n                            weight_b = 0"
+    - claim_field: /documentation/primary_docs
+      source_path: "docs/incentive.md"
+      line_ref: "1-3"
+      quote: "# SN SubQuery Hermes Incentive Mechanisms\n\nThe SN SubQuery Hermes incentive system evaluates miners through a comprehensive dual scoring mechanism"
+  unresolved:
+    - "subnet.netuid: not hardcoded in repo; read from env NETUID (common/settings.py:88)."
+    - "Live burn_ratio / multi_coldkey_penalty / suspicious_uids values come from a remote meta-config not present in the repo; cannot determine current operative burn state."

@@ -1,0 +1,169 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+# This repository is the Bittensor SDK / core library itself, NOT a subnet. It provides the
+# weight-setting machinery (set_weights / commit-reveal extrinsics) that subnet validators call,
+# but defines no scoring/reward/aggregation mechanism of its own. Scoring is explicitly off-chain
+# in subnets; on-chain reward distribution is Yuma Consensus. Hence mechanism_status: dormant.
+mechanism_status: dormant
+mechanism_status_notes: >-
+  This is the opentensor/bittensor SDK package, not a subnet incentive mechanism. It exposes
+  set_weights and commit-reveal extrinsics for validators to publish weights, but contains no
+  reward/scoring function. The README states scoring is an off-chain subnet competition and that
+  on-chain Yuma Consensus determines TAO rewards. No incentive mechanism is live in this repo.
+
+subnet:
+  name: "Bittensor SDK (core library, not a subnet)"
+  owner_repo: "opentensor__bittensor"
+  netuid: null
+  implementation_lang: python
+
+task:
+  summary: >-
+    No subnet task is defined in this repository. The SDK provides Python packages for interacting
+    with the Bittensor ecosystem, including the extrinsics a subnet validator uses to set weights on
+    chain (set_weights_extrinsic, commit_timelocked_weights_extrinsic). Miner production and the
+    rewarded commodity are defined by individual subnets, not here.
+  submission_format: [signals]
+  # Closest fit: validators submit weight vectors (signals) over miner UIDs. Not a miner submission.
+
+scoring_signals: []
+
+ground_truth_sources: []
+
+aggregation:
+  method: undocumented
+  composition: other
+  composition_other: "no signal composition; repository defines no scoring aggregation"
+  normalization: l1
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: ""
+  notes: >-
+    No reward aggregation exists in this SDK. The only normalization present is L1 normalization of
+    the published weight vector itself (convert_and_normalize_weights_and_uids), not an aggregation
+    of scoring signals.
+
+weight_setting:
+  cadence: undocumented
+  method: >-
+    Validators call set_weights_extrinsic to publish a (uids, weights) vector for a subnet via the
+    SubtensorModule.set_mechanism_weights chain call, or commit_timelocked_weights_extrinsic for a
+    commit-reveal (timelocked) submission. uids and weights are converted and L1-normalized before
+    submission. Cadence/tempo is a per-subnet on-chain hyperparameter read from chain, not fixed here.
+  on_chain_call: set_weights
+  tempo_or_interval: null
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No final-reward EMA in this repo. Temporal smoothing of emissions/consensus happens on the
+      subtensor chain (Yuma Consensus), which is not part of this SDK source.
+
+anti_gaming:
+  - kind: commit_reveal
+    enforcement: barrier
+    description: >-
+      Provides commit-reveal (timelocked) weight submission via commit_timelocked_weights_extrinsic
+      with a commit_reveal_version default of 4, plus optional MEV-shield encrypted extrinsic
+      submission to protect against front-running/MEV. These are transport-level protections, not a
+      subnet anti-gaming scoring rule.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: false
+  state_kinds: []
+  status_values: []
+  reset_policy: ""
+  notes: ""
+
+documentation:
+  status: code_authoritative
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "bittensor/core/extrinsics/weights.py"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8[1m]"
+  extracted_at: "2026-06-06"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/name"
+      source_path: "README.md"
+      line_ref: "1-1"
+      quote: "# **Bittensor SDK**"
+    - claim_field: "/mechanism_status"
+      source_path: "README.md"
+      line_ref: "Subnet validators and subnet miners"
+      quote: >-
+        Subnets, which exist outside the blockchain and are connected to it, are off-chain
+        competitions where only the best producers are rewarded.
+    - claim_field: "/mechanism_status_notes"
+      source_path: "README.md"
+      line_ref: "Yuma Consensus"
+      quote: >-
+        Scores are assigned to the top-performing subnet miners and subnet validators. The on-chain
+        Yuma Consensus determines the TAO rewards for these top performers.
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "The Bittensor SDK"
+      quote: >-
+        This Bittensor SDK contains ready-to-use Python packages for interacting with the Bittensor
+        ecosystem, writing subnet incentive mechanisms, subnet miners, subnet validators and querying
+        the subtensor (the blockchain part of the Bittensor network).
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "pyproject.toml"
+      line_ref: "1-1"
+      quote: "Python SDK package (locate.py: implementation_lang python, 252 code files)"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "bittensor/core/extrinsics/weights.py"
+      line_ref: "358-417"
+      quote: >-
+        def set_weights_extrinsic(... ): ... call = SubtensorModule(subtensor).set_mechanism_weights(
+        netuid=netuid, mecid=mechid, dests=uids, weights=weights, version_key=version_key)
+    - claim_field: "/weight_setting/method"
+      source_path: "bittensor/core/extrinsics/weights.py"
+      line_ref: "375-375"
+      quote: "Sets the passed weights in the chain for hotkeys in the sub-subnet of the passed subnet."
+    - claim_field: "/aggregation/normalization"
+      source_path: "bittensor/core/extrinsics/weights.py"
+      line_ref: "408-409"
+      quote: >-
+        # Convert, reformat and normalize uids and weights.
+        uids, weights = convert_and_normalize_weights_and_uids(uids, weights)
+    - claim_field: "/anti_gaming/0/kind"
+      source_path: "bittensor/core/extrinsics/weights.py"
+      line_ref: "24-32"
+      quote: "def commit_timelocked_weights_extrinsic(... commit_reveal_version: int = 4,"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "bittensor/core/extrinsics/weights.py"
+      line_ref: "385-387"
+      quote: >-
+        mev_protection: If True, encrypts and submits the transaction through the MEV Shield pallet to
+        protect against front-running and MEV attacks.
+  unresolved:
+    - "No scoring_signals: repository defines no reward/scoring function (SDK only)."
+    - "No ground_truth_sources: no validation/judging logic in this repo."
+    - "aggregation.method/composition: no reward aggregation exists; left undocumented/other."
+    - "weight_setting.cadence and tempo_or_interval: tempo is a per-subnet on-chain hyperparameter read at runtime (subnet_hyperparameters.tempo), not a fixed constant in source."
+    - "Final-reward smoothing (Yuma Consensus EMA) lives on the subtensor chain, not in this SDK."
+  extractor_notes: >-
+    Target is the Bittensor SDK/core library, not a subnet. It is the source of the set_weights
+    machinery that all subnets use, but has no incentive mechanism, scoring signals, ground-truth
+    sources, or reward aggregation of its own. Fields that would describe a subnet mechanism are
+    intentionally empty/null and listed in unresolved. confidence_overall is high because the absence
+    of a mechanism here is itself well-evidenced by the README and the extrinsic code.

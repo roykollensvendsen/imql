@@ -1,0 +1,222 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+# The repo's validator does NOT compute miner scores locally. It fetches pre-computed
+# weights from an off-repo central server (https://77.creativebuilds.io/weights), applies
+# an EMA, normalizes, and sets them on chain. The substantive scoring logic (vote tallying,
+# liquidity-position valuation) lives server-side and is not present in this source tree.
+mechanism_status: active
+mechanism_status_notes: >-
+  Validator actively sets on-chain weights every ~101 blocks. However the actual reward
+  formula (how votes + Uniswap V3 liquidity positions map to per-miner weight) is computed
+  by an off-repo central server and is not in this repository; only the fetch/EMA/normalize/
+  set pipeline is present.
+
+subnet:
+  name: "Subnet77 Liquidity Auction & Voting"
+  owner_repo: "creativebuilds__sn77"
+  netuid: 77
+  implementation_lang: typescript
+
+task:
+  summary: >-
+    Miners provide liquidity to Uniswap V3 pools and register (link) their Bittensor hotkey
+    to an Ethereum/EVM address. Token holders vote weighted allocations across liquidity
+    pools (weights summing to 10000). A central server tallies votes weighted by token
+    holdings and miners' liquidity positions to compute final per-miner weights; validators
+    fetch those weights and set them on subnet 77. Miners are rewarded for providing liquidity
+    to pools that voters favor.
+  submission_format: [content_link, signals]
+  # content_link: linked EVM address / on-chain LP positions; signals: holder votes feed scoring.
+
+scoring_signals:
+  - name: liquidity_provision
+    metric_kind: other
+    metric_kind_other: "voter-weighted liquidity contribution (server-side; formula not in repo)"
+    direction: higher_is_better
+    weight: null
+    normalization: other
+    normalization_other: "computed off-repo by central server"
+    notes: >-
+      Final per-miner weight is computed server-side from holder votes (token-weighted) and
+      miners' Uniswap V3 liquidity positions. The repository contains no scoring code for this;
+      the validator only consumes the server's /weights output.
+
+ground_truth_sources:
+  - kind: organic_traffic
+    description: >-
+      Holder votes (token-weighted allocations across liquidity pools) collected by the central
+      server, combined with on-chain Uniswap V3 liquidity positions for registered miners.
+    source_identifier: "https://77.creativebuilds.io"
+    trust_model: crowd
+    notes: >-
+      Votes are token-holder driven (crowd). Position data sourced from Uniswap V3 via The Graph
+      (THEGRAPH_API_KEY). The tallying/valuation happens off-repo; trust model is the central server.
+
+aggregation:
+  method: weighted_average
+  composition: weighted_sum
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: ""
+  notes: >-
+    In-repo aggregation is limited to: normalize the server-provided per-miner weights so they
+    sum to 1 (normalizeFinalMinerWeights), then scale to u16 (0..65535). If total weight is
+    zero/invalid the validator falls back to a uniform distribution across miners/UIDs. The
+    underlying vote-to-weight aggregation is server-side and not in the source tree.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    Periodic loop (default 5 min). Every SET_INTERVAL_MS (default 101*12*1000 ms = "101 Blocks")
+    the EMA-smoothed weights are normalized and pushed via subtensorModule.setWeights.
+  on_chain_call: set_weights
+  tempo_or_interval: "101 blocks (SET_INTERVAL_MS default 101*12*1000 ms)"
+  smoothing:
+    kind: ema
+    alpha: 0.2
+    window: null
+    notes: >-
+      EMA over successive server weight fetches: next = EMA_ALPHA*curr + (1-EMA_ALPHA)*prev,
+      EMA_ALPHA default 0.2 (env-overridable). NaN/non-finite values are coerced to 0.
+
+anti_gaming:
+  - kind: rate_limit
+    enforcement: barrier
+    description: >-
+      Vote cooldown management (server-side, documented in README): base 72-minute cooldown after
+      vote changes, progressive doubling (72m -> 144m -> 288m -> 576m) capped at 8 hours, reset to
+      base after 24h inactivity; no cooldown for first-time voters. Prevents rapid vote-gaming.
+  - kind: commit_reveal
+    enforcement: rejection
+    description: >-
+      Votes and validator pings are Ed25519/sr25519-signed and signature-verified; validators must
+      be registered on the subnet (keyToUid check) and pass a server version-compatibility ping
+      check (12h incompatibility timeout shuts the validator down).
+
+sub_competitions:
+  structure: multi_asset
+  stages: []
+  count: null
+  notes: >-
+    Competition is across liquidity pools (up to MAX_POOLS = 10 per voter), each an asset/pool that
+    accrues vote weight. Voters allocate weights across pools summing to 10000.
+
+per_miner_state:
+  tracked: false
+  state_kinds: []
+  status_values: []
+  reset_policy: ""
+  notes: >-
+    No per-miner persistent state in the repo's validator beyond the in-memory EMA of weights,
+    which is not keyed to durable miner identity/ledger state. Vote-cooldown state is per-voter
+    and lives on the off-repo server.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "validator/index.ts"
+      line_ref: "320"
+      quote: "const NETUID = 77"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "validator/index.ts"
+      line_ref: "1-5"
+      quote: "This is the main validator code for sn77 ... Determines the weight of each miner and sets weight every interval."
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "1-3"
+      quote: "Subnet77 Liquidity Auction & Voting ... token holders vote on liquidity pools and validators process these votes to set miner weights on subnet 77."
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "102-122"
+      quote: "Register your address: Link your Bittensor public key to an EVM address ... Provide liquidity: Add liquidity to pools to earn rewards"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "README.md"
+      line_ref: "8-9"
+      quote: "Weight Calculation: The server processes votes and calculates final miner weights"
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "README.md"
+      line_ref: "16"
+      quote: "Weight Calculation: Processes votes and calculates final miner weights based on token holdings and liquidity positions"
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "README.md"
+      line_ref: "7"
+      quote: "The system operates through a server (`https://77.creativebuilds.io`)"
+    - claim_field: "/ground_truth_sources/0/notes"
+      source_path: "README.md"
+      line_ref: "95-96"
+      quote: "THEGRAPH_API_KEY in .env (for Uniswap V3 LP data)"
+    - claim_field: "/aggregation/method"
+      source_path: "validator/index.ts"
+      line_ref: "648-674"
+      quote: "async function normalizeFinalMinerWeights ... normalizedFinalMinerWeights[minerId] = weight / totalWeight;"
+    - claim_field: "/aggregation/normalization"
+      source_path: "validator/index.ts"
+      line_ref: "650"
+      quote: "const totalWeight = Object.values(finalMinerWeights).reduce((sum, weight) => sum + weight, 0);"
+    - claim_field: "/aggregation/notes"
+      source_path: "validator/index.ts"
+      line_ref: "653-661"
+      quote: "Invalid or zero total weight (${totalWeight}), using uniform distribution: ${uniformWeight.toFixed(6)} per miner"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "validator/index.ts"
+      line_ref: "765"
+      quote: "const tx = btApi.tx.subtensorModule.setWeights(NETUID, uids, scaled, versionKey);"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "validator/index.ts"
+      line_ref: "460"
+      quote: "const SET_INTERVAL_MS = Number(process.env.SET_INTERVAL_MS || 101 * 12 * 1000); // 101 Blocks"
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "validator/index.ts"
+      line_ref: "461"
+      quote: "const EMA_ALPHA = Number(process.env.EMA_ALPHA || 0.2);"
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "validator/index.ts"
+      line_ref: "481"
+      quote: "next[k] = EMA_ALPHA * safeCurr + (1 - EMA_ALPHA) * safePrev;"
+    - claim_field: "/weight_setting/method"
+      source_path: "validator/index.ts"
+      line_ref: "607-614"
+      quote: "if (timeSinceLastSet >= SET_INTERVAL_MS) ... const [normalizedWeights, normErr] = await normalizeFinalMinerWeights(emaWeights);"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "README.md"
+      line_ref: "201-207"
+      quote: "Base cooldown: 72 minutes after vote changes ... Cooldown doubles for frequent changes (72m → 144m → 288m → 576m) ... Maximum cap: 8 hours maximum cooldown"
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "validator/index.ts"
+      line_ref: "414-417"
+      quote: "const uidCodec = await btApi.query.subtensorModule.keyToUid(NETUID, signer.address); ... if (uidNum === 0) return new Error('Hotkey not registered on subnet');"
+    - claim_field: "/sub_competitions/notes"
+      source_path: "utils/poolUtils.ts"
+      line_ref: "4-5"
+      quote: "const MAX_POOLS = 10;\nconst TOTAL_WEIGHT = 10000;"
+    - claim_field: "/aggregation/burn_allocation/enabled"
+      source_path: "validator/index.ts"
+      line_ref: "664-672"
+      quote: "for (const [minerId, weight] of Object.entries(finalMinerWeights)) { ... normalizedFinalMinerWeights[minerId] = weight / totalWeight;"
+  unresolved:
+    - >-
+      /scoring_signals/0/weight: the actual per-miner reward formula (how votes weighted by token
+      holdings combine with Uniswap V3 liquidity position values) is computed by the off-repo
+      central server and is not present in this repository. No additive signal weight is citable.
+    - "/aggregation/temperature: no softmax/temperature parameter exists in the in-repo aggregation."
+    - "/aggregation/decay_rate: no rank/temporal decay within aggregation in the source."
+    - >-
+      /per_miner_state: vote-cooldown and any per-miner reputation/ledger state are maintained
+      off-repo on the central server; not citable from this source tree.

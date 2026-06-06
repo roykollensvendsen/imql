@@ -1,0 +1,334 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Emission control (burn) is configurable but disabled by default
+  (emission_control.enabled=False). The dynamic auto-burn path in
+  effective_emission_control only activates when the computed emission_percentage
+  < 1.0, but with default config emission_min=emission_max=1.0, so
+  calculate_emission_percentage always returns 1.0 and no burn occurs by default.
+  Scoring (quality via ImageBind + speed + API model usage) is the live mechanism.
+
+subnet:
+  name: "Neza"
+  owner_repo: "subnet99__Neza"
+  netuid: 99
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners run open-source video-generation models (e.g. WAN2.1) through ComfyUI,
+    executing workflows dispatched by validators, then upload the generated video to
+    public cloud storage. Validators score each output on quality (ImageBind similarity
+    against a benchmark/reference render) and speed (completion time vs a baseline),
+    plus an API path that scores miners on model-call cost x success rate (with a
+    time factor for sora-2 models). Higher quality and faster generation yield higher
+    rewards.
+  submission_format: [content_link, api_response]
+
+scoring_signals:
+  - name: quality_score
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 0.6
+    normalization: none
+    notes: >-
+      ImageBind similarity between validator reference render and miner output, averaged
+      over files. Weighted by verification.quality_score_weight (default 0.6). If avg
+      quality < quality_threshold (0.9), the speed score is forced down to
+      low_quality_speed_score (0.2).
+  - name: speed_score
+    metric_kind: latency
+    direction: higher_is_better
+    weight: 0.4
+    normalization: none
+    notes: >-
+      Speed score in [0,1]: 1.0 if completion_time <= verification_time_estimate baseline
+      (300s), else max(0, 1 - excess_time/baseline). Weighted by speed_score_weight
+      (default 0.4). Combined task score = quality*0.6 + speed*0.4.
+  - name: api_model_score
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: min_max
+    notes: >-
+      API task score = sum over models of (total_cost * success_rate * model_weight),
+      with a sora-2 time_factor multiplier. Normalized across miners via percentile
+      (5th/95th) min-max into [0,1]. Combined with the comfy task score as
+      task_avg*comfy_task_weight (0.2) + api_avg*api_task_weight (0.8).
+
+ground_truth_sources:
+  - kind: reference_model
+    description: >-
+      Validator renders a reference output and uses the ImageBind model
+      (imagebind_huge, pretrained) to compute similarity between the validator render
+      and the miner-generated video/image/audio.
+    source_identifier: "imagebind_model.imagebind_huge(pretrained=True)"
+    trust_model: trusted
+    notes: "VideoVerifier in neza/validator/verify.py."
+  - kind: organic_traffic
+    description: >-
+      Organic workflows from real user requests pushed into the database and dispatched
+      to miners; API-path scoring uses real model-call stats (call_count, success_count,
+      total_cost) fetched from the API.
+    source_identifier: "get_api_miner_stats"
+    trust_model: trusted
+    notes: "API scoring path in process_api_scoring."
+
+aggregation:
+  method: weighted_average
+  composition: weighted_sum
+  normalization: l1
+  normalization_other: ""
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: "0"
+    fraction: null
+    dynamic: true
+    notes: >-
+      emission_control disabled by default. When enabled (or when computed
+      emission_percentage < 1.0), a burn fraction = 1.0 - emission_percentage is routed
+      to UID 0 via emission_control_scores. With default emission_min=emission_max=1.0
+      the percentage is always 1.0 so no burn occurs.
+  notes: >-
+    Per-miner final_weight = (history_avg*history_weight(0.4) + combined_score*current_weight(0.6))
+    * miner_factor (stake-based, default range 1.0-1.0). combined_score =
+    task_avg*comfy_task_weight(0.2) + api_avg*api_task_weight(0.8). Validator scores are
+    then blended 50/50 with an external consensus score (consensus_score_ratio 0.5,
+    local_score_ratio 0.5). Final on-chain raw_weights = scores / L1-norm in base set_weights.
+
+weight_setting:
+  cadence: continuous
+  method: >-
+    Block-callback driven. set_weights computes API scores, updates base scores via
+    calculate_weights, blends 50/50 with consensus scores, applies optional emission
+    control, then the base BaseValidatorNeuron.set_weights normalizes by L1 norm and calls
+    subtensor.set_weights with version_key=spec_version.
+  on_chain_call: set_weights
+  tempo_or_interval: null
+  smoothing:
+    kind: sma
+    alpha: null
+    window: 6
+    notes: >-
+      Historical scores keep a sliding window of max_history=6 epoch averages; history
+      contributes history_weight=0.4 of the base weight. Epoch scores moved to history
+      every history_move_blocks=6000 blocks (~20h). task/api sliding_window=30.
+
+anti_gaming:
+  - kind: liveness_check
+    enforcement: penalty
+    description: >-
+      Comfy support queried every 100 blocks; miners that no longer support ComfyUI have
+      their task_scores reset to [0.0]. API miners not in the active cache get api_scores
+      reset to [0.0].
+  - kind: rate_limit
+    enforcement: penalty
+    description: >-
+      PenaltyManager: consecutive failure_threshold=2 triggers penalty_duration 5min,
+      doubling (penalty_multiplier=2) up to max_penalty_duration 30min.
+  - kind: stake_weighting
+    enforcement: other
+    enforcement_other: "score multiplier"
+    description: >-
+      calculate_miner_factor scales final weight by a stake-based segmented-exponential
+      factor (default min/max both 1.0, so neutral by default).
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Hotkey-change detection clears all score records for a UID when its hotkey changes;
+      coldkey blacklist and blacklisted_uids zero out scores.
+
+sub_competitions:
+  structure: per_task_type
+  stages: []
+  count: null
+  notes: >-
+    Two task types contribute to the combined score: ComfyUI/synthetic+organic video
+    tasks (comfy_task_weight 0.2) and API model-call tasks (api_task_weight 0.8). Not a
+    formal tournament/ladder.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [performance_ledger, cumulative_score, cooldown]
+  status_values: []
+  reset_policy: >-
+    Scores cleared on hotkey change. Historical scores capped at max_history=6;
+    task/api scores capped at sliding_window=30. Penalty cooldowns reset on success.
+  notes: >-
+    score_cache.json persists historical_scores, current_scores, task_scores, api_scores,
+    and miner_hotkeys across cycles, versioned (cache_version=1).
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/validator_installation_guide.md"
+    - "docs/models.md"
+    - "docs/miner_installation_guide.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract / Claude Opus 4.8"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/name"
+      source_path: "README.md"
+      line_ref: "3-4"
+      quote: "# **Neza**\nFocused on faster, higher-quality video generation"
+      confidence: high
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "13"
+      quote: "Neza (Subnet 99) is a fully decentralized network for AI-powered video generation"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "92-96"
+      quote: >-
+        Upon receiving a workflow from a validator, the miner will: 1. Enqueue the task
+        2. Execute the workflow via the ComfyAPI 3. Upload the generated video to the
+        designated public-cloud storage
+      confidence: high
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "neurons/validator/core/config.py"
+      line_ref: "64"
+      quote: '"quality_score_weight": 0.6,  # Weight for quality score in final score calculation'
+      confidence: high
+    - claim_field: "/scoring_signals/1/weight"
+      source_path: "neurons/validator/core/config.py"
+      line_ref: "65"
+      quote: '"speed_score_weight": 0.4,  # Weight for speed score in final score calculation'
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "neza/validator/verify.py"
+      line_ref: "465-471"
+      quote: >-
+        if avg_quality_score < quality_threshold: overall_speed_score =
+        low_quality_speed_score ... avg_quality_score * quality_score_weight +
+        overall_speed_score * speed_score_weight
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "neza/validator/verify.py"
+      line_ref: "590-594"
+      quote: >-
+        if completion_time <= baseline_speed: return 1.0 ... speed_score = max(0.0, 1.0 -
+        (excess_time / baseline_speed))
+      confidence: high
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "neurons/validator/workers/score_manager.py"
+      line_ref: "874-891"
+      quote: >-
+        success_rate = success_count / call_count; model_score = total_cost * success_rate
+        ... miner_total_score += model_score * model_weight
+      confidence: high
+    - claim_field: "/scoring_signals/2/normalization"
+      source_path: "neurons/validator/workers/score_manager.py"
+      line_ref: "400-419"
+      quote: >-
+        min_score = sorted_scores[p5_idx]  # Use 5th percentile as min ... normalized[uid]
+        = (clamped_score - min_score) / (max_score - min_score)
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "neza/validator/verify.py"
+      line_ref: "179"
+      quote: "cls._model_instance = imagebind_model.imagebind_huge(pretrained=True)"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "neurons/validator/workers/score_manager.py"
+      line_ref: "589-601"
+      quote: >-
+        combined_score = (task_avg * self.score_config["comfy_task_weight"]) + (api_avg *
+        self.score_config["api_task_weight"]) ... base_weight = history_component +
+        current_component
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/window"
+      source_path: "neza/configs/default_config.py"
+      line_ref: "5"
+      quote: '"max_history": 6,'
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "neza/configs/default_config.py"
+      line_ref: "3-4"
+      quote: '"history_weight": 0.4, "current_weight": 0.6,'
+      confidence: high
+    - claim_field: "/aggregation/normalization"
+      source_path: "neza/base/validator.py"
+      line_ref: "295-302"
+      quote: >-
+        norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True) ... raw_weights =
+        self.scores / norm
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "neurons/validator/core/validator.py"
+      line_ref: "326-332"
+      quote: >-
+        if self._emission_percentage is not None and self._emission_percentage < 1.0:
+        burn_percentage = 1.0 - self._emission_percentage ... "uid": 0, "percentage":
+        burn_percentage
+      confidence: high
+    - claim_field: "/mechanism_status"
+      source_path: "neza/configs/default_config.py"
+      line_ref: "13-14"
+      quote: '"emission_min": 1.0, "emission_max": 1.0,'
+      confidence: medium
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "neza/base/validator.py"
+      line_ref: "333-340"
+      quote: >-
+        result, msg = self.subtensor.set_weights(wallet=self.wallet,
+        netuid=self.config.netuid, uids=uint_uids, weights=uint_weights,
+        version_key=self.spec_version,)
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "neurons/validator/core/validator.py"
+      line_ref: "244-262"
+      quote: >-
+        base_ratio = 0 if use_consensus_only else local_ratio_config; consensus_ratio = 1.0
+        if use_consensus_only else consensus_ratio_config ... adjusted_scores[uid] = value *
+        consensus_ratio + self.scores[uid] * base_ratio
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "neurons/validator/core/config.py"
+      line_ref: "71-77"
+      quote: >-
+        "failure_threshold": 2, "penalty_duration": 5 * 60, "max_penalty_duration": 30 *
+        60, "penalty_multiplier": 2,
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "neurons/validator/workers/score_manager.py"
+      line_ref: "910-913"
+      quote: >-
+        for uid in self.task_scores: if uid not in comfy_support_uids: ...
+        self.task_scores[uid] = [0.0]
+      confidence: high
+    - claim_field: "/per_miner_state/notes"
+      source_path: "neurons/validator/workers/score_manager.py"
+      line_ref: "687-695"
+      quote: >-
+        data = {"version": cache_version, ... "historical_scores": ..., "task_scores": ...,
+        "api_scores": ..., "miner_hotkeys": ...}
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "neurons/validator/core/config.py"
+      line_ref: "81-82"
+      quote: '"history_move_blocks": 6000,  # Move scores to history every 6000 blocks (approx 20 hours)'
+      confidence: high
+    - claim_field: "/scoring_signals/2/weight"
+      source_path: "neza/configs/default_config.py"
+      line_ref: "9-10"
+      quote: '"comfy_task_weight": 0.2, "api_task_weight": 0.8,'
+      confidence: high
+  unresolved:
+    - "Live netuid-99 emission control / burn state on chain is not determinable from source; default config implies no burn."
+    - "neza/validator/reward.py is dummy template code (response == query*2) and is NOT the live scoring path; real scoring is in neurons/validator."
+    - "Exact ImageBind similarity-to-quality_score mapping for video (verify_video) not fully read; quality_score derives from model similarity."
+  extractor_notes: >-
+    Live mechanism is the modular neurons/validator path (score_manager + verify), not the
+    template neza/validator/reward.py. Numeric constants taken verbatim from
+    neza/configs/default_config.py and neurons/validator/core/config.py.

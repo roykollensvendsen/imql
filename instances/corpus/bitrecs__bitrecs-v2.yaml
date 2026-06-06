@@ -1,0 +1,275 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  Only a single winner-take-all miner ever receives non-burn weight, and even that miner's
+  weight is capped at MINER_EMISSION_PORTION (0.10) times a time-decay factor; the remaining
+  burn_weight = 1 - miner_weight is assigned to uid 0. With MINER_EMISSION_PORTION = 0.10 at
+  least 90% of emission is burned each epoch, and decay only increases the burn fraction over
+  time. A dedicated set_weights_burn_only() path (uids=[0], weights=[1.0]) fires when
+  MINER_EMISSION_PORTION <= 0.
+
+subnet:
+  name: "Bitrecs V2"
+  owner_repo: "bitrecs__bitrecs-v2"
+  netuid: 296
+  implementation_lang: python
+
+task:
+  summary: >-
+    Bitrecs V2 is a prompt-evolution subnet. A miner produces an artifact.yaml (a system prompt,
+    user prompt, model, provider and sampling temperature) submitted as a single GitHub gist plus
+    an on-chain commitment. The artifact is run against a rotating set of ecommerce recommendation
+    evaluations in a sandboxed Affine/Docker environment; each run yields a success-rate score per
+    environment. Rewards flow to the single miner whose artifact non-dominantly leads the
+    epsilon-Pareto frontier under winner-take-all subset scoring.
+  submission_format: [content_link, commitment_hash]
+
+scoring_signals:
+  - name: environment_success_rate
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Per evaluation environment, the eval container returns a `score` (success rate in [0,1]) and a
+      `sample_size`. df_to_miner_scores aggregates by taking the max score per hotkey+task_name
+      (best of retries). These per-environment scores feed Pareto dominance and WTA subset scoring;
+      they are not additively weighted, so weight is null.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Rotating set of challenging ecommerce evaluation problems (SKU/recommendation tasks). The
+      validator pulls the current evaluation set via get_current_eval_set_id() and runs the miner
+      artifact against problem environments inside the bitrecs-evals Docker container, which returns
+      a per-task success-rate score. SKUs are injected dynamically at test time.
+    source_identifier: "ghcr.io/bitrecs/bitrecs-evals:main (EVAL_CONTAINER_TAG); evaluation set served by BITRECS_PLATFORM_URL"
+    trust_model: trusted
+    notes: >-
+      Scores are produced by a centralized off-chain platform/eval container, not reproducible
+      on-chain. The eval set rotates and is held by the platform.
+
+aggregation:
+  method: winner_take_all
+  composition: rank
+  normalization: sum_to_one
+  temperature: 1.0
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: null
+    dynamic: true
+    notes: >-
+      burn_weight = 1 - miner_weight, where miner_weight = MINER_EMISSION_PORTION (0.10) *
+      decay_factor for the single WTA winner; uids=[0, winner], weights=[burn_weight, miner_weight].
+      The burn fraction is therefore a dynamic residual (>= 0.90, rising as decay shrinks
+      miner_weight). When MINER_EMISSION_PORTION <= 0 the validator sets uids=[0], weights=[1.0]
+      (full burn).
+  notes: >-
+    Pipeline (scoring/engine.calculate_scores -> scoring/wta + scoring/pareto): (1) compute_pareto_frontier
+    keeps only epsilon-non-dominated miners (epsilon = 2*std-error per env, clamped MIN_EPSILON 0.005..
+    MAX_EPSILON 0.05); (2) compute_subset_scores_with_priority awards each non-empty environment subset
+    to one winner (LINEAR subset_weight = |subset|) using score-first ranking with first-commit tie-break
+    against per-miner thresholds; (3) scores_to_weights applies softmax (temperature 1.0, min_weight 0.0);
+    (4) only the single max-weight UID is taken on chain. softmax is computed but only the argmax UID is used.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    calculate_scores_loop polls every SET_WEIGHTS_INTERVAL_SECONDS (300s) and sets weights once per
+    epoch when blocks_until_next_epoch <= BLOCKS_BEFORE_EPOCH_TO_SET_WEIGHTS (30 blocks, ~6 min) and
+    the epoch has not yet been set. set_weights_onchain assigns uids=[0, winner_uid] with
+    weights=[burn_weight, MINER_EMISSION_PORTION*decay_factor], retrying up to 3 times.
+  on_chain_call: set_weights
+  tempo_or_interval: "30 blocks before epoch (~6 min); poll every 300s"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA/SMA smoothing of the final reward in this code: weights are recomputed and set fresh
+      each epoch via subtensor.set_weights. Temporal effects come only from the per-miner age decay
+      factor, not from reward smoothing.
+
+anti_gaming:
+  - kind: deduplication
+    enforcement: barrier
+    description: >-
+      epsilon-Pareto dominance: a copy ties (no dominance either way) and cannot enter/displace the
+      frontier; a miner must strictly improve beyond epsilon on at least one environment (and be no
+      worse within epsilon on all) to dominate. Designed so copying earns nothing.
+  - kind: code_inspection
+    enforcement: elimination
+    description: >-
+      Artifact policy forbids hardcoding evaluation-set SKUs/item names/descriptions into the prompt;
+      violations result in a hotkey ban ("revoke your hotkey and rewards"). Only select jinja
+      {{varname}} variables permitted; system/user prompt token caps (5000 / 10000).
+  - kind: rate_limit
+    enforcement: rejection
+    description: >-
+      One submission per hotkey; gists must have a single commit and be < 24 hours old or they are
+      rejected. Miners make an on-chain commitment to begin evaluation. Miners use a fresh hotkey.
+  - kind: deterministic_check
+    enforcement: barrier
+    description: >-
+      Two-stage screener pipeline (screener_1, screener_2) gates artifacts before they reach the
+      validator set group, with SCREENER_1_THRESHOLD / SCREENER_2_THRESHOLD / PRUNE_THRESHOLD score
+      gates (threshold values are environment-configured, not hardcoded).
+
+sub_competitions:
+  structure: tiered
+  stages:
+    - name: screener_1
+      role: qualifier
+      advancement_rule: "pass SCREENER_1_THRESHOLD"
+    - name: screener_2
+      role: qualifier
+      advancement_rule: "pass SCREENER_2_THRESHOLD"
+    - name: validator
+      role: main
+      advancement_rule: "winner-take-all over epsilon-Pareto frontier; PRUNE_THRESHOLD removes weak artifacts"
+  count: 3
+  notes: >-
+    EvaluationSetGroup (screener_1, screener_2, validator) forms a tiered evaluation pipeline:
+    artifacts pass two screener stages (basic evals + thresholds) before entering the validator set
+    group whose WTA result drives on-chain weights. Set group is derived from the validator hotkey.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [status_enum, registration_age]
+  status_values: [screening_1, screener_2, validator]
+  reset_policy: ""
+  notes: >-
+    Each miner artifact carries a status and progresses through evaluation_set_group stages. Per-miner
+    first_block (registration age) drives the emission decay factor: full emission within a 3-day
+    grace period, then 5% reduction per day past grace down to a 25% floor (calculate_decay_factor with
+    GRACE_PERIOD_DAYS=3, DECAY_FACTOR=0.05, DECAY_FLOOR=0.25). first_block also breaks WTA ties in
+    favor of the earlier committer.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - README.md
+    - docs/validator_setup.md
+    - docs/miner_setup.md
+    - docs/artifact_policy.md
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "docs/validator_setup.md"
+      line_ref: "63"
+      quote: "NETUID=296"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "scoring/engine.py"
+      line_ref: "1-16"
+      quote: "import os ... from scoring.constants import MINER_EMISSION_PORTION, GRACE_PERIOD_DAYS, DECAY_FACTOR, DECAY_FLOOR"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "17"
+      quote: "Bitrecs V2 is a prompt evolution subnet which rewards miners who optimize an artifact.yaml, an object containing a prompt, model, temperature and other parameters against a rotating set of challenging ecommerce evaluations. Miners submit artifacts via the CLI by making an onchain commitment to begin evaluation."
+    - claim_field: "/task/submission_format"
+      source_path: "docs/miner_setup.md"
+      line_ref: "13-18"
+      quote: "upload artifact to https://gist.github.com/ - take gist_id and run this command: uv run bitrecs_cli.py upload --github-account mygithubaccount --gist-id your_gist_id"
+    - claim_field: "/scoring_signals/0/metric_kind"
+      source_path: "scoring/engine.py"
+      line_ref: "48-61"
+      quote: "Aggregate scores: take the max per hotkey+task (to handle retries by using the best score). ... grouped = df.groupby(['hotkey', 'task_name']).agg({'score': 'max', 'uid': 'first'})"
+    - claim_field: "/scoring_signals/0/normalization"
+      source_path: "scoring/pareto.py"
+      line_ref: "116-118"
+      quote: "miner_scores: Dict mapping uid -> env_id -> success_rate"
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "validator/config.py"
+      line_ref: "104"
+      quote: "EVAL_CONTAINER_TAG = \"ghcr.io/bitrecs/bitrecs-evals:main\""
+    - claim_field: "/aggregation/method"
+      source_path: "scoring/wta.py"
+      line_ref: "1"
+      quote: "\"\"\"Winners-take-all scoring over environment subsets with first-commit advantage.\"\"\""
+    - claim_field: "/aggregation/temperature"
+      source_path: "scoring/wta.py"
+      line_ref: "15-19"
+      quote: "def scores_to_weights(scores: dict[MinerUID, float], temperature: float = 1.0, min_weight: float = 0.0,) -> dict[MinerUID, float]:"
+    - claim_field: "/aggregation/composition"
+      source_path: "scoring/engine.py"
+      line_ref: "135-149"
+      quote: "frontier_uids = set(pareto_result.frontier_uids) ... weights = scores_to_weights(subset_scores) ... weight_receiving_uid = max(weights, key=weights.get)"
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "scoring/engine.py"
+      line_ref: "251-258"
+      quote: "miner_weight = MINER_EMISSION_PORTION * decay_factor\n    burn_weight = 1 - miner_weight ... uids = [0, weight_receiving_uid]\n    weights = [burn_weight, miner_weight]"
+    - claim_field: "/aggregation/burn_allocation/dynamic"
+      source_path: "scoring/engine.py"
+      line_ref: "119-120"
+      quote: "if set_weights and MINER_EMISSION_PORTION <= 0:\n            return await set_weights_burn_only(current_set_id, validator_hotkey, netuid)"
+    - claim_field: "/mechanism_status"
+      source_path: "scoring/constants.py"
+      line_ref: "13-14"
+      quote: "# Other scoring constants\nMINER_EMISSION_PORTION: float = 0.10"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "scoring/engine.py"
+      line_ref: "189-190"
+      quote: "uids = [0]\n    weights = [1.0]"
+    - claim_field: "/weight_setting/cadence"
+      source_path: "validator/bitrecs_validator.py"
+      line_ref: "96-98"
+      quote: "should_set_weights = blocks_until_next_epoch <= BLOCKS_BEFORE_EPOCH_TO_SET_WEIGHTS and current_epoch != last_set_epoch"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "validator/bitrecs_validator.py"
+      line_ref: "61-78"
+      quote: "BLOCKS_BEFORE_EPOCH_TO_SET_WEIGHTS = 30  # ~6 minutes ... await asyncio.sleep(config.SET_WEIGHTS_INTERVAL_SECONDS)  # 300s"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "scoring/engine.py"
+      line_ref: "265-275"
+      quote: "success = await asyncio.wait_for(\n                    subtensor.set_weights(\n                        wallet=wallet,\n                        netuid=netuid,\n                        uids=uids,\n                        weights=weights,"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "scoring/pareto.py"
+      line_ref: "77-95"
+      quote: "This is the core mechanism that makes copying useless: - If you copy, you tie (no dominance either way) - You must IMPROVE to dominate and earn emissions"
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "docs/artifact_policy.md"
+      line_ref: "16-29"
+      quote: "Hardcoding is **prohibited** ... Trying to hardcode them into the prompt is strictly forbidden and will result in a hotkey ban."
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "docs/miner_setup.md"
+      line_ref: "52-55"
+      quote: "Only 1 submission per hotkey ... The system only accepts gists that have a single commit ... Gists submitted must be < 24 hours old"
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "api/endpoints/scoring.py"
+      line_ref: "45-48"
+      quote: "screener_1_threshold=config.SCREENER_1_THRESHOLD, screener_2_threshold=config.SCREENER_2_THRESHOLD, prune_threshold=config.PRUNE_THRESHOLD,"
+    - claim_field: "/sub_competitions/stages"
+      source_path: "scoring/types.py"
+      line_ref: "14-17"
+      quote: "class SubsetWeightScheme(Enum):    \n    LINEAR = \"linear\""
+    - claim_field: "/sub_competitions/notes"
+      source_path: "queries/evaluation.py"
+      line_ref: "44-46"
+      quote: "set_group = EvaluationSetGroup.from_validator_hotkey(validator_hotkey)\n    problem_names = await get_all_problem_names_in_set_group_in_set_id(set_id, set_group)"
+    - claim_field: "/per_miner_state/notes"
+      source_path: "scoring/engine.py"
+      line_ref: "18-30"
+      quote: "grace_period_seconds = GRACE_PERIOD_DAYS * 24 * 3600 ... decay_factor = max(DECAY_FLOOR, 1.0 - DECAY_FACTOR * days_past_grace)"
+    - claim_field: "/per_miner_state/state_kinds"
+      source_path: "scoring/constants.py"
+      line_ref: "16-19"
+      quote: "GRACE_PERIOD_DAYS = 3\nDECAY_FACTOR = 0.05  # 5% decay per day after grace period\nDECAY_FLOOR = 0.25  # Minimum 25% of emissions after decay"
+    - claim_field: "/documentation/primary_docs"
+      source_path: "README.md"
+      line_ref: "23-25"
+      quote: "Bitrecs V2 employs a winnter take all (WTA) scoring engine ... using epsilon-Pareto dominance to identify non-dominated miners on the frontier rewarding genuine improvements ... apply linear decay factors over time (with a 3-day grace period and 5% daily reduction to a 25% floor)."
+  unresolved:
+    - "/aggregation/min_weight_floor: scores_to_weights default min_weight=0.0; not configured to a nonzero floor at the call site."
+    - "/weight_setting/smoothing/alpha: no EMA/SMA of final reward in this repo (off-chain platform may smooth scores; not in source)."
+    - "Screener gate values (SCREENER_1_THRESHOLD, SCREENER_2_THRESHOLD, PRUNE_THRESHOLD): env-configured, no literal in source."
+    - "/scoring_signals/0/weight: per-env scores are not additively weighted (consumed by Pareto + WTA subset logic), so no numeric weight exists."

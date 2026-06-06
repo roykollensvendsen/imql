@@ -1,0 +1,351 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  A fixed 80% of emission is burned to UID 0 on every weight-set
+  (BURN_WEIGHT = 0.8, BURN_UID = 0, applied in process_weights_for_netuid).
+  The remaining 20% is distributed across mining pools by the composite
+  worker-pool score computed in the JS validator container.
+
+subnet:
+  name: "TPN - Tao Private Network"
+  owner_repo: "beyond-stake__tpn-subnet"
+  netuid: 65
+  implementation_lang: mixed   # python neuron + javascript scoring container
+
+task:
+  summary: >-
+    Miners run "mining pools" that coordinate worker nodes offering WireGuard /
+    SOCKS5 VPN connections across many geographic locations. The validator
+    samples a pool's workers, validates each WireGuard and SOCKS5 connection
+    (egress IP must match the claimed worker IP), measures response latency, and
+    geolocates the egress. A mining pool is rewarded linearly on pool size,
+    multiplied by stability (up fraction), performance (latency), and the square
+    root of geographic completeness. Workers themselves run no Bittensor neuron;
+    only mining-pool miners receive emissions and distribute them to workers as
+    they see fit.
+  submission_format: [compute_service]
+
+scoring_signals:
+  - name: size_score
+    metric_kind: volume
+    direction: higher_is_better
+    weight: null            # multiplicative factor in the composite, not additive
+    normalization: none
+    notes: >-
+      workers.length * stability_fraction — number of up workers in the pool,
+      already penalised by the stability fraction.
+  - name: stability_score
+    metric_kind: uptime
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      stability_fraction = successes.length / selected_workers.length; entered
+      into the composite as stability_fraction (a 0..1 multiplier).
+  - name: performance_score
+    metric_kind: latency
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      performance_score = min(100 / (median_test_length_s / 20), 100); enters
+      composite as performance_fraction = performance_score / 100. 20s is
+      treated as a "good" test length (s_considered_good = 20).
+  - name: geo_score
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      geo_completeness_fraction = countries_in_pool / total_unique_countries
+      across all pools; enters composite as sqrt(geo_completeness_fraction).
+      metric_kind 'similarity' chosen as nearest fit for "geographic diversity
+      / completeness fraction"; no exact enum exists.
+
+ground_truth_sources:
+  - kind: hardware_probe
+    description: >-
+      Validator actively probes each sampled worker: tests its WireGuard tunnel
+      and SOCKS5 proxy by checking the observed egress IP matches the claimed
+      worker IP (mismatch => status 'cheat'), and times the round trip.
+    source_identifier: "validate_and_annotate_workers (score_workers.js)"
+    trust_model: adversarial
+    notes: >-
+      Egress IP mismatch is explicitly flagged as 'cheat'; outdated node
+      versions and pool-membership mismatches cause failure.
+  - kind: other
+    kind_other: ip_geolocation_database
+    description: >-
+      Worker country_code is resolved via IP geolocation (IP2Location LITE and
+      MaxMind, configured via IP2LOCATION_DOWNLOAD_TOKEN and a MaxMind license
+      key) to compute geographic completeness.
+    source_identifier: "ip_geodata (geolocation/helpers.js); README setup"
+    trust_model: oracle
+    notes: >-
+      External geolocation providers; used for geo_score country attribution.
+
+aggregation:
+  method: proportional
+  composition: multiplicative
+  normalization: l1
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: 0.8
+    dynamic: false
+    notes: >-
+      BURN_WEIGHT = 0.8 assigned to BURN_UID = 0 inside
+      process_weights_for_netuid; remaining 0.2 distributed across pools.
+  notes: >-
+    Per-pool composite: score = size_score * performance_fraction *
+    sqrt(geo_completeness_fraction) * stability_fraction (multiplicative).
+    The validator neuron then L1-normalises the EMA scores
+    (raw_weights = self.scores / ||scores||_1) and emits via
+    process_weights_for_netuid, which removes UID 0, scales the normalised
+    weights by (1 - 0.8) and appends burn_weight 0.8 to UID 0.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    EMA scores are L1-normalised, processed through process_weights_for_netuid
+    (burn carve-out + max-weight normalisation), converted to uint16 and set on
+    chain. Retried up to 20 times on failure.
+  on_chain_call: set_weights
+  tempo_or_interval: "360 blocks"   # neuron.epoch_length default
+  smoothing:
+    kind: ema
+    alpha: 0.1
+    window: null
+    notes: >-
+      update_scores: self.scores = alpha * scattered_rewards + (1 - alpha) *
+      self.scores, with alpha = config.neuron.moving_average_alpha (default 0.1).
+
+anti_gaming:
+  - kind: liveness_check
+    enforcement: penalty
+    description: >-
+      Each sampled worker must pass an active WireGuard + SOCKS5 connectivity
+      test; failures mark the worker 'down', lowering stability_fraction and
+      size_score.
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      Egress IP must match claimed worker IP; on egress_ip_mismatch the worker
+      is marked 'cheat' (status_from_failure_code). Worker must also broadcast
+      the expected mining-pool URL or it fails the membership check.
+  - kind: code_inspection
+    enforcement: rejection
+    description: >-
+      score_node_version checks both pools and workers run a current version;
+      an outdated version throws and excludes the pool/worker from scoring
+      (partnered pools exempt).
+  - kind: other
+    kind_other: random_sampling
+    enforcement: other
+    enforcement_other: statistical_sampling
+    description: >-
+      Workers are randomly subsampled per Cochran's formula
+      (cochrane_sample_size, 99% confidence, 5% margin) so a pool cannot game by
+      showing only its best workers.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, status_enum]
+  status_values: [up, down, cheat]
+  reset_policy: >-
+    On hotkey replacement at a UID the validator zeroes that UID's score
+    (resync_metagraph). Worker-level status (up/down/cheat) is annotated per
+    validation run.
+  notes: >-
+    Validator keeps a per-UID EMA score (self.scores) persisted to state.npz.
+    Worker test_result.status takes up | down | cheat.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "federated-container/SPECIFICATION.md"
+    - "federated-container/modules/scoring/score_mining_pools.js"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/name"
+      source_path: "README.md"
+      line_ref: "1"
+      quote: "# TPN - Tao Private Network"
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "203-204"
+      quote: "Use netuid 65 for mainnet, 279 for testnet"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "1-9"
+      quote: >-
+        The TPN subnet coordinates miners that offer VPN connections in a wide
+        variety of geographic locations. ... Workers ... provide VPN connections
+        ... Miners ... offer the VPN connections that workers provide and are
+        given subnet emissions
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "32"
+      quote: >-
+        Emissions for miners on this subnet are based linearly on your worker
+        pool size and geographic uniqueness. In principle: ` amount of workers *
+        geographic diversity * slowness penalty`.
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "federated-container/modules/scoring/score_mining_pools.js"
+      line_ref: "258"
+      quote: "const size_score = workers.length * stability_fraction"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "federated-container/modules/scoring/score_mining_pools.js"
+      line_ref: "253-255"
+      quote: >-
+        let stability_fraction = 0 ... stability_fraction = successes.length /
+        selected_workers.length ... const stability_score = stability_fraction *
+        100
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "federated-container/modules/scoring/score_mining_pools.js"
+      line_ref: "283-285"
+      quote: >-
+        const s_considered_good = 20 ; const performance_score = Math.min( 100 /
+        ( median_test_length_s / s_considered_good ), 100 ) ; const
+        performance_fraction = performance_score / 100
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "federated-container/modules/scoring/score_mining_pools.js"
+      line_ref: "291-293"
+      quote: >-
+        const geo_completeness_fraction = round_number_to_decimals(
+        countries_in_pool.length / total_countries, 4 ) ; const geo_score =
+        round_number_to_decimals( geo_completeness_fraction * 100, 2 )
+    - claim_field: "/aggregation/notes"
+      source_path: "federated-container/modules/scoring/score_mining_pools.js"
+      line_ref: "298"
+      quote: >-
+        const score = size_score * performance_fraction * Math.sqrt(
+        geo_completeness_fraction ) * stability_fraction
+    - claim_field: "/aggregation/notes"
+      source_path: "sybil/base/validator.py"
+      line_ref: "236-243"
+      quote: >-
+        norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True) ...
+        raw_weights = self.scores / norm
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "sybil/base/consts.py"
+      line_ref: "1-2"
+      quote: "BURN_UID = 0\nBURN_WEIGHT = 0.8"
+    - claim_field: "/aggregation/burn_allocation/enabled"
+      source_path: "sybil/base/validator.py"
+      line_ref: "256-258"
+      quote: "burn_uid=BURN_UID,\n            burn_weight=BURN_WEIGHT,"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "sybil/base/utils/weight_utils.py"
+      line_ref: "250-253"
+      quote: >-
+        final_weights = normalized_weights * (1 - burn_weight) ; final_weights =
+        np.append(final_weights, burn_weight) ; final_weight_uids =
+        np.append(non_zero_weight_uids, burn_uid)
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "sybil/base/validator.py"
+      line_ref: "414-417"
+      quote: >-
+        alpha: float = self.config.neuron.moving_average_alpha ; self.scores =
+        ( alpha * scattered_rewards + (1 - alpha) * self.scores )
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "sybil/utils/config.py"
+      line_ref: "183-188"
+      quote: >-
+        "--neuron.moving_average_alpha" ... "Moving average alpha parameter, how
+        much to add of the new observation." ... default=0.1,
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "sybil/utils/config.py"
+      line_ref: "84-89"
+      quote: >-
+        "--neuron.epoch_length" ... "The default epoch length (how often we set
+        weights, measured in 12 second blocks)." ... default=360,
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "sybil/base/validator.py"
+      line_ref: "276-284"
+      quote: >-
+        response = self.subtensor.set_weights( wallet=self.wallet,
+        netuid=self.config.netuid, uids=uint_uids, weights=uint_weights ...
+    - claim_field: "/weight_setting/cadence"
+      source_path: "sybil/base/neuron.py"
+      line_ref: "168-171"
+      quote: >-
+        return ( (self.block - self.metagraph.last_update[self.uid]) >
+        self.config.neuron.epoch_length and self.neuron_type != "MinerNeuron" )
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "federated-container/modules/scoring/score_workers.js"
+      line_ref: "235-247"
+      quote: >-
+        const wireguard_validation = await test_wireguard_connection(...) ; ...
+        const status_from_failure_code = failure_code => failure_code ==
+        'egress_ip_mismatch' ? 'cheat' : 'down'
+    - claim_field: "/ground_truth_sources/1/description"
+      source_path: "README.md"
+      line_ref: "125-126"
+      quote: >-
+        Make an account at https://lite.ip2location.com/ ... Make an account at
+        https://www.maxmind.com and generate a license key
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "federated-container/modules/math/samples.js"
+      line_ref: "12-25"
+      quote: >-
+        export function cochrane_sample_size( { uptime_confidence_fraction=.99,
+        expected_proportion_up=.99, error_margin=.05, node_count } )
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "federated-container/modules/scoring/score_mining_pools.js"
+      line_ref: "186-187"
+      quote: >-
+        const { version_valid, version } = await score_node_version({...}) ; if(
+        !version_valid ) throw new Error( `Mining pool ... is running an outdated
+        version: ${ version }` )
+    - claim_field: "/per_miner_state/status_values"
+      source_path: "federated-container/modules/scoring/score_workers.js"
+      line_ref: "237-275"
+      quote: >-
+        failure_code == 'egress_ip_mismatch' ? 'cheat' : 'down' ... test_result.status = 'up'
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "sybil/base/validator.py"
+      line_ref: "313-315"
+      quote: >-
+        for uid, hotkey in enumerate(self.hotkeys): if hotkey !=
+        self.metagraph.hotkeys[uid]: self.scores[uid] = 0  # hotkey has been
+        replaced
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "README.md"
+      line_ref: "188-193"
+      quote: >-
+        The miner consists out of two components: 1. A miner docker container
+        that is managed through `docker` 2. A miner neuron that is managed
+        through `pm2`
+  unresolved:
+    - >-
+      /aggregation/method: no top-level enum cleanly matches "L1-normalised
+      proportional share of a multiplicative composite"; 'proportional' chosen
+      as nearest fit. The true cross-miner allocation is L1 normalisation of EMA
+      scores.
+    - >-
+      /scoring_signals/*/weight: signals combine multiplicatively (size *
+      perf_frac * sqrt(geo_frac) * stability_frac), so no additive per-signal
+      weight exists; all left null.
+    - >-
+      /aggregation/burn_allocation: whether the 80% burn is currently live on
+      netuid 65 in production cannot be confirmed from source alone; the constant
+      BURN_WEIGHT=0.8 is the only evidence. mechanism_status set to partial_burn
+      on that basis.

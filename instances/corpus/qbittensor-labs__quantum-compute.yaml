@@ -1,0 +1,260 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  README documents a 90% burn with 10% of alpha used to incentivize quantum compute. The constant
+  BURN_PERCENTAGE = 0.90 is defined in WeightSetter.py but is NOT referenced in the live
+  _get_weights() weight computation; the live code distributes weights purely proportional to
+  miner execution cost over a 14-day lookback, plus a small maintenance incentive. The 90% burn is
+  described as applied at the emissions level, not enforced in the on-chain weight vector shown here.
+
+subnet:
+  name: "Quantum Compute"
+  owner_repo: "qbittensor-labs__quantum-compute"
+  netuid: 48
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners own or operate physical gate-based quantum computers (or are partnered with an operator)
+    and execute OpenQASM 2.0/3.0 quantum circuits dispatched by validators on behalf of OpenQuantum
+    end users. A miner is rewarded in proportion to the total confirmed execution cost of the
+    quantum-compute jobs it successfully completed over the lookback window.
+  submission_format: [compute_service]
+
+scoring_signals:
+  - name: execution_cost_share
+    metric_kind: volume
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      Each miner's weight is its summed execution cost (over completed/cost-confirmed jobs in the
+      14-day lookback) divided by the network-wide sum of those costs. Cost is fetched per execution
+      from the job server's cost endpoint and stored in the successful_job table.
+  - name: maintenance_incentive
+    metric_kind: uptime
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Onboarded miners present in the metagraph but with no cost-bearing jobs receive a flat
+      maintenance allocation: TOTAL_MAINTENANCE_INCENTIVE (0.01) split evenly across all such miners.
+      The cost-proportional weights are scaled by (1 - TOTAL_MAINTENANCE_INCENTIVE) when any miner
+      needs maintenance.
+
+ground_truth_sources:
+  - kind: organic_traffic
+    description: >-
+      Quantum computing requests (circuits) from OpenQuantum end users, dispatched by the validator
+      to miners; success is determined by the miner-reported execution status (COMPLETED/FAILED).
+    source_identifier: "OpenQuantum job server"
+    trust_model: trusted
+    notes: >-
+      Job completion status comes from the miner's synapse response (ExecutionStatus). Execution
+      cost is confirmed by querying the job server's executions/{id}/cost endpoint.
+
+aggregation:
+  method: proportional
+  composition: weighted_sum
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: null
+    fraction: 0.90
+    dynamic: false
+    notes: >-
+      README states emissions begin with a 90% burn and 10% available to incentivize quantum compute.
+      The literal BURN_PERCENTAGE = 0.90 exists in WeightSetter.py but is not applied in _get_weights;
+      DISTRIBUTION_KEY_UID = 220 and get_burn_uid()/_get_burn_uid() are defined but unused in the
+      computed weight vector. The address/uid of the burn target is not resolvable from the live
+      weight code.
+  notes: >-
+    weights[uid] = proportion(miner) * (1 - TOTAL_MAINTENANCE_INCENTIVE) for cost-bearing miners;
+    weights[uid] = TOTAL_MAINTENANCE_INCENTIVE / N for the N onboarded-but-idle miners.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    Every 30 minutes a Timer fires _set_weights(): fetch onboarded miner hotkeys from the job server,
+    compute per-hotkey cost proportions over a 14-day lookback, assign weights, and publish via
+    set_weights over the full uid range.
+  on_chain_call: set_weights
+  tempo_or_interval: "30 minutes"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA/SMA smoothing of the final weight vector; weights are recomputed from a rolling 14-day
+      SQL aggregation of confirmed execution costs each cycle.
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Validator verifies miner responses: synapse.success false or rate_limited causes the job to be
+      rejected/retried; only COMPLETED executions are recorded as successful_job rows that count
+      toward cost-proportional weight. Rate limiting pushes the circuit back on the queue.
+  - kind: rate_limit
+    enforcement: rejection
+    description: >-
+      Miners signal rate_limited in the synapse; rate-limited requests are not credited and are
+      re-queued for retry.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score]
+  status_values: []
+  reset_policy: >-
+    Confirmed-cost rows in successful_job older than MAX_DATA_AGE (30 days) are deleted; weight
+    computation only sums costs from the trailing LOOKBACK_PERIOD (14 days).
+  notes: >-
+    Per-miner cumulative execution cost is accumulated in the successful_job SQLite table
+    (miner_hotkey, execution_id, cost, created_at) and summed per hotkey at weight time.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "qbittensor/validator/validator.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "1"
+      quote: "# Quantum Compute (Bittensor Subnet 48)"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "qbittensor/validator/weights/WeightSetter.py"
+      line_ref: "1-3"
+      quote: "from datetime import timedelta, datetime, timezone\nimport bittensor as bt\nfrom typing import Dict, List, Tuple"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "31"
+      quote: >-
+        miners of the Quantum Compute subnet must own or operate a physical quantum computer capable
+        of executing gate-based quantum circuits using OpenQASM 2.0/3.0, or have a direct and
+        documented partnership with an owner/operator.
+    - claim_field: "/task/submission_format"
+      source_path: "qbittensor/validator/validator.md"
+      line_ref: "9"
+      quote: >-
+        The validator then intelligently distributes these jobs to registered miners in the network.
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "qbittensor/validator/weights/WeightSetter.py"
+      line_ref: "87-91"
+      quote: >-
+        hotkey: str = entry[0]
+        miner_total_cost: int = entry[1]
+        proportion: float = miner_total_cost / sum
+        hotkey_proportion_dict[hotkey] = proportion
+    - claim_field: "/scoring_signals/0/metric_kind"
+      source_path: "qbittensor/validator/weights/WeightSetter.py"
+      line_ref: "62-68"
+      quote: "SELECT miner_hotkey, SUM(cost) as total_cost FROM successful_job WHERE created_at > ?  AND cost IS NOT NULL  GROUP BY miner_hotkey"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "qbittensor/validator/weights/WeightSetter.py"
+      line_ref: "113-115"
+      quote: >-
+        if len(keys_needing_maintenance) > 0:
+            maintenance_amount = TOTAL_MAINTENANCE_INCENTIVE / len(keys_needing_maintenance)
+            non_maintenance_multiplier = 1 - TOTAL_MAINTENANCE_INCENTIVE
+    - claim_field: "/aggregation/method"
+      source_path: "qbittensor/validator/weights/WeightSetter.py"
+      line_ref: "118-122"
+      quote: >-
+        if hotkey in proportions:
+            final_proportion: float = proportions[hotkey] * non_maintenance_multiplier
+            weights[uid] = final_proportion
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "qbittensor/validator/weights/WeightSetter.py"
+      line_ref: "14"
+      quote: "BURN_PERCENTAGE = 0.90"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "README.md"
+      line_ref: "100"
+      quote: >-
+        Emissions will slowly scale up on the subnet, beginning with a 90% burn and 10% of alpha
+        available to incentivize quantum compute.
+    - claim_field: "/aggregation/notes"
+      source_path: "qbittensor/validator/weights/WeightSetter.py"
+      line_ref: "114"
+      quote: "maintenance_amount = TOTAL_MAINTENANCE_INCENTIVE / len(keys_needing_maintenance)"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "qbittensor/validator/weights/WeightSetter.py"
+      line_ref: "38"
+      quote: "self.timer: Timer = Timer(timedelta(minutes=30), self._set_weights, run_on_start=True)"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "qbittensor/validator/weights/WeightPublisher.py"
+      line_ref: "28-35"
+      quote: >-
+        success, message = st.set_weights(
+            wallet=self.wallet,
+            netuid=self.metagraph.netuid,
+            uids=uids,
+            weights=weights,
+    - claim_field: "/weight_setting/method"
+      source_path: "qbittensor/validator/weights/WeightSetter.py"
+      line_ref: "49-58"
+      quote: >-
+        onboarded_miner_hotkeys = self._get_onboarded_miner_hotkeys()
+        weights: List[float] = self._get_weights(onboarded_miner_hotkeys)
+    - claim_field: "/weight_setting/method"
+      source_path: "qbittensor/validator/weights/WeightSetter.py"
+      line_ref: "15"
+      quote: "LOOKBACK_PERIOD = timedelta(days=14)"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "qbittensor/validator/reward/score.py"
+      line_ref: "41-53"
+      quote: >-
+        if not synapse.success:
+            ... self._patch_job_rejected(synapse.execution_id, msg)
+        if synapse.rate_limited:
+            self._patch_job_rejected(synapse.execution_id, "Miner is rate limiting")
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "qbittensor/validator/reward/score.py"
+      line_ref: "88-89"
+      quote: >-
+        if execution.status == ExecutionStatus.COMPLETED:
+            completed_execution_ids.append(execution.execution_id)
+    - claim_field: "/per_miner_state/notes"
+      source_path: "qbittensor/validator/reward/score.py"
+      line_ref: "110"
+      quote: 'query: str = """INSERT OR IGNORE INTO successful_job (miner_hotkey, execution_id, created_at) VALUES (?, ?, ?)"""'
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "qbittensor/validator/reward/cost.py"
+      line_ref: "10"
+      quote: "MAX_DATA_AGE: timedelta = timedelta(days=30)"
+    - claim_field: "/ground_truth_sources/0/notes"
+      source_path: "qbittensor/validator/reward/cost.py"
+      line_ref: "59-63"
+      quote: >-
+        endpoint: str = f"executions/{execution_id}/cost"
+        params: dict = {"miner_hotkey": miner_hotkey}
+        return self.request_manager.get(endpoint, params=params, ignore_codes=[404])
+    - claim_field: "/documentation/primary_docs"
+      source_path: "README.md"
+      line_ref: "98-102"
+      quote: >-
+        ## Incentive
+        Emissions will slowly scale up on the subnet, beginning with a 90% burn and 10% of alpha
+        available to incentivize quantum compute.
+  unresolved:
+    - "Burn target address/UID: DISTRIBUTION_KEY_UID = 220 and get_burn_uid() exist but are not used in the live weight vector, so the actual burn recipient is not resolvable from the weight code."
+    - "Whether the 90% burn is enforced on-chain (owner take / emission split) vs. via the weight vector — code path shown applies no burn fraction to weights."
+    - "REG_MAINTAINENCE_INCENTIVE = 0.001 is defined but unused in _get_weights; only TOTAL_MAINTENANCE_INCENTIVE = 0.01 is applied."

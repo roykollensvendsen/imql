@@ -1,0 +1,287 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  Default config burns 90% of emission to BURN_UID (BURN_AMOUNT_PERCENTAGE=0.9) every epoch,
+  splitting the remaining 10% among the top-k (k=1) positive-scoring miners. If no miner has a
+  positive score the validator emits a burn-only allocation (100% weight to BURN_UID). Scoring
+  via the external Validation API is implemented and active; emission is heavily burn-weighted.
+
+subnet:
+  name: "AlphaCore"
+  owner_repo: "AlphaCoreBittensor__alphacore"
+  netuid: null
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners are autonomous DevOps agents that interpret a task prompt (today: Terraform/GCP
+    infrastructure-as-code tasks), execute automation in their own environment, and submit a
+    workspace ZIP artifact (base64-encoded). Validators score the submission by running it in a
+    Firecracker sandbox Validation API which checks machine-checkable "invariants" against outputs
+    (e.g. terraform.tfstate), returning a score in [0,1]. Final per-miner score optionally blends
+    the API score with a relative latency score.
+  submission_format: [content_link]
+  submission_format_other: ""
+
+scoring_signals:
+  - name: api_invariant_score
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.8
+    normalization: none
+    notes: >-
+      Score in [0,1] returned by the external Validation API after checking task invariants in a
+      Firecracker sandbox. Per-miner api_avg = sum of task scores / task count. Combined weight is
+      API_SCORE_WEIGHT=0.8 (normalized against latency weight). Gating: if api_avg <= 0, the final
+      combined score is forced to 0 regardless of latency (fail-closed).
+  - name: latency_score
+    metric_kind: latency
+    direction: lower_is_better
+    weight: 0.1
+    normalization: min_max
+    notes: >-
+      Relative latency score in [0,1]. LATENCY_SCORE_WEIGHT=0.1. Default mode is winner_take_all:
+      among miners tied at the highest API score, the single fastest gets latency_score 1.0 and all
+      others 0.0; an alternate "relative" mode uses score=(1-normalized_delta)**gamma with
+      LATENCY_SCORE_GAMMA=1.0. Latency scoring is enabled only when LATENCY_SCORING_ENABLED is true
+      (default true in testing profile, false in production).
+
+ground_truth_sources:
+  - kind: other
+    kind_other: "sandbox_invariant_checker"
+    description: >-
+      Firecracker-backed sandbox Validation API that processes untrusted miner ZIP submissions and
+      verifies task "invariants" (machine-checkable requirements) against outputs such as
+      terraform.tfstate, returning a score 0..1.
+    source_identifier: "VALIDATION_API_ENDPOINT (default http://127.0.0.1:8888)"
+    trust_model: oracle
+    notes: >-
+      No exact enum fit; used kind=other (sandbox_invariant_checker). The sandbox is validator-side
+      and trusted; miner inputs are treated as adversarial/untrusted.
+
+aggregation:
+  method: winner_take_all
+  composition: gated
+  normalization: l1
+  normalization_other: ""
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: 0.9
+    dynamic: false
+    notes: >-
+      BURN_AMOUNT_PERCENTAGE default 0.9 (90%) sent to BURN_UID (default UID 0) every epoch via
+      _emit_top_k_weights; remaining 0.1 split among top-k (k=1) positive-scoring uids
+      (per_uid = (1 - burn_pct)/len(top_uids)). When total score <= 0, _emit_burn_only_weights
+      assigns weight 1.0 entirely to BURN_UID.
+  notes: >-
+    Per-round final score blends api (0.8) and latency (0.1) weights, normalized to sum to 1
+    (api_w/=total_w, lat_w/=total_w). Settlement updates EMA scores; emission selects top-k by EMA
+    score and applies the burn split. raw_weights = scores / L1-norm before on-chain processing.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Custom epoch-aware emitter (_maybe_emit_weights): once per epoch, inside the weights window
+    (block_in_epoch >= WEIGHTS_EMIT_BLOCK_OFFSET, default 0) and after at least
+    WEIGHTS_MIN_TASKS_BEFORE_EMIT (default 10) tasks. If sum(scores) <= 0 -> burn-only (100% to
+    BURN_UID); else top-k (k=1) split: burn_pct to BURN_UID, (1-burn_pct) to top positive scorer.
+  on_chain_call: set_weights
+  tempo_or_interval: "tempo (round_manager.tempo) blocks per epoch"
+  smoothing:
+    kind: ema
+    alpha: 0.1
+    window: null
+    notes: >-
+      update_scores applies EMA: self.scores = alpha*scattered_rewards + (1-alpha)*self.scores with
+      alpha = config.neuron.moving_average_alpha (default 0.1). Settlement clips per-round scores to
+      [0,1] and excludes BURN_UID and non-positive scores before the EMA update.
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Submissions are validated in a locked-down Firecracker microVM sandbox with strict egress
+      controls (net_checks=False on the validator path); the validator never trusts miner-supplied
+      task.json and uses its own remembered per-round invariants. If invariants are missing the
+      score is 0; if api score is 0 the final combined score is forced to 0 (fail-closed).
+  - kind: liveness_check
+    enforcement: rejection
+    description: >-
+      StartRoundSynapse handshake (HANDSHAKE_TIMEOUT_SECONDS=90) probes miner liveness; dead miners
+      are skipped. MIN_RESPONSE_RATE (default 0.5) and MAX_MINERS_TO_QUERY bound participation.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score]
+  status_values: []
+  reset_policy: ""
+  notes: >-
+    self.scores is a per-uid EMA (moving average) vector persisted to state.npz and updated each
+    settlement. Burn UID and non-positive scores are excluded from EMA updates.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs: ["README.md", "VALIDATOR.md", "VALIDATOR-API.md", "MINER.md"]
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: medium
+  evidence:
+    - claim_field: /subnet/implementation_lang
+      source_path: subnet/validator/config.py
+      line_ref: "1-2"
+      quote: '"""Environment-driven configuration for AlphaCore validators."""'
+    - claim_field: /task/summary
+      source_path: README.md
+      line_ref: "36-39"
+      quote: >-
+        Miners execute automation: miners interpret tasks, execute against their own environments
+        and produce a submission artifact. ... tasks include machine-checkable requirements
+        ("invariants") that are validated against outputs (today: typically `terraform.tfstate`).
+    - claim_field: /task/submission_format
+      source_path: subnet/validator/evaluation/mixin.py
+      line_ref: "84-86"
+      quote: 'zip_b64 = getattr(synapse, "workspace_zip_b64", None)'
+    - claim_field: /scoring_signals/0/weight
+      source_path: subnet/validator/config.py
+      line_ref: "243"
+      quote: 'API_SCORE_WEIGHT = _env_float("ALPHACORE_API_SCORE_WEIGHT", 0.8)'
+    - claim_field: /scoring_signals/0/notes
+      source_path: subnet/validator/evaluation/mixin.py
+      line_ref: "694-700"
+      quote: >-
+        If the validator API score is 0, the overall score must be 0 (fail closed) ... if api_avg
+        <= 0.0: combined[uid] = 0.0
+    - claim_field: /scoring_signals/1/weight
+      source_path: subnet/validator/config.py
+      line_ref: "245"
+      quote: 'LATENCY_SCORE_WEIGHT = _env_float("ALPHACORE_LATENCY_SCORE_WEIGHT", 0.1)'
+    - claim_field: /scoring_signals/1/notes
+      source_path: subnet/validator/config.py
+      line_ref: "230-232"
+      quote: >-
+        "winner_take_all": fastest miner(s) get full latency weight, others get 0. ...
+        LATENCY_SCORING_MODE = os.getenv("ALPHACORE_LATENCY_SCORING_MODE", "winner_take_all")
+    - claim_field: /scoring_signals/1/notes
+      source_path: subnet/validator/config.py
+      line_ref: "247"
+      quote: 'LATENCY_SCORE_GAMMA = _env_float("ALPHACORE_LATENCY_SCORE_GAMMA", 1.0)'
+    - claim_field: /ground_truth_sources/0/description
+      source_path: README.md
+      line_ref: "37"
+      quote: >-
+        untrusted inputs (e.g., a miner's Terraform submission) are processed inside Firecracker
+        microVMs to verify their integrity with strict egress controls.
+    - claim_field: /ground_truth_sources/0/source_identifier
+      source_path: subnet/validator/config.py
+      line_ref: "290-292"
+      quote: >-
+        VALIDATION_API_ENDPOINT = _normalized(os.getenv("ALPHACORE_VALIDATION_API_ENDPOINT",
+        "http://127.0.0.1:8888"))
+    - claim_field: /aggregation/composition
+      source_path: subnet/validator/evaluation/mixin.py
+      line_ref: "718"
+      quote: 'combined_score = api_w * float(api_avg) + lat_w * float(latency_score)'
+    - claim_field: /aggregation/burn_allocation/fraction
+      source_path: subnet/validator/config.py
+      line_ref: "107-108"
+      quote: >-
+        # Percentage of rewards to burn (default 0.9 = 90% burn, 10% to winner)
+        BURN_AMOUNT_PERCENTAGE = _env_float("ALPHACORE_BURN_AMOUNT_PERCENTAGE", 0.9)
+    - claim_field: /aggregation/burn_allocation/address_or_uid
+      source_path: subnet/validator/config.py
+      line_ref: "105-106"
+      quote: >-
+        # UID that receives burned tokens (default: UID 0)
+        BURN_UID = _env_int("ALPHACORE_BURN_UID", 0)
+    - claim_field: /aggregation/burn_allocation/notes
+      source_path: neurons/validator.py
+      line_ref: "689-696"
+      quote: >-
+        burn_pct = float(BURN_AMOUNT_PERCENTAGE) ... remaining = 1.0 - burn_pct; per_uid =
+        remaining / float(len(top_uids)) ... weights[int(BURN_UID)] = burn_pct
+    - claim_field: /mechanism_status
+      source_path: neurons/validator.py
+      line_ref: "595-598"
+      quote: >-
+        if total_score <= 0.0: success = self._emit_burn_only_weights(reason="no non-zero scores")
+        else: success = self._emit_top_k_weights()
+    - claim_field: /aggregation/normalization
+      source_path: subnet/base/validator.py
+      line_ref: "315-322"
+      quote: >-
+        norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True) ... raw_weights =
+        self.scores / norm
+    - claim_field: /weight_setting/cadence
+      source_path: neurons/validator.py
+      line_ref: "579-587"
+      quote: >-
+        if self._last_weights_emit_epoch == epoch: ... action=skip_already_emitted
+    - claim_field: /weight_setting/method
+      source_path: neurons/validator.py
+      line_ref: "588-598"
+      quote: >-
+        if self._weights_tasks_completed < self._weights_min_tasks_before_emit: return ... if
+        total_score <= 0.0: success = self._emit_burn_only_weights ... else: _emit_top_k_weights()
+    - claim_field: /weight_setting/on_chain_call
+      source_path: subnet/base/validator.py
+      line_ref: "362-369"
+      quote: >-
+        response = self.subtensor.set_weights(wallet=self.wallet, netuid=self.config.netuid,
+        uids=uint_uids, weights=uint_weights, ... version_key=self.spec_version)
+    - claim_field: /weight_setting/smoothing/alpha
+      source_path: subnet/base/validator.py
+      line_ref: "515-516"
+      quote: >-
+        alpha: float = self.config.neuron.moving_average_alpha
+        self.scores: np.ndarray = alpha * scattered_rewards + (1 - alpha) * self.scores
+    - claim_field: /weight_setting/smoothing/alpha
+      source_path: subnet/bittensor_config.py
+      line_ref: "78-81"
+      quote: '"--neuron.moving_average_alpha", type=float, default=0.1,'
+    - claim_field: /anti_gaming/0/description
+      source_path: subnet/validator/evaluation/mixin.py
+      line_ref: "148-152"
+      quote: >-
+        if invariants_count <= 0: return 0.0, None, {"status": "missing_invariants", "error":
+        "validator_task_json_missing_invariants"}
+    - claim_field: /anti_gaming/1/description
+      source_path: subnet/validator/config.py
+      line_ref: "218-219"
+      quote: '#   - handshake: 90s ... HANDSHAKE_TIMEOUT_SECONDS = 90'
+    - claim_field: /per_miner_state/notes
+      source_path: subnet/base/validator.py
+      line_ref: "520-529"
+      quote: >-
+        np.savez(self.config.neuron.full_path + "/state.npz", step=self.step, scores=self.scores,
+        hotkeys=self.hotkeys,)
+    - claim_field: /per_miner_state/notes
+      source_path: subnet/validator/settlement/mixin.py
+      line_ref: "64-69"
+      quote: >-
+        if np.isfinite(score) and score > 0.0: if int(uid) != int(BURN_UID):
+        positive_scores[int(uid)] = score
+    - claim_field: /documentation/primary_docs
+      source_path: README.md
+      line_ref: "9-12"
+      quote: >-
+        [`VALIDATOR-QUICKSTART.md`] ... [`VALIDATOR.md`] ... [`VALIDATOR-API.md`] ... [`MINER.md`]
+  unresolved:
+    - "subnet.netuid: not hard-coded; --netuid default is 1 (placeholder) and ALPHACORE_NETUID env overrides it. No canonical netuid in source."
+    - "ground_truth_sources[0].kind: no exact enum fit (sandbox invariant checker is an oracle-style deterministic verifier of machine-checkable invariants). Used kind=other with kind_other=sandbox_invariant_checker; trust_model=oracle. Schema stress."
+    - "Two unused/placeholder reward paths exist: subnet/validator/rewards.py::compute_rewards returns all-zero rewards, and subnet/validator/finalization/weights.py::set_validator_weights plus settlement/rewards.py::wta_rewards/apply_burn_mechanism are not wired into the live _maybe_emit_weights emission path. The active path is neurons/validator.py _emit_top_k_weights / _emit_burn_only_weights."
+    - "k for top-k weight split: hard-coded default k=1 in _emit_top_k_weights signature; not a config constant."

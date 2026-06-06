@@ -1,0 +1,164 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+# The validator runs no scoring code. It hardcodes weight 1.0 to a single UID (251)
+# and 0.0 to all others, on a chain rate-limited loop. The README tells miners to
+# "standby for new instructions" — the real mechanism is unrevealed ("null until boot").
+mechanism_status: dormant
+mechanism_status_notes: >-
+  No reward/scoring function exists. validator.py unconditionally assigns weight 1.0 to
+  uid 251 and 0.0 to every other uid, then commits via set_weights. There is no metagraph
+  read of miner performance, no challenge, and no ground truth. Miners are told to "standby
+  for new instructions". This is a placeholder/boot-trap validator concentrating all
+  emission on one uid until the real mechanism launches.
+
+subnet:
+  name: "NullUntilBoot"
+  owner_repo: "NeuralNexusII__NullUntilBoot"
+  netuid: 31
+  implementation_lang: python
+
+task:
+  summary: >-
+    No task is defined for miners. The README instructs miners to "standby for new
+    instructions" and to monitor Discord/Twitter for clues. The validator does not
+    evaluate any miner output; it concentrates all weight on a single hardcoded uid (251).
+  submission_format: [other]
+  submission_format_other: "No miner submission is defined or evaluated; miners standby for future instructions."
+
+scoring_signals: []
+
+ground_truth_sources: []
+
+aggregation:
+  method: winner_take_all
+  composition: other
+  composition_other: >-
+    No composition of signals. A boolean mask (raw_weight_uids == 251) sets weight 1.0 for
+    one uid and 0.0 for all others, before bittensor's process_weights_for_netuid normalization.
+  normalization: other
+  normalization_other: >-
+    Weights passed through bt.utils.weight_utils.process_weights_for_netuid (subtensor
+    normalization), then convert_weights_and_uids_for_emit. No subnet-specific normalization.
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: >-
+      Not a burn/null-uid allocation: all emission is routed to a live uid (251), not a
+      designated burn address. Effectively winner-take-all to a single uid rather than a burn.
+  notes: >-
+    raw_weights[raw_weight_uids == 251] = 1.0; all other entries remain 0.0 (np.zeros).
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    Infinite loop polling current block; when (current_block - last_successful_block) >= 200,
+    build a weight vector with 1.0 on uid 251 and 0.0 elsewhere, process via
+    process_weights_for_netuid, convert with convert_weights_and_uids_for_emit, and call set_weights.
+  on_chain_call: set_weights
+  tempo_or_interval: "200 blocks (block_diff >= 200), polled every 10s"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: ""
+
+anti_gaming: []
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: false
+  state_kinds: []
+  status_values: []
+  reset_policy: ""
+  notes: ""
+
+documentation:
+  status: sparse
+  source_version: "2.0.13"
+  primary_docs: ["README.md", "validator.py"]
+  completeness: low
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8[1m]"
+  extracted_at: "2026-06-06"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "validator.py"
+      line_ref: "22"
+      quote: 'parser.add_argument("--netuid", type=int, default=31, help="Subnet netuid")'
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "validator.py"
+      line_ref: "1-6"
+      quote: "#!/usr/bin/env python ... import bittensor as bt"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "16"
+      quote: "### Miners - standby for new instructions"
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "16"
+      quote: "### Miners - standby for new instructions"
+      confidence: high
+    - claim_field: "/mechanism_status"
+      source_path: "validator.py"
+      line_ref: "71-74"
+      quote: "# Recalculate weights: hardcode weight 1 for uid 0; rest are 0. ... raw_weights[raw_weight_uids == 251] = 1.0"
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "validator.py"
+      line_ref: "73-74"
+      quote: "raw_weights = np.zeros(raw_weight_uids.shape, dtype=np.float32); raw_weights[raw_weight_uids == 251] = 1.0"
+      confidence: high
+    - claim_field: "/aggregation/normalization_other"
+      source_path: "validator.py"
+      line_ref: "79-92"
+      quote: "process_weights_for_netuid(...) ... convert_weights_and_uids_for_emit(...)"
+      confidence: high
+    - claim_field: "/weight_setting/cadence"
+      source_path: "validator.py"
+      line_ref: "64-69"
+      quote: "while True: current_block = subtensor.get_current_block(); block_diff = current_block - last_successful_block; if block_diff >= 200:"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "validator.py"
+      line_ref: "97-105"
+      quote: "result, msg = subtensor.set_weights(wallet=wallet, netuid=config.netuid, uids=uint_uids, weights=uint_weights, ... version_key=spec_version,)"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "validator.py"
+      line_ref: "68-116"
+      quote: "if block_diff >= 200: ... time.sleep(10)"
+      confidence: high
+    - claim_field: "/documentation/source_version"
+      source_path: "validator.py"
+      line_ref: "9"
+      quote: '__version__ = "2.0.13"'
+      confidence: high
+    - claim_field: "/scoring_signals"
+      source_path: "validator.py"
+      line_ref: "71-74"
+      quote: "# Recalculate weights: hardcode weight 1 for uid 0; rest are 0."
+      confidence: high
+  unresolved:
+    - "Why uid 251 (not the README's mentioned uid 0); no source explains the chosen uid."
+    - "The eventual real incentive mechanism is unrevealed (README: 'standby for new instructions')."
+    - "Whether emissions on uid 251 are owned by the subnet owner (effective self-allocation/burn-like) is not stated in source."
+  extractor_notes: >-
+    Two-file repo (validator.py + README.md). No reward module, config, or scoring code.
+    The validator is a hardcoded winner-take-all to a single uid. Code comment says 'uid 0'
+    but the literal mask targets uid 251. Treated as dormant: no documented scoring drives weights.

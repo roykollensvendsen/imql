@@ -1,0 +1,251 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  Active two-pool incentive (run_baseline_incentive). The 75% "above baseline" pool is burned to
+  UID 111 whenever no submitted model beats the dynamic baseline; the 25% below-baseline pool is
+  distributed by reputation+score softmax. So in practice emissions partially burn to UID 111 when
+  no model clears the baseline.
+
+subnet:
+  name: "OMEGA Labs Any-to-Any (SN21)"
+  owner_repo: "omegalabsinc__omegalabs-anytoany-bittensor"
+  netuid: 21
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners train and upload a voice-to-voice (any-to-any, currently speech) model to Hugging Face and
+    commit its metadata on-chain. Validators pull the model, run it through a VoiceBench evaluation
+    (CommonEval, WildVoice, IfEval, AdvBench) plus a Voice MOS quality eval inside a Docker container
+    via a scoring API, and produce a combined score. Weights are set so that models above a dynamic
+    performance baseline share the larger emissions pool.
+  submission_format: [model_weights, commitment_hash]
+
+scoring_signals:
+  - name: voicebench_overall
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: 0.7
+    normalization: none
+    notes: >-
+      VoiceBench overall score (weighted average across CommonEval, WildVoice, IfEval, AdvBench
+      datasets), LLM-judge based. Combined into the model score with weight VOICEBENCH_WEIGHT=0.7.
+  - name: voice_mos
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 0.3
+    normalization: none
+    notes: >-
+      Voice MOS (mean opinion score) audio-quality metric. Combined into the model score with weight
+      VOICE_MOS_WEIGHT=0.3. metric_kind approximated as similarity/quality (no exact enum).
+
+ground_truth_sources:
+  - kind: llm_judgment
+    description: >-
+      VoiceBench evaluation over fixed datasets (CommonEval, WildVoice, IfEval, AdvBench) scored via
+      LLM-based judging; plus a Voice MOS quality model. A per-competition dynamic "baseline" score is
+      fetched from the SN21 API to split miners into pools.
+    source_identifier: "VoiceBench datasets (commoneval, wildvoice, ifeval, advbench); SN21 API baseline-score endpoint"
+    trust_model: trusted
+    notes: >-
+      Scoring runs in a Docker container behind a scoring API; baseline and reputations are fetched
+      from https://sn21-api.omegatron.ai.
+
+aggregation:
+  method: softmax
+  composition: weighted_sum
+  normalization: sum_to_one
+  temperature: 0.01
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "111"
+    fraction: 0.75
+    dynamic: true
+    notes: >-
+      When no UID scores above the dynamic baseline, the entire 75% above-baseline pool is assigned to
+      UID 111 (BURN_UID=111). Otherwise the 75% pool is distributed by score-softmax among up to
+      PLAYERS_IN_ABOVE_BASELINE=3 models, and the 25% pool by a reputation/score blend among up to
+      PLAYERS_IN_BELOW_BASELINE=10 models.
+  notes: >-
+    Two-pool system: above-baseline pool weight = 0.75 * softmax(score/temperature); below-baseline
+    pool weight = 0.25 * softmax(0.7*reputation + 0.3*score). Final weights normalized to sum to 1.
+    temperature=0.01 from constants. (A separate legacy _try_win_rate_competition path uses EMA
+    alpha=0.9 and per-competition reward_percentage, but the live weight thread calls
+    run_baseline_incentive which overwrites self.weights directly.)
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    Weight thread loops every minute and sets weights only when the UTC minute is a multiple of 20
+    (:00, :20, :40). It calls run_baseline_incentive() to compute the two-pool weights, then
+    subtensor.set_weights().
+  on_chain_call: set_weights
+  tempo_or_interval: "every 20 minutes (UTC minute % 20 == 0)"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      The active run_baseline_incentive path assigns self.weights = weights directly with no EMA. The
+      adjust_for_vtrust interpolation in the weight setter is commented out. (constants.alpha=0.9 EMA
+      exists only in the unused _try_win_rate_competition method.)
+
+anti_gaming:
+  - kind: deduplication
+    enforcement: penalty
+    description: >-
+      Models with duplicate model hashes are detected; the UID with the newer block is penalized to
+      score 0 (the older-block submission keeps the score). Implemented in _try_win_rate_competition
+      and also in run_step duplicate-preference logic.
+  - kind: challenge_period
+    enforcement: rejection
+    description: >-
+      Models must be old enough before evaluation: model_age must exceed constants.MIN_AGE (currently
+      MIN_AGE=0 seconds), enforced via is_model_old_enough, intended to prevent evaluating models that
+      saw OMEGA data-subnet data.
+  - kind: code_inspection
+    enforcement: barrier
+    description: >-
+      Submitted Hugging Face repos are size-capped (MAX_HUGGING_FACE_BYTES = 18 GiB) and a percent
+      improvement threshold (PERCENT_IMPROVEMENT=10) is referenced for beating the prior top model
+      (the improvement gate is present but commented out at the call site).
+
+sub_competitions:
+  structure: single
+  stages: []
+  count: 1
+  notes: >-
+    COMPETITION_SCHEDULE contains a single competition (competition_id="v4", reward_percentage=1.0).
+    run_baseline_incentive uses COMPETITION_SCHEDULE[0] only.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [reputation, registration_age]
+  status_values: []
+  reset_policy: ""
+  notes: >-
+    Per-hotkey reputation is fetched from the SN21 API (default 0.5 when missing) and used to weight
+    the 25% below-baseline pool. Model block (upload age) is tracked and used for tie-breaking,
+    duplicate penalties, and the min-age gate.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/README_VALIDATOR_LOGIC.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "constants/__init__.py"
+      line_ref: "22"
+      quote: "SUBNET_UID = 21"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "neurons/validator.py"
+      line_ref: "29"
+      quote: "import torch"
+    - claim_field: "/task/summary"
+      source_path: "docs/README_VALIDATOR_LOGIC.md"
+      line_ref: "99-112"
+      quote: "run_baseline_incentive() → Pulls all scores from vali_api ... Calculates two-pool incentive system ... Sets weights on Bittensor chain"
+    - claim_field: "/task/submission_format"
+      source_path: "neurons/validator.py"
+      line_ref: "1117"
+      quote: "hf_repo_id = model_i_metadata.id.namespace + \"/\" + model_i_metadata.id.name"
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "constants/__init__.py"
+      line_ref: "74"
+      quote: "VOICEBENCH_WEIGHT = 0.7  # Weight of VoiceBench score in final model score"
+    - claim_field: "/scoring_signals/1/weight"
+      source_path: "constants/__init__.py"
+      line_ref: "75"
+      quote: "VOICE_MOS_WEIGHT = 0.3  # Weight of VoiceMOS score in final model score"
+    - claim_field: "/scoring_signals/0/metric_kind"
+      source_path: "neurons/docker_inference_voicebench.py"
+      line_ref: "119"
+      quote: "combined_score = (voicebench_score * VOICEBENCH_WEIGHT) + (voice_mos_score * VOICE_MOS_WEIGHT)"
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "constants/__init__.py"
+      line_ref: "96-104"
+      quote: "'commoneval': ['test'], 'wildvoice': ['test'], 'ifeval': ['test'], 'advbench': ['test']"
+    - claim_field: "/aggregation/temperature"
+      source_path: "constants/__init__.py"
+      line_ref: "53"
+      quote: "temperature = 0.01"
+    - claim_field: "/aggregation/method"
+      source_path: "neurons/validator.py"
+      line_ref: "805"
+      quote: "score_softmax = torch.softmax(score_vec/ constants.temperature, dim=0)"
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "neurons/validator.py"
+      line_ref: "807"
+      quote: "weights[uid] = 0.75 * score_softmax[i]"
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "neurons/validator.py"
+      line_ref: "811-812"
+      quote: "weights[111] = 0.75\n            bt.logging.warning(\"No UIDs above baseline, burning 75% (assigning to UID 111)\")"
+    - claim_field: "/aggregation/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "818-821"
+      quote: "W_REP = 0.7\n            rep_softmax = torch.softmax((W_REP*rep_vec+(1-W_REP)*score_vec), dim=0)\n            for i, uid in enumerate(below_baseline):\n                weights[uid] = 0.25 * rep_softmax[i]"
+    - claim_field: "/mechanism_status"
+      source_path: "neurons/validator.py"
+      line_ref: "810-812"
+      quote: "# Burn 75%: assign all to UID 111 (if exists)\n            weights[111] = 0.75"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "neurons/validator.py"
+      line_ref: "910-917"
+      quote: "subtensor.set_weights(\n                    netuid=self.config.netuid,\n                    wallet=self.wallet,\n                    uids=self.metagraph.uids,\n                    weights=self.weights,"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "neurons/validator.py"
+      line_ref: "939"
+      quote: "if minutes % 20 == 0 or self.config.immediate:"
+    - claim_field: "/weight_setting/method"
+      source_path: "neurons/validator.py"
+      line_ref: "942"
+      quote: "self.run_baseline_incentive()"
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "850"
+      quote: "self.weights = weights"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "neurons/validator.py"
+      line_ref: "671-673"
+      quote: "if uid_to_block[uid] < uid_to_block[uid2]:\n                            scores_per_uid[uid2] = 0\n                            uids_penalized_for_hash_duplication.add(uid2)"
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "neurons/validator.py"
+      line_ref: "455-456"
+      quote: "model_age = (current_block - block_uploaded_at) * constants.BLOCK_DURATION\n        is_old_enough = model_age > constants.MIN_AGE"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "constants/__init__.py"
+      line_ref: "28"
+      quote: "MAX_HUGGING_FACE_BYTES: int = 18 * 1024 * 1024 * 1024"
+    - claim_field: "/sub_competitions/notes"
+      source_path: "constants/__init__.py"
+      line_ref: "32-37"
+      quote: "COMPETITION_SCHEDULE: List[CompetitionParameters] = [\n    CompetitionParameters(\n        reward_percentage=1.0,\n        competition_id=\"v4\",\n    ),\n]"
+    - claim_field: "/per_miner_state/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "781-785"
+      quote: "rep = hotkey_to_rep.get(hotkey, {}).get(\"reputation\")\n            if rep is None:\n                bt.logging.error(f\"No reputation found for hotkey {hotkey} (UID {uid}), using 0.5\")\n                rep = 0.5"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "constants/__init__.py"
+      line_ref: "68-69"
+      quote: "PLAYERS_IN_ABOVE_BASELINE = 3\nPLAYERS_IN_BELOW_BASELINE = 10"
+    - claim_field: "/documentation/primary_docs"
+      source_path: "README.md"
+      line_ref: "99"
+      quote: "A 75/25 emissions split: models above a dynamic performance baseline share 75% emissions; those below share 25%."
+  unresolved:
+    - "Exact VoiceBench dataset weighting for the 'overall' score (voicebench_adapter applies per-dataset weights not enumerated in constants)."
+    - "constants.alpha=0.9 EMA and per-competition reward_percentage apply only to the legacy _try_win_rate_competition path, which is not called by the live weight thread; whether any validator runs it is unknown."
+    - "Dynamic baseline value is fetched from the SN21 API at runtime, so the numeric threshold separating pools is not in the source."
+    - "PERCENT_IMPROVEMENT=10 improvement gate is present in constants but commented out at the comparison site, so its enforcement is uncertain."

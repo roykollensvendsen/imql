@@ -1,0 +1,282 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Validator computes per-miner quality scores from real task evaluation and sets normalized weights
+  on-chain via set_weights. Not a burn loop, but a documented owner-fallback: when no miner has a
+  positive current-cycle quality score, ALL weight is assigned to the subnet owner uid at
+  owner_default_score (0.2). A server-controlled `marrs` list lets favored miners be assigned a random
+  score in [0.8, 1.0] regardless of performance, and non-marrs miners can have scores multiplied by a
+  tiny coefficient (default 1e-9) — i.e. live scoring can be overridden by off-chain config.
+
+subnet:
+  name: "MiaoAI"
+  owner_repo: "MIAOAI-Subnet__MIAOAI_SUBNET"
+  netuid: 86
+  implementation_lang: python
+
+task:
+  summary: >-
+    Validators dispatch AI inference tasks (text classification, sentiment analysis, scene
+    understanding, object detection, emotion analysis) to miners. Miners run AI models and return a
+    structured JSON response (e.g. class_id+confidence, sentiment_score+confidence, objects list,
+    description+confidence). The validator validates the schema of the response and evaluates its
+    correctness against task ground truth, producing a per-task quality score in [0,1].
+  submission_format: [api_response]
+
+scoring_signals:
+  - name: task_quality_score
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.7
+    normalization: none
+    notes: >-
+      Per-task correctness from _evaluate_response: F1 of detected vs ground-truth objects for
+      object_detection; confidence-weighted correctness (0.7 + confidence*0.3 on match) for
+      sentiment/emotion/scene/text-classification; 0.5 fallback. Averaged over the cycle into the
+      current_cycle quality score, which contributes 0.7 to the final per-miner weight.
+  - name: stake_weight
+    metric_kind: other
+    metric_kind_other: stake_share
+    direction: higher_is_better
+    weight: 0.2
+    normalization: none
+    notes: >-
+      stake_weight = (miner_stake / total_non_validator_stake) * 0.2; contributes 0.2 to final score.
+  - name: historical_score
+    metric_kind: composite
+    direction: higher_is_better
+    weight: 0.1
+    normalization: ema
+    notes: >-
+      Exponentially-weighted average of past quality_score*success_rate*time_factor over the miner's
+      performance history; contributes 0.1 to final score. Defaults to alpha=0.95 if history is empty.
+  - name: response_time_factor
+    metric_kind: latency
+    direction: lower_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      time_factor = 1/(1+response_time). Used multiplicatively inside historical score and inside
+      calculate_score, though the on-chain set_weights path sums the three weighted terms without an
+      explicit response factor.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Tasks carry a ground_truth field (object list, sentiment label, description string, or class id)
+      loaded from the validator's task pool / task data path; evaluation compares miner response to it.
+    source_identifier: "task.ground_truth (task_manager task pool)"
+    trust_model: trusted
+    notes: >-
+      README states validators are provided an Alibaba e-commerce customer-service dialogue dataset as
+      a foundational training/eval set. Per-task ground truth supplied by the task definitions.
+
+aggregation:
+  method: weighted_average
+  composition: weighted_sum
+  normalization: sum_to_one
+  normalization_other: ""
+  temperature: null
+  decay_rate: null
+  min_weight_floor: 0.001
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: >-
+      No emission burn. Owner-fallback instead: if no miner has current_quality_score>0, weights become
+      all-zero except weights[owner_uid]=owner_default_score (0.2), then set on-chain.
+  notes: >-
+    final_score = stake_weight + current_quality_score*0.7 + historical_score*0.1 (with
+    historical_score defaulted to alpha=0.95 when zero). Only miners with current_quality_score>0 are
+    included. Weights below MIN_WEIGHT_THRESHOLD=0.001 are zeroed, then the vector is normalized to sum
+    to one. If everything zeros out, all weight goes to the subnet owner uid.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    set_weights called once blocks_since_last_update and blocks_since_last_weights both exceed
+    weights_interval, which is tempo*(1/3). Eval loop advances in eval_interval=25 block steps.
+  on_chain_call: set_weights
+  tempo_or_interval: "tempo * (1/3)"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      self.alpha=0.95 exists but is used as a default historical_score floor, not as an EMA smoothing
+      of the final weight. current_cycle_scores are cleared after a successful set_weights.
+
+anti_gaming:
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      Miners below miner_min_stake_dtao (default 100 dTAO) and nodes with axon ip 0.0.0.0 are excluded
+      from task allocation and weight setting. Validators below MIN_VALIDATOR_STAKE_DTAO (1000 dTAO)
+      can be rejected when CHECK_VALIDATOR_STAKE is enabled.
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      _validate_response enforces per-task-type response schema (required fields, numeric ranges
+      0..1, allowed_classes membership, min_objects). Invalid responses score 0 and are not counted.
+  - kind: code_inspection
+    enforcement: penalty
+    description: >-
+      Server/database-driven config can blacklist validators (set_weights aborts if validator
+      blacklisted) and apply a coefficient (default 1e-9) multiplier to non-`marrs` miners' cycle
+      scores; BAD_COLDKEYS have their moving_avg_scores zeroed on restore. The `marrs` allowlist
+      instead forces favored miners' low scores up to a random value in [0.8, 1.0], which is a
+      favoritism/centralization vector rather than an anti-gaming control.
+
+sub_competitions:
+  structure: per_task_type
+  stages: []
+  count: 5
+  notes: >-
+    Five task types (text_classification, sentiment_analysis, scene_understanding, object_detection,
+    emotion_analysis) share one scoring pipeline; no separate emission pools per type.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [performance_ledger, cumulative_score, reputation]
+  status_values: []
+  reset_policy: >-
+    performance_history capped at last 1000 entries per hotkey; current_cycle_scores cleared after a
+    successful set_weights.
+  notes: >-
+    ScoringSystem keeps performance_history (ValidatorPerformance records) and current_cycle_scores per
+    hotkey; historical_score is an exp-weighted average over the history.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs: ["README.md", "docs/running_validator.md", "docs/running_miner.md"]
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "3"
+      quote: "# **MIAOAI** ![Subnet 86]"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "miaoai/core/scoring.py"
+      line_ref: "1-5"
+      quote: "import numpy as np ... from miaoai.core.config import MiaoAIConfig"
+    - claim_field: "/task/summary"
+      source_path: "miaoai/core/task_type.py"
+      line_ref: "5-9"
+      quote: "TEXT_CLASSIFICATION = \"text_classification\" ... EMOTION_ANALYSIS = \"emotion_analysis\""
+    - claim_field: "/task/submission_format"
+      source_path: "miaoai/validator/miaoai_validator.py"
+      line_ref: "361-433"
+      quote: "def _validate_response(self, task_id: str, response: Dict[str, Any]) -> bool:"
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "miaoai/validator/miaoai_validator.py"
+      line_ref: "776-780"
+      quote: "current_quality_score * 0.7 +"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "miaoai/validator/miaoai_validator.py"
+      line_ref: "457-463"
+      quote: "f1_score = 2 * (precision * recall) / (precision + recall)\n                return f1_score"
+    - claim_field: "/scoring_signals/1/weight"
+      source_path: "miaoai/validator/miaoai_validator.py"
+      line_ref: "774"
+      quote: "stake_weight = (stake / total_stake) * 0.2 if total_stake > 0 else 0"
+    - claim_field: "/scoring_signals/2/weight"
+      source_path: "miaoai/validator/miaoai_validator.py"
+      line_ref: "779"
+      quote: "historical_score * 0.1"
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "miaoai/core/scoring.py"
+      line_ref: "41-53"
+      quote: "weights = np.exp(np.linspace(-1, 0, len(history)))\n        weights /= weights.sum()"
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "miaoai/validator/miaoai_validator.py"
+      line_ref: "771-772"
+      quote: "if historical_score == 0.0:\n                    historical_score = self.alpha"
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "miaoai/core/scoring.py"
+      line_ref: "48"
+      quote: "time_factor = 1 / (1 + perf.response_time)"
+    - claim_field: "/aggregation/notes"
+      source_path: "miaoai/validator/miaoai_validator.py"
+      line_ref: "776-784"
+      quote: "final_score = (\n                        stake_weight +\n                        current_quality_score * 0.7 +\n                        historical_score * 0.1\n                )"
+    - claim_field: "/aggregation/min_weight_floor"
+      source_path: "miaoai/validator/miaoai_validator.py"
+      line_ref: "805-807"
+      quote: "MIN_WEIGHT_THRESHOLD = 0.001\n\n                    weights = [w if w >= MIN_WEIGHT_THRESHOLD else 0.0 for w in weights]"
+    - claim_field: "/aggregation/normalization"
+      source_path: "miaoai/validator/miaoai_validator.py"
+      line_ref: "810-811"
+      quote: "if total_weight > 0:\n                        weights = [w / total_weight for w in weights]"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "miaoai/validator/miaoai_validator.py"
+      line_ref: "793-801"
+      quote: "weights[owner_uid] = self.config_manager.get_config().owner_default_score"
+    - claim_field: "/mechanism_status_notes"
+      source_path: "miaoai/core/constants.py"
+      line_ref: "31"
+      quote: "OWNER_DEFAULT_SCORE = 0.2"
+    - claim_field: "/mechanism_status_notes"
+      source_path: "miaoai/core/scoring.py"
+      line_ref: "71-75"
+      quote: "if hotkey not in config.marrs:\n                base_score *= config.coefficient\n            else:\n                if base_score < 0.8:\n                    base_score = random.uniform(0.8, 1.0)"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "miaoai/validator/miaoai_validator.py"
+      line_ref: "818-825"
+      quote: "success = self.subtensor.set_weights(\n                netuid=self.config.netuid,\n                wallet=self.wallet,\n                uids=miner_indices,\n                weights=weights,\n                wait_for_inclusion=True,\n                version_key=VERSION_KEY"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "miaoai/validator/miaoai_validator.py"
+      line_ref: "99"
+      quote: "self.weights_interval = self.tempo *  (1 / 3)"
+    - claim_field: "/weight_setting/method"
+      source_path: "miaoai/validator/miaoai_validator.py"
+      line_ref: "648"
+      quote: "if blocks_since_last >= self.weights_interval and self.blocks_since_last_weights >= self.weights_interval:"
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "miaoai/validator/miaoai_validator.py"
+      line_ref: "829"
+      quote: "self.scoring_system.clear_current_cycle_scores()"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "miaoai/validator/miaoai_validator.py"
+      line_ref: "179-184"
+      quote: "if ip == '0.0.0.0':\n                    continue\n\n                if stake < miner_min_stake:"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "miaoai/core/constants.py"
+      line_ref: "21-22"
+      quote: "MIN_VALIDATOR_STAKE_DTAO = float(os.getenv(\"MIN_VALIDATOR_STAKE_DTAO\", \"1000.0\"))\nMIN_MINER_STAKE_DTAO = float(os.getenv(\"MIN_MINER_STAKE_DTAO\", \"100.0\"))"
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "miaoai/validator/miaoai_validator.py"
+      line_ref: "385-387"
+      quote: "if not 0 <= response[\"sentiment_score\"] <= 1:\n                    logging.warning(\"sentiment_score must be between 0 and 1\")\n                    return False"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "miaoai/core/constants.py"
+      line_ref: "35"
+      quote: "DEFAULT_COEFFICIENT= 0.000000001"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "miaoai/validator/miaoai_validator.py"
+      line_ref: "724-725"
+      quote: "if self.metagraph.coldkeys[idx] in BAD_COLDKEYS:\n                self.moving_avg_scores[idx] = 0.0"
+    - claim_field: "/sub_competitions/structure"
+      source_path: "miaoai/validator/miaoai_validator.py"
+      line_ref: "446"
+      quote: "task_type = TaskType.from_str(task.metadata.get(\"category\", \"\"))"
+    - claim_field: "/per_miner_state/state_kinds"
+      source_path: "miaoai/core/scoring.py"
+      line_ref: "29-30"
+      quote: "if len(self.performance_history[hotkey]) > 1000:\n            self.performance_history[hotkey] = self.performance_history[hotkey][-1000:]"
+    - claim_field: "/documentation/primary_docs"
+      source_path: "README.md"
+      line_ref: "75-82"
+      quote: "# Incentive Design\nMIAOAI’s incentive mechanism is designed to foster positive collaboration between miners and validators"
+  unresolved:
+    - "VERSION_KEY=2208 is a fixed version_key constant, not a tempo/cadence; no field for it."
+    - "eval_interval (25), tempo, and the exact block tempo value are runtime/chain-derived; weights_interval is tempo*(1/3) but tempo is not a literal in source."
+    - "calculate_reward (base_reward = blocks_completed/(720*2), quality_bonus_ratio 0.7, history_bonus_ratio 0.1) exists in scoring.py but is not called from the on-chain weight path; left out to avoid implying it drives emissions."

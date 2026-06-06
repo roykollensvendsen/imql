@@ -1,0 +1,276 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: mixed
+mechanism_status_notes: >-
+  Validators do not compute weights locally; they fetch a weight vector from the
+  platform's /validator/get_best_miners endpoint and set it on-chain. The platform
+  assigns a tiny fixed weight per top screener miner (SCREENER_WEIGHT_PER_MINER=0.00002)
+  plus TopMiner.weight to competition winners, and the unclaimed residual
+  (1 - screener_used - top_miners_assigned) burns to uid 0. On any error
+  (missing metagraph snapshot, no active competition, combined weight > 1) the
+  platform returns a burn-only payload [uid 0, weight 1.0]. So actual emission is a
+  mix of small screener allocations, winner allocation, and a dynamic burn residual.
+
+subnet:
+  name: "SOMA"
+  owner_repo: "DendriteHQ__SOMA"
+  netuid: 114
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners submit a context-compression algorithm (source code, one per hotkey per
+    weekly competition) to the platform. The platform runs the script in a remote
+    sandbox to compress a noise-injected base text at specified compression ratios.
+    A validator then passes the compressed text to an LLM (OpenRouter), has the LLM
+    answer predefined questions using only the compressed representation, and scores
+    those answers against ground-truth reference answers. Validators report per-question
+    scores to the platform; the platform aggregates scores, selects top screeners /
+    winners, and returns a weight vector that validators set on-chain.
+  submission_format: [source_code]
+
+scoring_signals:
+  - name: llm_answer_correctness
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      An LLM scores each candidate answer (produced by a second LLM from the compressed
+      text) against the reference answer. Allowed discrete scores are {0.0, 0.5, 0.75, 1.0}
+      with verdicts NO_ANSWER/INCORRECT/PARTIAL/CORRECT. Per-challenge rollup is the mean
+      of its question scores; the platform stores the mean as the BatchChallengeScore.
+  - name: compression_ratio_gate
+    metric_kind: other
+    metric_kind_other: compression_ratio_threshold
+    direction: target_band
+    weight: null
+    normalization: none
+    notes: >-
+      Before scoring, the platform checks _is_compressed_enough(original, compressed, ratio);
+      challenges that fail the compression-ratio check are auto-scored 0.0 with reason
+      "not_compressed_enough" and excluded from the validator response. A gate, not an
+      additive signal.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Predefined questions and ground-truth answers generated from a clean base text
+      before noise injection; stored on the platform (BatchQuestionAnswer / questions).
+      Miners do not see the clean base text or the answers.
+    source_identifier: "platform challenge dataset (BatchChallenge / BatchQuestionAnswer)"
+    trust_model: trusted
+    notes: ""
+  - kind: llm_judgment
+    description: >-
+      OpenRouter LLM (default model openai/gpt-4.1-mini, temperature 0) both generates
+      candidate answers from the compressed text and grades them against references.
+    source_identifier: "OpenRouter chat/completions"
+    trust_model: oracle
+    notes: ""
+
+aggregation:
+  method: undocumented
+  composition: other
+  composition_other: >-
+    Two-stage: validator computes per-question/per-challenge mean scores and reports them;
+    the platform separately selects top-screener miners and competition winners and emits
+    a weight vector. The combine step that maps reported scores to final weights lives in
+    platform DB logic (TopMiner.weight, fetch_top_screener_ss58_for_competition) not present
+    in this repo.
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: null
+    dynamic: true
+    notes: >-
+      burn = max(0.0, 1.0 - screener_used - top_miners_assigned), added to uid 0. Full
+      burn-only payload [uid 0, weight 1.0] is returned on missing metagraph snapshot,
+      no active competition, or combined weight > 1.0.
+  notes: >-
+    Per-screener weight is the fixed SCREENER_WEIGHT_PER_MINER=0.00002 times the number of
+    top screeners (TOP_SCREENER_SCRIPTS=0.2 fraction). Winner weights come from TopMiner.weight
+    rows in the DB. Validator-side, weights are renormalized to sum to 1.0 before set_weights.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    Validator loop checks current block each tick; when blocks_since_last >=
+    weight_block_interval (110), it calls set_weights(): fetches get_best_miners from the
+    platform and writes the returned (uid, weight) vector on-chain via subtensor.set_weights.
+  on_chain_call: set_weights
+  tempo_or_interval: "110 blocks"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No temporal smoothing/EMA of the reward observed in this repo; the platform returns a
+      fresh weight vector each call. Validator only renormalizes to sum 1.0.
+
+anti_gaming:
+  - kind: hardware_validation
+    enforcement: rejection
+    description: >-
+      Miner scripts run in a RemoteSandboxManager with per-task timeouts
+      (SANDBOX_TIMEOUT_PER_TASK_SECONDS=10s); failed sandbox tasks get score 0.0 with
+      reason "sandbox_error" and no BatchCompressedText record is created.
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      Compression-ratio enforcement: outputs that are not compressed enough are auto-scored
+      0.0 ("not_compressed_enough") before LLM scoring.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      Validators must meet MIN_VALIDATOR_TOTAL_WEIGHT (default 30000) and
+      MIN_VALIDATOR_ALPHA_WEIGHT (default 5000) stake to register and request/score challenges
+      (verify_validator_stake_dep).
+  - kind: other
+    kind_other: miner_ban
+    enforcement: elimination
+    description: >-
+      Banned miners are skipped during challenge assignment and scoring is disabled for their
+      batches (get_miner_banned_status_for_batch / for_update).
+  - kind: rate_limit
+    enforcement: barrier
+    description: >-
+      Validators that report OpenRouter/provider errors are temporarily blocked from fetching
+      new assignments (VALIDATOR_OPENROUTER_ERROR_COOLDOWN_SECONDS=600, min 30s).
+
+sub_competitions:
+  structure: multi_mechanism
+  stages:
+    - name: "Submission Window"
+      role: "other"
+      advancement_rule: "Miners upload/update one algorithm per hotkey per weekly cycle; only code submitted in this window is eligible."
+    - name: "Screening & Qualification"
+      role: "qualifier"
+      advancement_rule: "Automated validation/integrity checks; top fraction of qualified submissions (TOP_SCREENER_SCRIPTS=0.2) advance."
+    - name: "Competition Phase"
+      role: "main"
+      advancement_rule: "Qualified solutions scored continuously; final rankings computed at end of weekly cycle."
+  count: null
+  notes: >-
+    Recurring weekly competition cycle (README). First competition is context compression.
+    Scoring is evaluated independently at multiple compression levels (docs cite 20%/40%/60%);
+    the documented per-level weight w(b)=1/sqrt(b) and the screener-selection logic live in the
+    platform DB layer, not in this repo's source.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [status_enum, reputation]
+  status_values: ["working"]
+  reset_policy: "Per weekly competition cycle; screeners from the previous competition get a grace window (PREVIOUS_COMPETITION_SCREENERS_GRACE_HOURS=4.0)."
+  notes: >-
+    Platform tracks per-miner ban status, screener qualification per competition, and
+    TopMiner winner rows. "working" is a validator status; miner-level state lives in the
+    platform DB (Validator.current_status shown here is for validators).
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/miner/context-compression.md"
+    - "docs/validator/validator-setup.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "validator/config/settings.py"
+      line_ref: "42"
+      quote: "netuid = cls._get_int(\"NETUID\", 114)"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "validator/evaluation/llm_scorer.py"
+      line_ref: "1-16"
+      quote: "from __future__ import annotations ... from validator.evaluation.prompts import ANSWERS_GENERATION_PROMPT, ANSWER_SCORING_PROMPT"
+    - claim_field: "/task/summary"
+      source_path: "docs/miner/context-compression.md"
+      line_ref: "54-67"
+      quote: "The compressed text is passed to a language model ... The model answers the predefined questions ... Model-generated answers are compared against ground-truth answers"
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "60-66"
+      quote: "The miner's responsibility is to design and implement model or algorithm that solves the defined problem ... and upload it to the platform"
+    - claim_field: "/scoring_signals/0/metric_kind"
+      source_path: "validator/evaluation/llm_scorer.py"
+      line_ref: "44"
+      quote: "LLM_SCORING_ALLOWED_SCORES = {0.0, 0.5, 0.75, 1.0}"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "mcp_platform/app/api/routes/validator.py"
+      line_ref: "1527-1535"
+      quote: "BatchChallengeScore( ... score=sum(scores) / len(scores) )"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "mcp_platform/app/api/routes/validator.py"
+      line_ref: "864-868"
+      quote: "if not _is_compressed_enough( original=challenge.challenge_text or \"\", compressed=compressed_text, ratio=ratio, ):"
+    - claim_field: "/ground_truth_sources/1/source_identifier"
+      source_path: "validator/config/settings.py"
+      line_ref: "83-90"
+      quote: "openrouter_model=os.getenv(\"OPENROUTER_MODEL\", \"openai/gpt-4.1-mini\"), ... llm_temperature=cls._get_float(\"LLM_TEMPERATURE\", 0)"
+    - claim_field: "/aggregation/burn_allocation/dynamic"
+      source_path: "mcp_platform/app/api/routes/validator.py"
+      line_ref: "1969-1971"
+      quote: "burn = max(0.0, 1.0 - screener_used - top_miners_assigned) ... miners_by_uid[0] = miners_by_uid.get(0, 0.0) + burn"
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "mcp_platform/app/api/routes/validator.py"
+      line_ref: "1604-1605"
+      quote: "def _burn_only_payload() -> GetBestMinersUidResponse: return GetBestMinersUidResponse(miners=[MinerWeight(uid=0, weight=1.0)])"
+    - claim_field: "/aggregation/notes"
+      source_path: "mcp_platform/app/core/config.py"
+      line_ref: "97-100"
+      quote: "screener_weight_per_miner: float = Field( default=0.00002, alias=\"SCREENER_WEIGHT_PER_MINER\", )"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "validator/config/settings.py"
+      line_ref: "98"
+      quote: "weight_block_interval = 110"
+    - claim_field: "/weight_setting/method"
+      source_path: "validator/validator.py"
+      line_ref: "636-643"
+      quote: "if blocks_since_last >= self.settings.weight_block_interval: ... weight_task = asyncio.create_task(self.set_weights())"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "validator/chain/weigt_setter.py"
+      line_ref: "62-69"
+      quote: "result = await self.subtensor.set_weights( wallet=self.settings.wallet, netuid=self.settings.netuid, uids=uids_list, weights=weights_list, ... )"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "mcp_platform/app/core/config.py"
+      line_ref: "166-177"
+      quote: "min_validator_total_weight: float = Field( default=30000.0 ... min_validator_alpha_weight: float = Field( default=5000.0"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "mcp_platform/app/core/config.py"
+      line_ref: "148-151"
+      quote: "sandbox_timeout_per_task_seconds: float = Field( default=10.0, alias=\"SANDBOX_TIMEOUT_PER_TASK_SECONDS\", description=\"Timeout for executing one compression task\", )"
+    - claim_field: "/anti_gaming/4/description"
+      source_path: "mcp_platform/app/core/config.py"
+      line_ref: "130-133"
+      quote: "validator_openrouter_error_cooldown_seconds: float = Field( default=600.0, alias=\"VALIDATOR_OPENROUTER_ERROR_COOLDOWN_SECONDS\", )"
+    - claim_field: "/sub_competitions/stages"
+      source_path: "README.md"
+      line_ref: "104-129"
+      quote: "Each competition lasts one week and consists of three distinct phases: ... Submission Window ... Screening & Qualification Phase ... Competition Phase"
+    - claim_field: "/sub_competitions/notes"
+      source_path: "docs/miner/context-compression.md"
+      line_ref: "71-90"
+      quote: "Evaluation is performed independently for multiple compression levels: 20% 40% 60% ... w(b) = 1/sqrt(b)"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "mcp_platform/app/core/config.py"
+      line_ref: "101-104"
+      quote: "previous_competition_screeners_grace_hours: float = Field( default=4.0, alias=\"PREVIOUS_COMPETITION_SCREENERS_GRACE_HOURS\", )"
+    - claim_field: "/mechanism_status"
+      source_path: "validator/validator.py"
+      line_ref: "274-285"
+      quote: "best_miners_response = await self.get_best_miners() ... if not best_miners_response or not best_miners_response.miners: ... await self.weight_setter.set_weights( np.array([0]...), np.array([1.0]...) )"
+  unresolved:
+    - "Exact per-level compression weighting w(b)=1/sqrt(b) and the S(b) aggregation are documented in docs/miner/context-compression.md but the actual implementation lives in the platform/sandbox layer (compression-ratio handling and screener selection) not present as runnable scoring code in this repo."
+    - "TopMiner.weight values and fetch_top_screener_ss58_for_competition selection logic (which miners become winners and their exact weights) are in the platform DB/query layer (app.db.interfaces) not included in this source tree."
+    - "max_miners_for_weights default=1 (config) suggests a single winner takes the competition allocation, but the exact mapping from reported BatchChallengeScores to TopMiner.weight is not in this repo."
+    - "Compression levels actually used at runtime: docs cite 20/40/60%; per-challenge compression_ratio is read from batch_challenge.compression_ratio (DB), not a literal in this source."

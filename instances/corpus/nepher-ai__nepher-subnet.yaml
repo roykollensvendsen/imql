@@ -1,0 +1,277 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: mixed
+mechanism_status_notes: >-
+  Winner-take-all on chain only during the (episodic) reward period; during contest,
+  submit, evaluation, review, and any idle/no-tournament time the validator burns 100%
+  on UID 0 (with an optional 1% to the preliminary leader). The actual per-agent scoring
+  and stake-weighted aggregation are performed by an off-repo tournament backend API, so
+  the ranking math is not present in this source tree.
+
+subnet:
+  name: "Nepher Robotics Subnet"
+  owner_repo: "nepher-ai__nepher-subnet"
+  netuid: 49
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners train robotics control policies locally and submit signed agents (a
+    best_policy.pt checkpoint plus a task module) to a tournament backend. Validators
+    download each eligible agent and run it against standardized Isaac Lab environments in
+    a sandboxed Docker container, producing a score that is submitted back to the backend.
+    The single approved tournament winner receives all on-chain weight during the reward
+    period; everything else burns.
+  submission_format: [model_weights, source_code]
+
+scoring_signals:
+  - name: agent_evaluation_score
+    metric_kind: reward
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      Each agent is run in a sandbox container against Isaac Lab environments and produces
+      a single scalar 'score' returned by the sandbox runner and submitted to the backend
+      (result['score']). The metric semantics (episodic task reward) are defined inside the
+      agent/task module and the off-repo eval harness, not in this tree.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Standardized Isaac Lab simulation environments executed via eval-nav inside a
+      no-network, no-wallet sandbox container. Acts as the reference environment for
+      scoring submitted policies.
+    source_identifier: "Isaac Lab environments (eval-nav)"
+    trust_model: trusted
+    notes: >-
+      Sandbox has GPU access for Isaac Sim but no wallet, no Docker socket, and no network
+      access except whitelisted domains.
+
+aggregation:
+  method: winner_take_all
+  composition: weighted_sum
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: null
+    dynamic: true
+    notes: >-
+      Outside the reward period (contest, submit, evaluation, review, idle/no-tournament)
+      the validator burns 100% on UID 0; optionally 1% (LEADER_WEIGHT_FRACTION) is split to
+      the preliminary leaderboard leader with the remaining 99% burned. If no winner is
+      approved or the winner hotkey is absent from the metagraph, weight burns on UID 0.
+  notes: >-
+    Stake-weighted averaging of validator scores, descending rank, ties broken by earliest
+    submission time, is documented as occurring in the off-repo backend; only the
+    winner-takes-all weight assignment is implemented in this repo.
+
+weight_setting:
+  cadence: per_tournament
+  method: >-
+    During the reward period the validator queries the approved winner hotkey from the
+    tournament API, maps it to a metagraph UID, and sets all weight (1.0) to that UID via
+    subtensor.set_weights, refreshing every WEIGHT_SET_INTERVAL (1800s / 30 min). A SHA-256
+    weight-hash dedup check skips redundant commits within DEDUP_WINDOW (900s). Outside the
+    reward period weights burn on UID 0 every BURN_INTERVAL (1800s).
+  on_chain_call: set_weights
+  tempo_or_interval: 1800
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No on-chain weight smoothing; weight setting is winner-takes-all per refresh with
+      wait_for_inclusion=True, wait_for_finalization=False.
+
+anti_gaming:
+  - kind: stake_weighting
+    enforcement: other
+    enforcement_other: aggregation_weighting
+    description: >-
+      Validator scores for an agent are aggregated by stake-weighted averaging in the
+      backend (simple average fallback if no validator has stake). Documented in
+      docs/incentive_mechanism.md; not implemented in this repo.
+  - kind: deduplication
+    enforcement: rejection
+    description: >-
+      Only the latest agent per miner is scored; eligible-miner list is snapshotted from
+      the metagraph and locked before evaluation. On-chain weight commits are deduplicated
+      via a SHA-256 weight hash within a 900s window across validators sharing a hotkey.
+  - kind: code_inspection
+    enforcement: elimination
+    description: >-
+      Admin team reviews aggregated scores and verifies the top submission for cheating
+      before approving a winner; if not approved, all weight burns on UID 0.
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Pre-flight model weight validation loads best_policy.pt in an isolated subprocess
+      with a 120s timeout (MODEL_VALIDATION_TIMEOUT) and rejects files larger than 2048 MB
+      (MAX_POLICY_SIZE_MB) or that fail to load.
+  - kind: liveness_check
+    enforcement: barrier
+    description: >-
+      Evaluation runs inside a sandboxed Docker container with no wallet, no Docker socket,
+      and no network access (whitelisted domains only); network/sandbox-escape errors are
+      classified and reported to the backend.
+
+sub_competitions:
+  structure: tournament
+  stages:
+    - name: "Contest Period"
+      role: qualifier
+      advancement_rule: "submit signed agent during contest/submit window"
+    - name: "Submit Period"
+      role: qualifier
+      advancement_rule: "registered in metagraph AND submitted agent; list snapshotted and locked"
+    - name: "Evaluation Period"
+      role: main
+      advancement_rule: "agent scored in Isaac Lab sandbox; score submitted to backend"
+    - name: "Review Period"
+      role: knockout
+      advancement_rule: "admin reviews aggregated scores and approves winner (no cheating)"
+    - name: "Reward Period"
+      role: final
+      advancement_rule: "approved winner receives all on-chain weight"
+  count: 5
+  notes: >-
+    Each tournament proceeds through five sequential block-bounded periods; emissions are
+    directed to the winner only during the Reward Period. Period boundaries are defined by
+    Bittensor block numbers converted to timestamps by the backend.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [status_enum, registration_age]
+  status_values: []
+  reset_policy: >-
+    Eligibility re-evaluated per tournament; eligible-miner list snapshotted and locked
+    during the submit period.
+  notes: >-
+    Eligibility requires both on-chain registration (present in metagraph) and an agent
+    submission during the contest/submit period. A miner deregistered before/during
+    evaluation or reward still receives its reward (hotkey-based emission is mandatory).
+
+documentation:
+  status: docs_and_code
+  source_version: "Subnet 49 (Nepher)"
+  primary_docs:
+    - "docs/incentive_mechanism.md"
+    - "README.md"
+    - "docs/validator-guide.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "config/common_config.yaml"
+      line_ref: "9"
+      quote: "subnet_uid: 49"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "README.md"
+      line_ref: "13-15"
+      quote: "miner/    validator/ (submit)  (evaluate + set weights)"
+    - claim_field: "/task/summary"
+      source_path: "docs/incentive_mechanism.md"
+      line_ref: "20"
+      quote: >-
+        Validators download each eligible agent, install its task module, and run it
+        against standardized Isaac Lab environments via `eval-nav`. Scores are submitted
+        back to the tournament backend.
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "80-90"
+      quote: "best_policy/ best_policy.pt  # Trained policy (required) ... source/ <task_module>/"
+    - claim_field: "/scoring_signals/0/metric_kind"
+      source_path: "validator/evaluation/agent_evaluator.py"
+      line_ref: "303"
+      quote: "logger.info(f\"Sandbox evaluation score: {result.get('score', 'N/A')}\")"
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "validator/evaluation/agent_evaluator.py"
+      line_ref: "270-276"
+      quote: >-
+        The sandbox container: - Has GPU access for Isaac Sim - Has NO wallet access -
+        Has NO Docker socket - Has NO network access - Can only write to the output directory
+    - claim_field: "/aggregation/method"
+      source_path: "docs/incentive_mechanism.md"
+      line_ref: "28-30"
+      quote: >-
+        ### Winner-Takes-All  Only a single top-performing miner receives weight (and thus
+        emissions) per tournament.
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "validator/reward/weight_setter.py"
+      line_ref: "51"
+      quote: "BURN_UID = 0  # UID to burn to when no winner"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "validator/reward/weight_setter.py"
+      line_ref: "52"
+      quote: "LEADER_WEIGHT_FRACTION = 0.01  # 1% emission to preliminary leader"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "docs/incentive_mechanism.md"
+      line_ref: "38"
+      quote: >-
+        Outside the reward period — during contest, submit period, evaluation, and review —
+        validators set weight to UID 0 (burn).
+    - claim_field: "/aggregation/notes"
+      source_path: "docs/incentive_mechanism.md"
+      line_ref: "34"
+      quote: >-
+        Validator scores are aggregated using stake-weighted averaging. ... Rankings are
+        determined by aggregated score descending, with ties broken by earliest submission time.
+    - claim_field: "/weight_setting/method"
+      source_path: "validator/reward/weight_setter.py"
+      line_ref: "168"
+      quote: "await self._set_weights(winner_uid, metagraph)"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "validator/reward/weight_setter.py"
+      line_ref: "302-309"
+      quote: "success, message = subtensor.set_weights(wallet=wallet, netuid=netuid, uids=uids, weights=weights, wait_for_inclusion=True, wait_for_finalization=False,)"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "validator/reward/weight_setter.py"
+      line_ref: "96"
+      quote: "WEIGHT_SET_INTERVAL = 1800  # Re-set weights every 30 minutes"
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "validator/reward/weight_setter.py"
+      line_ref: "53"
+      quote: "DEDUP_WINDOW = 900  # 15 minutes — skip if identical weights committed within this window"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "docs/incentive_mechanism.md"
+      line_ref: "21"
+      quote: >-
+        The admin team reviews aggregated scores and verifies the top submission to confirm
+        no cheating before approving the winner.
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "validator/evaluation/agent_evaluator.py"
+      line_ref: "61-62"
+      quote: >-
+        MODEL_VALIDATION_TIMEOUT = 120  # seconds — fast-fail on corrupt/unloadable
+        checkpoints  MAX_POLICY_SIZE_MB = 2048  # reject files larger than 2 GB
+    - claim_field: "/sub_competitions/stages"
+      source_path: "docs/incentive_mechanism.md"
+      line_ref: "8-15"
+      quote: "CONTEST PERIOD | SUBMIT PERIOD | EVALUATION PERIOD | REVIEW PERIOD | REWARD PERIOD"
+    - claim_field: "/per_miner_state/notes"
+      source_path: "docs/incentive_mechanism.md"
+      line_ref: "48-49"
+      quote: >-
+        Eligibility requires both on-chain registration (present in the metagraph) and an
+        agent submission during the contest/submit period. ... If an eligible miner is
+        deregistered before or during evaluation/reward, it still receives its reward.
+    - claim_field: "/mechanism_status"
+      source_path: "validator/main.py"
+      line_ref: "194-201"
+      quote: >-
+        "No active tournament — burning 100% on UID 0 ... await self._weight_setter.burn(
+        ... phase=\"public\","
+  unresolved:
+    - "Exact per-agent score formula and the stake-weighted averaging math (performed in off-repo tournament backend API)."
+    - "Performance threshold value below which all weight burns (mentioned in docs, no numeric value)."
+    - "Period (block) boundaries and durations for each of the five tournament phases."
+    - "Whether emissions are net winner-take-all or predominantly burn over a full tournament cycle (depends on reward-period duration vs idle/burn duration, not specified)."

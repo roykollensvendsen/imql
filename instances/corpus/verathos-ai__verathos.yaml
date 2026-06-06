@@ -1,0 +1,384 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  Scoring is live (utility × throughput² × ttft × speed × demand × tee), but a
+  default 50% emission burn (emission_burn_bps=5000) redirects half of all weight
+  to the subnet owner (burn) UID before set_weights. The burn fraction is read
+  from on-chain SubnetConfig.ScoringParams at runtime, so it can change.
+
+subnet:
+  name: "Verathos"
+  owner_repo: "verathos-ai__verathos"
+  netuid: 96
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners serve LLM inference (vLLM) with ZK-inspired sumcheck proofs over
+    Merkle-committed weights, registered on a Bittensor EVM MinerRegistry.
+    Each epoch (~72 min / 360 blocks) the validator sends canary tests through
+    the same /chat endpoint as organic traffic, optionally verifies proofs, and
+    collects signed service receipts. Miners are scored per (miner, model) entry
+    on model utility, weighted-token throughput (squared), peer-relative latency
+    (TTFT and decode speed), an organic-demand bonus, and a TEE bonus; the entry
+    scores are EMA-smoothed and summed additively across a miner's models.
+  submission_format: [compute_service]
+
+scoring_signals:
+  - name: utility
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      base_utility = log2(active_params_b)^1.8 × log2(ctx/1024) × quant_quality ×
+      generation_quality. Multiplicative base factor of the entry score
+      (scoring.py compute_epoch_entry_score). quant_quality default 0.80 when
+      quant unknown; QUANT_QUALITY maps bf16/fp16=1.0 ... int4/nf4=0.90.
+  - name: throughput
+    metric_kind: throughput
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      throughput_score = (total_weighted_tokens / 1_000_000) ** throughput_power
+      (default power 2.0). Output tokens weighted 3× input. Squaring is explicit
+      sybil defense. Per-receipt output caps (canary 300, organic 4096) and a
+      per-miner canary budget bound inflation.
+  - name: ttft_factor
+    metric_kind: latency
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      min(1.3, sqrt(model_median_ttft / miner_median_ttft)) — peer-relative,
+      soft-capped at 1.3. Multiplicative factor (compute_ttft_factor).
+  - name: speed_factor
+    metric_kind: throughput
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      min(1.3, sqrt(miner_median_tps / model_median_tps)) — peer-relative decode
+      speed, soft-capped at 1.3 (compute_speed_factor). Combined ttft×speed uplift
+      bounded at 1.69×.
+  - name: demand_bonus
+    metric_kind: volume
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      1.0 + (demand_bps/10000) × demand_bonus_max (default max 0.20). Per-model
+      organic demand = sqrt(request_count × generated_tokens), normalized to
+      0-10000 bps (compute_model_demand / compute_demand_bonus).
+  - name: tee_bonus
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Multiplier tee_bonus (default 1.10 = 1 + tee_bonus_bps/10000) applied when
+      the entry has at least one verified TEE attestation this epoch; else 1.0.
+  - name: proof_integrity
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Gate, not additive. Any proof verification failure, TEE attestation failure,
+      or own-receipt integrity failure forces the epoch score to 0.0 (hard
+      penalty, decays EMA). No receipts at all -> None (EMA unchanged).
+
+ground_truth_sources:
+  - kind: commit_reveal
+    description: >-
+      Sumcheck-based ZK-inspired proofs over Merkle-committed quantized model
+      weights anchored on-chain; SHA-256 output commitment bound via Fiat-Shamir.
+      Validator verifies proofs on CPU. Canary prompts are deterministic
+      (seeded on epoch, miner_address, test_index).
+    source_identifier: "neurons/canary.py + verallm sumcheck proof system"
+    trust_model: adversarial
+    notes: >-
+      README: 'Correct computation: Sumcheck protocol ... Output integrity:
+      SHA-256 commitment over full output, bound to the proof via Fiat-Shamir.'
+  - kind: organic_traffic
+    description: >-
+      Real (non-canary) inference receipts from gateway/proxy traffic feed the
+      throughput, demand, and latency signals alongside canaries.
+    source_identifier: "ServiceReceipt (neurons/receipts.py)"
+    trust_model: adversarial
+    notes: "Organic receipts capped per-receipt (4096 output tokens) to bound gaming."
+  - kind: hardware_probe
+    description: >-
+      Optional TEE attestation (TDX / SEV-SNP) verified against on-chain
+      codeMeasurement allowlist; grants the TEE bonus.
+    source_identifier: "_verify_code_measurement (neurons/validator.py)"
+    trust_model: adversarial
+    notes: "TEE verification gated by subnet feature flag is_tee_enabled_on_subnet."
+
+aggregation:
+  method: weighted_average
+  composition: multiplicative
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "subnet owner UID (_burn_uid, resolved at startup)"
+    fraction: 0.50
+    dynamic: false
+    notes: >-
+      emission_burn (default emission_burn_bps=5000 -> 0.50) read from on-chain
+      SubnetConfig.ScoringParams. At weight-setting: weights[uid] *= (1-burn),
+      weights[burn_uid] += burn. Fraction is a fixed on-chain param (can change).
+  notes: >-
+    Per-entry epoch score = product of all signal factors; entry EMA (alpha 0.2)
+    summed additively across a miner's model entries (aggregate_score); per-UID
+    raw scores normalized to sum to one (get_weights). Within an entry, signals
+    COMBINE multiplicatively; across entries they sum.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Every set_weights_epoch_blocks (default 360, = epoch). get_weights() returns
+    normalized per-UID weights; blacklisted UIDs zeroed and re-normalized;
+    emission burn applied; scaled to uint16 (v/max*65535) and submitted via
+    subtensor.set_weights with version_key=spec_version.
+  on_chain_call: set_weights
+  tempo_or_interval: "360 blocks"
+  smoothing:
+    kind: ema
+    alpha: 0.2
+    window: null
+    notes: >-
+      Per-entry EMA: ema = alpha*epoch_score + (1-alpha)*ema, alpha default 0.2
+      (ema_alpha / ema_alpha_bps=2000). First scored epoch seeds ema directly.
+
+anti_gaming:
+  - kind: proof_of_work
+    enforcement: penalty
+    description: >-
+      ZK sumcheck proof verification on a sampled fraction of canaries
+      (canary_proof_sample_rate default 0.30). Any failed proof -> epoch
+      score 0.0 and probation entry.
+  - kind: commit_reveal
+    enforcement: rejection
+    description: >-
+      Output integrity via SHA-256 commitment bound to proof (Fiat-Shamir);
+      input commitment recomputed validator-side from tokenizer; receipt-set
+      hash for tamper evidence across validators.
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      Receipt integrity: if found own_receipts < expected-1 (and >=5 expected)
+      -> score 0.0. Canaries indistinguishable from organic traffic; seeds hash
+      (epoch, miner_address, test_index) so all validators issue identical prompts.
+  - kind: hardware_validation
+    enforcement: rejection
+    description: >-
+      Identity challenge filters hijacked endpoints (excluded from epoch +
+      reportOffline). TEE attestation cross-checked against on-chain
+      codeMeasurement allowlist.
+  - kind: rate_limit
+    enforcement: penalty
+    description: >-
+      throughput squared (power 2.0): N sybil UIDs splitting fixed demand each
+      get (1/N)^2, total 1/N of honest. Per-receipt output caps (canary 300,
+      organic 4096) and a per-miner canary token budget bound max_tokens inflation.
+  - kind: liveness_check
+    enforcement: elimination
+    description: >-
+      Probation after proof failure: forced 0.0 score (EMA decays) until 3
+      consecutive clean epochs; EMA halved per failure; after 5 epochs on
+      probation, reportOffline escalation.
+
+sub_competitions:
+  structure: multi_asset
+  stages: []
+  count: null
+  notes: >-
+    Per (miner, model) entry scored independently (additive across a miner's
+    models). Peer comparison is per-model (model-level median of miner medians).
+    Not a formal staged/tournament structure.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [performance_ledger, status_enum, cooldown]
+  status_values: ["normal", "probation"]
+  reset_policy: >-
+    Probation lifted after probation_required_passes (default 3) consecutive
+    clean epochs; any failure resets the pass counter. EMA persisted in SQLite
+    validator DB; probation persisted to /tmp/verathos_probation.json.
+  notes: >-
+    Per-entry EMA (ModelEntryScore), ProbationTracker keyed on
+    (miner_address, model_index), busy-skip / canary-error counters reset each epoch.
+
+documentation:
+  status: docs_and_code
+  source_version: "Subnet 96 (README)"
+  primary_docs: ["README.md", "neurons/scoring.py module docstring", "https://verathos.ai/docs"]
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/mechanism_status"
+      source_path: "neurons/validator.py"
+      line_ref: "646-652"
+      quote: >-
+        emission_burn = self._scoring.emission_burn; if emission_burn > 0: for uid
+        ...: weights[uid] *= (1.0 - emission_burn); weights[self._burn_uid] = ...
+        + emission_burn; bt.logging.info(f"Emission burn: {emission_burn:.0%} to UID {self._burn_uid}")
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "verallm/chain/types.py"
+      line_ref: "88"
+      quote: "emission_burn_bps: int = 5000            # 50%"
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "neurons/validator.py"
+      line_ref: "546-557"
+      quote: >-
+        def _resolve_burn_uid(self) -> int: ... Resolve subnet owner hotkey to
+        UID on this subnet (= burn target). ... self._burn_uid = self._resolve_burn_uid()
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "15"
+      quote: "Verathos is a decentralized compute network on Bittensor (Subnet 96)"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "neurons/scoring.py"
+      line_ref: "52-66"
+      quote: "from __future__ import annotations\nimport hashlib\nimport math\n... import bittensor as bt"
+    - claim_field: "/task/summary"
+      source_path: "neurons/scoring.py"
+      line_ref: "1-12"
+      quote: >-
+        Epoch-based composite scoring for the Verathos Bittensor subnet. Weight
+        composition: WEIGHT(uid) = normalize( AGGREGATE ); AGGREGATE = Σ entry_ema(model_index)
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "neurons/scoring.py"
+      line_ref: "329-336"
+      quote: >-
+        utility = math.log2(max(quality_params, 1.0)) ** 1.8; ctx_value =
+        math.log2(max(outcome.max_context_len / 1024, 1)); quant_q =
+        QUANT_QUALITY.get(outcome.quant, 0.80); base_utility = utility * ctx_value * quant_q * gen_q
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "neurons/scoring.py"
+      line_ref: "346"
+      quote: "throughput_score = (total_tokens / 1_000_000) ** throughput_power"
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "neurons/scoring.py"
+      line_ref: "181"
+      quote: "return min(1.3, math.sqrt(model_median_ttft_ms / miner_median_ttft_ms))"
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "neurons/scoring.py"
+      line_ref: "206"
+      quote: "return min(1.3, math.sqrt(miner_median_tps / model_median_tps))"
+    - claim_field: "/scoring_signals/4/notes"
+      source_path: "neurons/scoring.py"
+      line_ref: "464-465"
+      quote: "clamped = max(0, min(demand_score_bps, 10000)); return 1.0 + (clamped / 10000) * demand_bonus_max"
+    - claim_field: "/scoring_signals/5/notes"
+      source_path: "neurons/scoring.py"
+      line_ref: "369-371"
+      quote: >-
+        tee_multiplier = tee_bonus if outcome.tee_verified else 1.0; return
+        base_utility * throughput_score * ttft_factor * speed_factor * demand_bonus * tee_multiplier
+    - claim_field: "/scoring_signals/6/notes"
+      source_path: "neurons/scoring.py"
+      line_ref: "255-267"
+      quote: >-
+        if outcome.proof_tests > 0 and outcome.proof_failures > 0: ... return 0.0
+        ... if not outcome.all_receipts: return None
+    - claim_field: "/aggregation/composition"
+      source_path: "neurons/scoring.py"
+      line_ref: "144-147"
+      quote: >-
+        def aggregate_score(self) -> float: \"\"\"Sum of all entry EMAs — additive
+        multi-model aggregation.\"\"\" return sum(e.ema_score for e in self.entries.values())
+    - claim_field: "/aggregation/normalization"
+      source_path: "neurons/scoring.py"
+      line_ref: "661-664"
+      quote: >-
+        total = sum(raw.values()); if total <= 0: return {uid: 0.0 for uid in raw};
+        return {uid: s / total for uid, s in raw.items()}
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "neurons/config.py"
+      line_ref: "24"
+      quote: "ema_alpha: float = 0.2  # EMA smoothing for scores"
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "neurons/scoring.py"
+      line_ref: "700-703"
+      quote: "entry.ema_score = (self.ema_alpha * epoch_score + (1 - self.ema_alpha) * entry.ema_score)"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "neurons/config.py"
+      line_ref: "28-30"
+      quote: >-
+        epoch_blocks: int = 360  # ~72 min at 12s/block ... set_weights_epoch_blocks:
+        int = 360  # weight-setting interval (= epoch by default)
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "neurons/validator.py"
+      line_ref: "2874-2880"
+      quote: >-
+        self._subtensor.set_weights(wallet=self._wallet, netuid=self.config.netuid,
+        uids=uid_tensor, weights=weight_tensor, version_key=spec_version)
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "neurons/config.py"
+      line_ref: "25"
+      quote: "throughput_power: float = 2.0  # superlinear exponent (sybil resistance)"
+    - claim_field: "/scoring_signals/5/notes"
+      source_path: "verallm/chain/types.py"
+      line_ref: "82"
+      quote: "tee_bonus_bps: int = 1000                # 10% TEE bonus"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "neurons/config.py"
+      line_ref: "35"
+      quote: "canary_proof_sample_rate: float = 0.30  # probability of ZK proof verification on small canaries"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "neurons/scoring.py"
+      line_ref: "246-249"
+      quote: >-
+        threshold = max(1, outcome.expected_own_receipt_count - 1); if
+        len(outcome.own_receipts) < threshold: ... return 0.0
+    - claim_field: "/anti_gaming/4/description"
+      source_path: "neurons/scoring.py"
+      line_ref: "338-346"
+      quote: >-
+        N sybil UIDs splitting fixed demand: each gets 1/N tokens, score per UID =
+        (1/N)², total = N × (1/N)² = 1/N of honest.
+    - claim_field: "/anti_gaming/5/description"
+      source_path: "neurons/scoring.py"
+      line_ref: "730-733"
+      quote: >-
+        During probation: - Epoch score forced to 0.0 (EMA decays) - Canary
+        scheduler forces 100% proof verification - Proxy excludes miner from organic traffic
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "neurons/scoring.py"
+      line_ref: "779-781"
+      quote: >-
+        if state.consecutive_passes >= state.required_passes: del self._probation[key];
+        ... Probation LIFTED ... after {state.consecutive_passes} consecutive passes
+    - claim_field: "/per_miner_state/notes"
+      source_path: "neurons/scoring.py"
+      line_ref: "666-681"
+      quote: >-
+        def halve_ema(self, address, model_index): ... entry.ema_score *= 0.5 ...
+        EMA halved ... one failure = 50% penalty
+    - claim_field: "/ground_truth_sources/0/notes"
+      source_path: "README.md"
+      line_ref: "30-31"
+      quote: >-
+        Correct computation | Sumcheck protocol ... Output integrity | SHA-256
+        commitment over full output, bound to the proof via Fiat-Shamir.
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "neurons/validator.py"
+      line_ref: "220-225"
+      quote: >-
+        if not subnet_config_client.is_accepted_measurement(actual_measurement):
+        ... raise RuntimeError("Code measurement not in on-chain allowlist")
+  unresolved:
+    - "Exact live emission_burn value on-chain (default 50%, but read from SubnetConfig at runtime; may differ)."
+    - "Live netuid at runtime (config default 0; README states Subnet 96 — assumed authoritative)."
+    - "generation_quality input source for the utility signal (passed in by caller; default 1.0)."

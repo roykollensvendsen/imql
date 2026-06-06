@@ -1,0 +1,303 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+# Reference/prototype implementation: statements DB and ground truth are hardcoded
+# placeholders, there is no real on-chain config, and the scoring code is a toy
+# weighted-sum. The documented mechanism is present in code but the validator is
+# clearly not a production deployment. mechanism_status set to 'unknown' since the
+# source gives no evidence of a live deployment or burn.
+mechanism_status: unknown
+mechanism_status_notes: >-
+  Reference implementation. load_statements() and load_ground_truth() are explicit
+  "placeholder implementation" stubs with hardcoded examples; there is no real config
+  source, no commit-reveal, and no burn logic. No evidence the validator runs on a live
+  subnet, so operative reality cannot be determined from the source.
+
+subnet:
+  name: "Bittensor Brain Subnet"
+  owner_repo: "frkrueger__bittensor-brain-subnet"
+  netuid: null
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners verify prediction-market statements: given a statement, a miner returns a
+    True/False determination with a confidence score (0.0-1.0), supporting evidence,
+    an explanation of reasoning, and a methodology description. Optionally, miners also
+    cross-validate other miners' verification results, returning is_valid plus an
+    alternative result. Validators score miners on accuracy (vs ground truth when
+    available), evidence quality, explanation quality, and methodology soundness.
+  submission_format: [api_response]
+
+scoring_signals:
+  - name: accuracy_score
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.6
+    normalization: none
+    notes: >-
+      Verification reward, ground-truth branch: if response.result.is_true matches
+      ground_truth['is_true'], accuracy_score = response.result.confidence; else
+      accuracy_score = 1.0 - confidence. Weight 0.6 in the composite. In the no-ground-
+      truth branch this is replaced by consensus_agreement (majority vote, weight 0.4).
+  - name: evidence_quality
+    metric_kind: composite
+    direction: higher_is_better
+    weight: 0.25
+    normalization: min_max
+    notes: >-
+      min(1.0, len(response.result.evidence) / 5.0). Weight 0.25 in the ground-truth
+      branch; 0.3 in the no-ground-truth branch. A length-based proxy for evidence quality.
+  - name: explanation_quality
+    metric_kind: composite
+    direction: higher_is_better
+    weight: 0.15
+    normalization: min_max
+    notes: >-
+      min(1.0, len(response.result.explanation) / 500.0). Weight 0.15 (both verification
+      branches). Length-based proxy.
+  - name: consensus_agreement
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 0.4
+    normalization: none
+    notes: >-
+      No-ground-truth branch only: 1.0 if response.result.is_true == majority-vote
+      consensus, else 0.0. Weight 0.4.
+  - name: methodology_score
+    metric_kind: composite
+    direction: higher_is_better
+    weight: 0.15
+    normalization: min_max
+    notes: >-
+      No-ground-truth branch only: min(1.0, len(response.result.methodology) / 300.0).
+      Weight 0.15. Length-based proxy.
+  - name: validation_quality_score
+    metric_kind: composite
+    direction: higher_is_better
+    weight: 0.6
+    normalization: none
+    notes: >-
+      Cross-validation reward (calculate_validation_reward): quality_score is 0.9 for a
+      correct validation verdict (is_valid & ver_reward>0.7, or not is_valid & ver_reward<0.3),
+      0.1 for an incorrect verdict, 0.5 otherwise. Combined as 0.6*quality + 0.3*explanation +
+      0.1*alternative. Only used when validator.run_validation is set.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Hardcoded ground-truth dictionary mapping statement IDs to {is_true, source}.
+      Explicitly a placeholder; "In a real validator, this would load from a database
+      or file." When absent for a statement, scoring falls back to miner consensus
+      (majority vote).
+    source_identifier: "load_ground_truth() placeholder dict"
+    trust_model: trusted
+    notes: >-
+      Three example statements with is_true=True and a news/source URL each. No live
+      data feed implemented.
+  - kind: other
+    kind_other: miner_consensus_majority_vote
+    description: >-
+      Fallback when no ground truth is available for a statement: consensus = majority
+      vote of miners' is_true predictions; miners are rewarded for agreeing with consensus.
+    trust_model: crowd
+    notes: "No-ground-truth branch of calculate_verification_reward."
+
+aggregation:
+  method: weighted_average
+  composition: weighted_sum
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: "No burn logic present in the source."
+  notes: >-
+    Per-signal scores combine as a weighted sum inside each reward function. Across
+    rounds, set_weights() averages each miner's last 10 rewards from rewards_history,
+    then normalizes the weight vector to sum to one (weights = weights / weights.sum()).
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Average of each miner's last 10 recorded rewards (per-UID rewards_history), then
+    L1-normalize to sum to one, scale to uint16 (int(weight*65535)), and submit.
+  on_chain_call: set_weights
+  tempo_or_interval: "epoch_length = 100 blocks (config.validator.epoch_length default 100)"
+  smoothing:
+    kind: sma
+    alpha: null
+    window: 10
+    notes: >-
+      Simple rolling mean over the last 10 reward entries per miner
+      (recent_rewards = self.rewards_history[uid][-10:]). Window is in reward-entry
+      count, not blocks. Not an EMA.
+
+anti_gaming:
+  - kind: other
+    kind_other: cross_validation
+    enforcement: other
+    enforcement_other: scoring_signal
+    description: >-
+      Validators may ask other miners to validate a miner's verification result (is the
+      verification correct?), returning is_valid and optionally an alternative result.
+      Documented as "Cross-validation to prevent cheating". Gated by the
+      validator.run_validation flag. Not a hard gate/penalty; it produces a separate
+      reward signal.
+
+sub_competitions:
+  structure: multi_mechanism
+  stages:
+    - name: verification
+      role: main
+      advancement_rule: ""
+    - name: validation
+      role: other
+      advancement_rule: ""
+  count: 2
+  notes: >-
+    Two distinct scored tasks: verification (always run) and validation/cross-validation
+    (optional, behind validator.run_validation). Rewards from both are appended to the
+    same per-miner rewards_history and averaged together at weight-setting time.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [performance_ledger]
+  status_values: []
+  reset_policy: >-
+    No explicit reset; rewards_history grows unbounded but only the last 10 entries per
+    UID are used at weight-setting time.
+  notes: >-
+    self.rewards_history is a dict mapping uid -> list of (block, reward) tuples,
+    appended each step for both verification and (optional) validation rewards.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs: ["README.md"]
+  completeness: low
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8[1m]"
+  extracted_at: "2026-06-06"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "brain/reward.py"
+      line_ref: "18-21"
+      quote: "import torch\nimport numpy as np\nfrom typing import List, Dict, Any, Tuple"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "85-95"
+      quote: "Miners return results with: True/False determination; Confidence score (0.0-1.0); Supporting evidence; Explanation of reasoning; Methodology description"
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "brain/protocol.py"
+      line_ref: "51-56"
+      quote: "class VerificationResponse(bittensor.Synapse):\n    result: PredictionResult\n    computation_time: float"
+      confidence: medium
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "brain/reward.py"
+      line_ref: "47-59"
+      quote: "if response.result.is_true == ground_truth.get('is_true', False):\n    accuracy_score = response.result.confidence ... rewards[i] = 0.6 * accuracy_score + 0.25 * evidence_quality + 0.15 * explanation_quality"
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "brain/reward.py"
+      line_ref: "55"
+      quote: "evidence_quality = min(1.0, len(response.result.evidence) / 5.0)  # Normalize, max 5 pieces of evidence"
+      confidence: high
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "brain/reward.py"
+      line_ref: "56"
+      quote: "explanation_quality = min(1.0, len(response.result.explanation) / 500.0)  # Normalize based on length"
+      confidence: high
+    - claim_field: "/scoring_signals/3/weight"
+      source_path: "brain/reward.py"
+      line_ref: "67-81"
+      quote: "consensus = sum(predictions) > len(predictions) / 2 ... rewards[i] = 0.4 * consensus_agreement + 0.3 * evidence_quality + 0.15 * explanation_quality + 0.15 * methodology_score"
+      confidence: high
+    - claim_field: "/scoring_signals/4/notes"
+      source_path: "brain/reward.py"
+      line_ref: "78"
+      quote: "methodology_score = min(1.0, len(response.result.methodology) / 300.0)"
+      confidence: high
+    - claim_field: "/scoring_signals/5/weight"
+      source_path: "brain/reward.py"
+      line_ref: "114-136"
+      quote: "if val_response.is_valid and ver_reward > 0.7:\n    quality_score = 0.9 ... rewards[i] = 0.6 * quality_score + 0.3 * explanation_quality + 0.1 * alternative_quality"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "neurons/validator.py"
+      line_ref: "131-148"
+      quote: "# This is a placeholder implementation\n# In a real validator, this would load from a database or file ... ground_truth = {\"1\": {\"is_true\": True, \"source\": ..."
+      confidence: high
+    - claim_field: "/ground_truth_sources/1/description"
+      source_path: "brain/reward.py"
+      line_ref: "61-71"
+      quote: "# Without ground truth, use consensus and quality metrics ... consensus = sum(predictions) > len(predictions) / 2 ... consensus_agreement = 1.0 if response.result.is_true == consensus else 0.0"
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "neurons/validator.py"
+      line_ref: "292-303"
+      quote: "recent_rewards = [reward for block, reward in self.rewards_history[uid][-10:]] ... avg_reward = sum(recent_rewards) / len(recent_rewards) ... weights[uid] = avg_reward ... weights = weights / weights.sum()"
+      confidence: high
+    - claim_field: "/aggregation/normalization"
+      source_path: "neurons/validator.py"
+      line_ref: "301-303"
+      quote: "# Normalize weights\nif weights.sum() > 0:\n    weights = weights / weights.sum()"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "neurons/validator.py"
+      line_ref: "313-319"
+      quote: "self.subtensor.set_weights(\n    netuid=self.config.netuid,\n    wallet=self.wallet,\n    uids=self.metagraph.uids,\n    weights=uint_weights,\n    wait_for_inclusion=False\n)"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "neurons/validator.py"
+      line_ref: "348"
+      quote: "parser.add_argument('--validator.epoch_length', type=int, default=100, help='Length of an epoch in blocks')"
+      confidence: high
+    - claim_field: "/weight_setting/cadence"
+      source_path: "neurons/validator.py"
+      line_ref: "177-180"
+      quote: "current_epoch = current_block // self.config.validator.epoch_length\nif current_epoch > self.last_epoch:\n    self.set_weights()"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/window"
+      source_path: "neurons/validator.py"
+      line_ref: "291-292"
+      quote: "# Get recent rewards (last 10 blocks)\nrecent_rewards = [reward for block, reward in self.rewards_history[uid][-10:]]"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "README.md"
+      line_ref: "98-105"
+      quote: "To prevent cheating, validators may also request miners to validate other miners' results ... This cross-validation helps ensure integrity in the network"
+      confidence: high
+    - claim_field: "/sub_competitions/structure"
+      source_path: "neurons/validator.py"
+      line_ref: "200-223"
+      quote: "verification_rewards = calculate_verification_reward(responses, ground_truth) ... if self.config.validator.run_validation: ... validation_rewards = calculate_validation_reward(...)"
+      confidence: medium
+    - claim_field: "/per_miner_state/state_kinds"
+      source_path: "neurons/validator.py"
+      line_ref: "208-211"
+      quote: "if uid not in self.rewards_history:\n    self.rewards_history[uid] = []\nself.rewards_history[uid].append((current_block, reward.item()))"
+      confidence: high
+    - claim_field: "/mechanism_status"
+      source_path: "neurons/validator.py"
+      line_ref: "100-101"
+      quote: "# This is a placeholder implementation\n# In a real validator, this would load from a database or file"
+      confidence: medium
+  unresolved:
+    - "netuid (config default --netuid is 1 but that is a placeholder/example, not a registered subnet identity)"
+    - "Whether the subnet is deployed live or burning emissions: no on-chain/runtime evidence in the source."
+    - "No real config/constants file; epoch_length, timeouts, and the 10-entry window are argparse defaults, not a config module."
+  extractor_notes: >-
+    Reference/prototype subnet. Reward functions are toy weighted sums with length-based
+    quality proxies; ground truth and statements are hardcoded placeholders. Two reward
+    branches (with/without ground truth) and an optional cross-validation reward all feed
+    a single per-miner rewards_history that is averaged (last 10) and L1-normalized at
+    weight-setting time.

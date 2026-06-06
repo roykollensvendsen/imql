@@ -1,0 +1,291 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  No burn logic present. The validator computes per-miner EMA scores and sets
+  softmax-normalized weights on-chain every epoch via subtensor.set_weights.
+  Scoring depends on an external private validation API (CRYPTO_HOLDINGS_URL),
+  so live behavior cannot be confirmed from the repo alone, but the code path
+  is wired and active.
+
+subnet:
+  name: "ALPHA — Company Intelligence / Verifiable On-Chain Treasury Data"
+  owner_repo: "tigerinvests-com__sn107-alpha"
+  netuid: 107
+  implementation_lang: python
+
+task:
+  summary: >-
+    A miner ("agent") answers company-intelligence queries: given a ticker and an
+    analysis_type (crypto, financial, sentiment, or news), it returns an
+    IntelligenceResponse with company data (e.g. crypto holdings, market cap, share
+    price, sentiment, news). Validators score each response against JSON-schema
+    structure and against an external authoritative API, plus response time and
+    confidence alignment.
+  submission_format: [api_response]
+
+scoring_signals:
+  - name: structure_validation
+    metric_kind: composite
+    direction: higher_is_better
+    weight: 0.3
+    normalization: none
+    notes: >-
+      Tier 1: JSON-schema structural/completeness validation of the response.
+      Contributes with structure_weight (default 0.3). Acts as a gate: if
+      structure_score < 0.3 the response is rejected with that score.
+  - name: api_validation
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.7
+    normalization: none
+    notes: >-
+      Tier 2: field-by-field accuracy of response data vs external API
+      (CRYPTO_HOLDINGS_URL). Contributes with api_validation_weight (default 0.7).
+      Per analysis_type, enhanced adjustments are applied (crypto/financial/
+      sentiment/news field weightings and quality bonuses). Gate: if api_score < 0.5
+      the final score is min(structure_score, api_score).
+  - name: response_time
+    metric_kind: latency
+    direction: higher_is_better
+    weight: 0.15
+    normalization: none
+    notes: >-
+      Piecewise time score: 1.0 if <=2s, decreasing in bands up to >20s -> 0.05.
+      Added into final_score with a literal 0.15 coefficient.
+  - name: confidence_alignment
+    metric_kind: composite
+    direction: higher_is_better
+    weight: 0.15
+    normalization: none
+    notes: >-
+      Scores how well the miner's reported confidenceScore aligns with success
+      (e.g. success & confidence>0.6 -> 1.0). Added into final_score with a literal
+      0.15 coefficient.
+
+ground_truth_sources:
+  - kind: market_data
+    description: >-
+      External authoritative validation API for company / crypto-holdings data,
+      queried per (ticker, analysis_type, miner_data). Returns valid flag,
+      per-field scores, overall score, freshness/completeness scores.
+    source_identifier: "CRYPTO_HOLDINGS_URL (env, default https://api.example.com)"
+    trust_model: oracle
+    notes: >-
+      Endpoint and API key are supplied via environment; not in repo. Tier-2
+      scoring fully depends on this external client (ExternalAPIClient.validate_company_data).
+
+aggregation:
+  method: softmax
+  composition: weighted_sum
+  normalization: softmax
+  temperature: 2.0
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: "No burn logic in the repo."
+  notes: >-
+    Per-miner EMA score (alpha=0.1) is the input. calculate_weights places each
+    miner's EMA score into a vector, then applies softmax with temperature=2.0:
+    exp(weights/temperature)/sum(...). If all scores are 0, weights are uniform
+    (1/N). The per-response final_score itself is a weighted sum of the four
+    signals (structure*0.3 + api*0.7 + time*0.15 + confidence*0.15), gated by the
+    structure<0.3 and api<0.5 short-circuits.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Each loop iteration: forward() gathers validation results, update_scores
+    applies the EMA, calculate_weights softmax-normalizes, then
+    subtensor.set_weights(uids, weights, wait_for_inclusion=True).
+  on_chain_call: set_weights
+  tempo_or_interval: "epoch_length * 12 seconds (default epoch_length=100)"
+  smoothing:
+    kind: ema
+    alpha: 0.1
+    window: null
+    notes: >-
+      miner_scores[uid] = (1 - alpha)*current + alpha*new_score, with
+      moving_average_alpha default 0.1. Per-uid score_history capped at 1000 entries.
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Tier-1 JSON-schema structure validation; structure_score < 0.3 short-circuits
+      to that score (response effectively rejected before API validation).
+  - kind: deduplication
+    enforcement: barrier
+    description: >-
+      get_available_miners deduplicates miners by IP, keeping the lowest port, and
+      requires axon.ip != 0.0.0.0, port > 0, and stake > 0 to be queried/weighted.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      Only miners with total_stake > 0 are considered available for querying and
+      weight setting.
+
+sub_competitions:
+  structure: per_task_type
+  stages: []
+  count: 4
+  notes: >-
+    Four analysis_type values (crypto, financial, sentiment, news) drive
+    type-specific API score adjustments in _calculate_enhanced_api_score, but all
+    feed a single shared per-miner score/weight vector — not separate weight pools.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, performance_ledger]
+  status_values: []
+  reset_policy: >-
+    In-memory only; score_history per uid trimmed to last 1000 entries. No on-disk
+    persistence of scores (state file saves step/stats only).
+  notes: >-
+    IncentiveMechanism keeps miner_scores (EMA), score_history (per-response
+    records: score, timestamp, response_time, success, confidence), and a capped
+    weights_history (last 100).
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs: ["readme.md", "explainer.md"]
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "readme.md"
+      line_ref: "1"
+      quote: "# ALPHA Subnet 107 – Verifiable On-Chain Treasury Data via Decentralized AI"
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "validators/validator.py"
+      line_ref: "11"
+      quote: "import bittensor as bt"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "neurons/protocol.py"
+      line_ref: "12-16"
+      quote: "class AnalysisType(str, Enum):\n    CRYPTO = \"crypto\"\n    FINANCIAL = \"financial\"\n    SENTIMENT = \"sentiment\"\n    NEWS = \"news\""
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "validators/validator.py"
+      line_ref: "137-138"
+      quote: "if hasattr(response, 'intelligence_response'):\n    queries_and_responses.append((query, response.intelligence_response, avg_response_time))"
+      confidence: high
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "analysis/response_validator.py"
+      line_ref: "65-66"
+      quote: "final_score = (\n    structure_score * self.structure_weight +"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "analysis/response_validator.py"
+      line_ref: "48-49"
+      quote: "structure_score = await self._validate_structure(response_dict, query.analysis_type)\n            if structure_score < 0.3:\n                return structure_score"
+      confidence: high
+    - claim_field: "/scoring_signals/1/weight"
+      source_path: "config/config.py"
+      line_ref: "42-43"
+      quote: "STRUCTURE_VALIDATION_WEIGHT: float = float(os.getenv(\"STRUCTURE_VALIDATION_WEIGHT\", \"0.3\"))\n    API_VALIDATION_WEIGHT: float = float(os.getenv(\"API_VALIDATION_WEIGHT\", \"0.7\"))"
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "analysis/response_validator.py"
+      line_ref: "56-57"
+      quote: "if api_score < 0.5:\n                return min(structure_score, api_score)"
+      confidence: high
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "analysis/response_validator.py"
+      line_ref: "306-316"
+      quote: "if response_time <= 2.0:\n            return 1.0\n        elif response_time <= 5.0:\n            return 0.9 - (response_time - 2.0) * 0.1"
+      confidence: high
+    - claim_field: "/scoring_signals/2/weight"
+      source_path: "analysis/response_validator.py"
+      line_ref: "68-69"
+      quote: "time_score * 0.15 +\n                confidence_score * 0.15"
+      confidence: high
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "analysis/response_validator.py"
+      line_ref: "330-335"
+      quote: "if success and confidence > 0.6:\n                return 1.0\n            elif success and confidence > 0.4:\n                return 0.8"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "config/config.py"
+      line_ref: "14"
+      quote: "CRYPTO_HOLDINGS_BASE_URL: str = os.getenv('CRYPTO_HOLDINGS_URL', 'https://api.example.com')"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "analysis/response_validator.py"
+      line_ref: "150-151"
+      quote: "async with self.external_api_client:\n                api_result = await self.external_api_client.validate_company_data(ticker, analysis_type.value, miner_data)"
+      confidence: high
+    - claim_field: "/aggregation/temperature"
+      source_path: "analysis/incentive_mechanism.py"
+      line_ref: "60-64"
+      quote: "temperature = 2.0\n\n        if np.max(weights) > 0:\n            exp_weights = np.exp(weights / temperature)\n            weights = exp_weights / np.sum(exp_weights)"
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "analysis/incentive_mechanism.py"
+      line_ref: "62-66"
+      quote: "if np.max(weights) > 0:\n            exp_weights = np.exp(weights / temperature)\n            weights = exp_weights / np.sum(exp_weights)\n        else:\n            weights = np.ones(len(uids)) / len(uids)"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "analysis/incentive_mechanism.py"
+      line_ref: "12-13"
+      quote: "def __init__(self, moving_average_alpha: float = 0.1):\n        self.moving_average_alpha = moving_average_alpha"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "analysis/incentive_mechanism.py"
+      line_ref: "31-34"
+      quote: "self.miner_scores[uid] = (\n                (1 - self.moving_average_alpha) * current_score +\n                self.moving_average_alpha * new_score\n            )"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "validators/validator.py"
+      line_ref: "235-241"
+      quote: "result = self.subtensor.set_weights(\n                wallet=self.wallet,\n                netuid=self.config.netuid,\n                uids=all_miner_uids,\n                weights=weights,\n                wait_for_inclusion=True\n            )"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "validators/validator.py"
+      line_ref: "364-365"
+      quote: "target_epoch_time = self.config.neuron.epoch_length * 12\n                    sleep_time = max(10, target_epoch_time - epoch_duration)"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "validators/validator.py"
+      line_ref: "205-207"
+      quote: "# Deduplicate by IP, keep lowest port\n                    if axon.ip not in ip_port_map or axon.port < self.metagraph.axons[ip_port_map[axon.ip]].port:"
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "validators/validator.py"
+      line_ref: "197-201"
+      quote: "is_available = (\n                    axon.ip != '0.0.0.0' and\n                    axon.port > 0 and\n                    stake > 0 and"
+      confidence: high
+    - claim_field: "/sub_competitions/notes"
+      source_path: "analysis/response_validator.py"
+      line_ref: "179-186"
+      quote: "if analysis_type == AnalysisType.CRYPTO:\n            base_score = self._adjust_crypto_score(base_score, field_scores)\n        elif analysis_type == AnalysisType.FINANCIAL:"
+      confidence: high
+    - claim_field: "/per_miner_state/notes"
+      source_path: "analysis/incentive_mechanism.py"
+      line_ref: "36-45"
+      quote: "self.score_history[uid].append({\n                'score': new_score,\n                'timestamp': current_time,\n                'response_time': result.response_time,"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "analysis/incentive_mechanism.py"
+      line_ref: "44-45"
+      quote: "if len(self.score_history[uid]) > 1000:\n                self.score_history[uid] = self.score_history[uid][-1000:]"
+      confidence: high
+    - claim_field: "/documentation/status"
+      source_path: "readme.md"
+      line_ref: "98-105"
+      quote: "#### 4. Incentive Mechanism (`incentive_mechanism.py`)\n\nCalculates miner rewards based on:\n\n- Response accuracy\n- Response time\n- Confidence alignment\n- Historical performance"
+      confidence: high
+  unresolved:
+    - "Exact completeness scoring internals of ValidationSchemas (validation_schemas.py) are partly defined but the external API field_scores are produced off-repo, so absolute score scale is unverifiable."
+    - "Whether the live validator on netuid 107 actually sets these weights or burns is not determinable from the repo; no on-chain telemetry available."

@@ -1,0 +1,251 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  Per-miner weights are computed by an off-chain orchestrator API
+  (apex.api.macrocosmos.ai /validator/global_miner_scores); the validator in this
+  repo only relays them to chain via set_weights. A per-competition burn_factor
+  reduces emissions to miners (effective miner emission = (1 - burn_factor) *
+  incentive_weight per the CLI dashboard), with DEFAULT_BASE_BURN_RATE = 0.9. The
+  actual scoring/burn computation lives server-side and is NOT in this repository,
+  so the live split is only partially observable here.
+
+subnet:
+  name: "Apex (Subnet 1)"
+  owner_repo: "macrocosm-os__apex"
+  netuid: 1
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners compete within Competitions, each made of multiple Rounds, by submitting
+    Python-based algorithms through the Apex CLI. Validators (via an off-chain
+    orchestrator) evaluate each submission against per-competition benchmarks /
+    baseline scores and reward miners whose solutions perform best. Concrete
+    competitions present in the repo include RL Battleship, Iota Simulator, energy
+    arbitrage, matrix compression, and tron.
+  submission_format: [source_code]
+
+scoring_signals:
+  - name: competition_benchmark_score
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: other
+    normalization_other: >-
+      Per-competition score relative to a baseline_score / score_to_beat,
+      computed off-chain by the orchestrator; exact transform not present in repo.
+    notes: >-
+      Each CompetitionRecord carries baseline_score, baseline_raw_score,
+      score_to_beat and top_score_value. The mapping from these to per-miner
+      weights is computed server-side and not in this repository.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Per-competition benchmark / simulation environment that scores a miner's
+      submitted Python algorithm (e.g. energy arbitrage simulation with fixed
+      physical constants, RL battleship game environment, iota distributed-training
+      simulator).
+    source_identifier: "shared/competition/src/competition/*"
+    trust_model: trusted
+    notes: >-
+      Scoring is executed by the orchestrator against these task definitions;
+      submissions are graded vs a baseline_score and score_to_beat.
+
+aggregation:
+  method: undocumented
+  composition: other
+  composition_other: >-
+    Off-chain: per-competition top-score-relative scoring combined with a
+    per-competition incentive_weight allocation and a burn_factor; the combination
+    formula is not present in this repo.
+  normalization: other
+  normalization_other: >-
+    Validator passes raw orchestrator weights through
+    bt.utils.weight_utils.process_weights_for_netuid before set_weights;
+    final normalization is bittensor-default.
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: null
+    fraction: null
+    dynamic: true
+    notes: >-
+      Each competition has a burn_factor (Optional, set by orchestrator) and a
+      base_burn_rate defaulting to DEFAULT_BASE_BURN_RATE = 0.9. CLI computes
+      miner emissions as (1 - burn_factor) * incentive_weight, so burn_factor is
+      a dynamic per-competition residual computed off-chain; the literal live
+      value is not in this repo (only the 0.9 default floor).
+  notes: >-
+    OWNER_UID = 248 is defined in common settings. Validators that receive no
+    orchestrator weights fall back to copy_weights_from_chain (stake-weighted
+    average of existing chain weights).
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    weight_loop fetches per-miner weights from the orchestrator
+    (/validator/global_miner_scores), converts MinerScore.weight by uid, runs
+    process_weights_for_netuid, and calls subtensor.set_weights. On empty/failed
+    fetch it copies stake-weighted weights from chain instead.
+  on_chain_call: set_weights
+  tempo_or_interval: "WEIGHT_SUBMIT_INTERVAL = 60*21 seconds (21 minutes) on mainnet"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA on the final reward in this repo; the validator relays orchestrator
+      weights verbatim (after process_weights_for_netuid). Any smoothing would be
+      server-side.
+
+anti_gaming:
+  - kind: rate_limit
+    enforcement: barrier
+    description: >-
+      SCORE_THRESHOLD = 0.01 in common settings gates low scores. Submissions
+      carry a submission_fee_usd (Decimal) paid to SUBMISSION_FEE_ADDRESS, a fixed
+      coldkey, verified on-chain — a monetary barrier to spam submissions.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      Fallback copy_weights_from_chain weights chain weights by validator stake
+      (normalized_stakes dot valid_weights) restricted to validator_permit holders.
+
+sub_competitions:
+  structure: multi_mechanism
+  stages: []
+  count: null
+  notes: >-
+    The subnet is organized as multiple independent Competitions, each with its
+    own incentive_weight (direct decimal emission allocation 0.0-1.0), baseline,
+    burn_factor and multiple Rounds. Competition task packages present in repo:
+    battleship, rl_battleship, iota_simulator, energy_arbitrage, matrix_compression,
+    tron. The set and weighting of active competitions is managed off-chain.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, status_enum]
+  status_values: []
+  reset_policy: >-
+    burn_factor_reset_at marks when a competition's burn factor / top scorer was
+    last reset (age of top scorer).
+  notes: >-
+    Per-competition top score (top_score_value, top_scorer_hotkey, score_to_beat)
+    and round state are tracked off-chain; this repo only models the API responses
+    (CompetitionRecord / CompetitionDetailsResponse).
+
+documentation:
+  status: sparse
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "src/validator/README.md"
+  completeness: low
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: low
+  evidence:
+    - claim_field: "/subnet/name"
+      source_path: "README.md"
+      line_ref: "9"
+      quote: "# **Bittensor Subnet 1: Apex**"
+    - claim_field: "/subnet/netuid"
+      source_path: "shared/common/src/common/settings.py"
+      line_ref: "20"
+      quote: "NETUID = int(os.getenv(\"NETUID\", 1))"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "src/validator/src/validator/validator.py"
+      line_ref: "1-6"
+      quote: "import bittensor as bt\nimport numpy as np"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "23"
+      quote: >-
+        Each pursuit of the best solution takes place within a **Competition**,
+        which consists of multiple **Rounds** of evaluation where participants
+        (miners) submit their Python-based algorithms through the Apex CLI and earn
+        rewards based on their performance.
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "23"
+      quote: "submit their Python-based algorithms through the Apex CLI"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "shared/common/src/common/models/api/competition.py"
+      line_ref: "40-57"
+      quote: "baseline_score: float\n    baseline_raw_score: float\n    incentive_weight: float\n    burn_factor: float"
+    - claim_field: "/weight_setting/method"
+      source_path: "src/validator/src/validator/validator.py"
+      line_ref: "95-123"
+      quote: >-
+        scores: dict | None = await ValidatorAPIClient.get_global_miner_scores(hotkey=self.wallet.hotkey)
+        ... weights = {int(m.uid): m.weight for m in subnet_scores.miner_scores} ...
+        await self.set_weights(weights=weights)
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "src/validator/src/validator/validator.py"
+      line_ref: "313-320"
+      quote: "success, response = self.subtensor.set_weights("
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "src/validator/src/validator/settings.py"
+      line_ref: "5"
+      quote: "WEIGHT_SUBMIT_INTERVAL: int = 10 if (MOCK or not BITTENSOR) else 60 * 21  # submit weight every 21 minutes"
+    - claim_field: "/aggregation/normalization_other"
+      source_path: "src/validator/src/validator/validator.py"
+      line_ref: "296-305"
+      quote: ") = bt.utils.weight_utils.process_weights_for_netuid("
+    - claim_field: "/aggregation/burn_allocation/enabled"
+      source_path: "shared/common/src/common/models/api/competition.py"
+      line_ref: "43"
+      quote: "burn_factor: float"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "shared/common/src/common/settings.py"
+      line_ref: "45"
+      quote: "DEFAULT_BASE_BURN_RATE = 0.9"
+    - claim_field: "/mechanism_status_notes"
+      source_path: "src/cli/src/cli/dashboard/screens/competition_detail_screen.py"
+      line_ref: "222-223"
+      quote: "if comp.burn_factor is not None and comp.state == \"active\":\n            emissions_percent = (1 - comp.burn_factor) * comp.incentive_weight * 100"
+    - claim_field: "/weight_setting/method"
+      source_path: "src/validator/src/validator/validator_api_client.py"
+      line_ref: "101-107"
+      quote: >-
+        response: SubnetScores = await cls.orchestrator_request(method="GET",
+        path="/validator/global_miner_scores", hotkey=hotkey)
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "shared/common/src/common/settings.py"
+      line_ref: "42-49"
+      quote: "SCORE_THRESHOLD = float(os.getenv(\"SCORE_THRESHOLD\", \"0.01\")) ... SUBMISSION_FEE_ADDRESS"
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "src/validator/src/validator/validator.py"
+      line_ref: "341-345"
+      quote: >-
+        valid_indices = np.where(self.metagraph.validator_permit)[0] ...
+        normalized_stakes = valid_stakes / np.sum(valid_stakes)
+        stake_weighted_average = np.dot(normalized_stakes, valid_weights)
+    - claim_field: "/sub_competitions/structure"
+      source_path: "README.md"
+      line_ref: "31-33"
+      quote: "**[RL Battleship]** ... **[Iota Simulator]**"
+    - claim_field: "/sub_competitions/notes"
+      source_path: "src/cli/src/cli/dashboard/screens/competition_detail_screen.py"
+      line_ref: "221"
+      quote: "# Calculate % emissions - incentive_weight is now a direct decimal allocation (0.0-1.0)"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "shared/common/src/common/models/api/competition.py"
+      line_ref: "44"
+      quote: "burn_factor_reset_at: Optional[datetime] = None"
+    - claim_field: "/aggregation/notes"
+      source_path: "shared/common/src/common/settings.py"
+      line_ref: "22"
+      quote: "OWNER_UID = 248"
+  unresolved:
+    - "Exact orchestrator scoring formula mapping baseline_score/score_to_beat to per-miner weight (computed server-side, not in repo)."
+    - "Live burn_factor value and how it is computed per competition (only DEFAULT_BASE_BURN_RATE = 0.9 floor is in repo)."
+    - "How incentive_weight is allocated across competitions (set off-chain)."
+    - "Any temporal smoothing / EMA on scores (would be server-side; not observable)."
+    - "Number of active competitions (sub_competitions.count) — managed off-chain."

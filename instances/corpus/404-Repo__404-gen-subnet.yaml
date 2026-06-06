@@ -1,0 +1,332 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Winner-stays-in competition. On-chain weights go almost entirely to a single leader
+  hotkey; the residual (1.0 - leader_weight) goes to the subnet owner UID. When a leader
+  defends, its weight decays toward a floor each round, so the owner share grows over
+  time — i.e. an increasing, dynamic burn to the owner UID rather than a fixed split.
+
+subnet:
+  name: "404-GEN Competition System"
+  owner_repo: "404-Repo__404-gen-subnet"
+  netuid: 17
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners submit open-source AI 3D-generation solutions (a GitHub repo + commit +
+    Docker image producing Three.js modules). When a round opens, miners use a published
+    seed and prompts to generate 3D models and upload them to their CDNs. Validators
+    render the outputs to multi-view PNGs and run VLM-based pairwise duels; the round
+    winner becomes/defends the global leader. The single leader receives nearly all
+    on-chain weight under a winner-stays-in format with a proof-of-work (audit) model.
+  submission_format: [source_code, content_link, compute_service]
+
+scoring_signals:
+  - name: duel_prompt_match_penalty
+    metric_kind: vlm_judgment
+    direction: lower_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Stage 1 of the multi-stage duel judge. For 4 near-front angles, a VLM (GLM-4.6V-Flash)
+      assigns each of the two models a 0-10 penalty (0 = perfect match to reference,
+      10 = completely wrong), evaluated both AB and BA. A weighted, split-aware aggregator
+      either declares a per-duel winner or routes to later stages.
+  - name: duel_best_view_penalty
+    metric_kind: vlm_judgment
+    direction: lower_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Stage 2A. DINOv3 embeddings pick each side's highest-similarity rendered view vs the
+      prompt; the VLM compares those two best views (AB+BA) producing 0-10 penalties.
+  - name: duel_artifact_penalty
+    metric_kind: vlm_judgment
+    direction: lower_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Stage 2B. VLM rates rendering quality on a 2x2 grid render per side (bounding box,
+      color/material accuracy, surface quality, geometric detail) as a 0-10 penalty.
+  - name: duel_checklist_score
+    metric_kind: vlm_judgment
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Stage 2C. VLM decomposes the prompt into a 4-7 item feature checklist, then verifies
+      each model's grid; per-item yes/partial/no scores (2/1/0) plus a +3 main-object bonus.
+  - name: side_guard_garbage_votes
+    metric_kind: vlm_judgment
+    direction: lower_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Stage 4 anti-gaming guard. 4 side angles per side classified OK/GARBAGE; K-of-4 garbage
+      votes flag a side and can demote a winning-but-flagged side to a draw.
+  - name: match_margin
+    metric_kind: win_rate
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Per match (a set of per-prompt duels), margin = score / number_of_duels. A challenger
+      must reach win_margin against the leader/timeline winner to qualify and advance.
+
+ground_truth_sources:
+  - kind: llm_judgment
+    description: >-
+      Vision-language model (GLM-4.6V-Flash served via operator vLLM) performs pairwise
+      duels comparing two rendered 3D models against a reference image across multiple
+      gated stages.
+    source_identifier: "glm-4.6v-flash (judge-service/judge_service/judges/multi_stage.py MODEL)"
+    trust_model: oracle
+    notes: >-
+      DINOv3 embeddings (image-distance-service) provide best-view selection and verify
+      that regenerated outputs match submissions.
+  - kind: deterministic_dataset
+    description: >-
+      Published per-round random seed plus selected prompts drive deterministic generation;
+      winners are audited by regenerating their outputs with the miner's own Docker image
+      on serverless GPUs (proof-of-work verification).
+    source_identifier: "rounds/{n}/seed.json, prompts.txt; generation-orchestrator regeneration"
+    trust_model: adversarial
+    notes: >-
+      Verification regenerates 128 prompts (4 batches of 32) with the same seed; failure
+      discards the candidate timeline.
+
+aggregation:
+  method: winner_take_all
+  composition: gated
+  normalization: none
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "199"
+    fraction: null
+    dynamic: true
+    notes: >-
+      WeightsService._calculate_weights: if no leader (or leader is the owner) the owner UID
+      gets weight 1.0; otherwise owner_weight = 1.0 - leader_weight and weights are set to
+      [owner_uid, leader_uid] = [owner_weight, leader_weight]. The owner share is the dynamic
+      residual and grows as a defending leader's weight decays toward weight_floor.
+  notes: >-
+    Round winner is decided by the judge-service via pairwise duels; round-manager updates
+    leader.json. New leader enters at weight 1.0; a defending leader's weight decays by
+    config.weight_decay each round down to config.weight_floor (finalize_round.py
+    _compute_leader_transition). Only one non-owner UID receives weight at a time.
+
+weight_setting:
+  cadence: per_round
+  method: >-
+    A standalone weights-setter loop polls the competition git repo's leader.json, resolves
+    the active leader hotkey to a metagraph UID at the current block, and sets a two-UID
+    weight vector [owner_uid, leader_uid]. Leader weight is whatever leader.json records for
+    the active transition (1.0 for a fresh winner, decayed otherwise).
+  on_chain_call: set_weights
+  tempo_or_interval: "set_weights_interval_sec (configurable); inner loop 60s"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA/SMA in the weight setter. set_weights is called with wait_for_inclusion=False
+      and wait_for_finalization=False; 3 confirmation blocks are polled only to verify the
+      update landed. Temporal smoothing of leader weight is via the per-round weight_decay,
+      not an EMA.
+
+anti_gaming:
+  - kind: proof_of_work
+    enforcement: rejection
+    description: >-
+      Candidate winners are audited by regenerating their outputs with the miner's own Docker
+      image on serverless GPUs (4xH200) using the round seed; regenerated outputs are compared
+      to submissions. If verification fails the timeline is discarded and alternatives evaluated.
+  - kind: code_inspection
+    enforcement: rejection
+    description: >-
+      Each returned JavaScript module is statically analyzed and executed in a sandbox before
+      rendering during verification.
+  - kind: liveness_check
+    enforcement: penalty
+    description: >-
+      Stage 4 side guard: per-angle OK/GARBAGE VLM classification (K-of-4 garbage threshold,
+      S4_K_THRESHOLD=3) flags sides whose non-front views are unmodeled/replaced; a flagged
+      winning side is stepped down to a draw.
+  - kind: deduplication
+    enforcement: rejection
+    description: >-
+      _find_new_leader: if a round winner's repo and commit match the current leader's, no
+      transition occurs (the same submission cannot re-take leadership).
+
+sub_competitions:
+  structure: single
+  stages:
+    - name: qualification
+      role: qualifier
+      advancement_rule: >-
+        Every miner duels the current base leader; a miner qualifies if match.margin >= win_margin.
+    - name: timeline
+      role: main
+      advancement_rule: >-
+        Qualified miners are run as a timeline of pairwise matches; a challenger beating the
+        current timeline winner by win_margin becomes the new local leader and is sent to audit.
+  count: 1
+  notes: >-
+    The repo also ships Competitions/competition0..2.md describing successive competition
+    definitions, but the on-chain mechanism is a single winner-stays-in ladder per round.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [status_enum, cumulative_score]
+  status_values: [leader, qualified, rejected, local_leader]
+  reset_policy: >-
+    Leader state (leader.json) is append-only across rounds; per-round match matrices,
+    winner, and audit/rejection sets are recomputed each round.
+  notes: >-
+    leader.json is an append-only transition log (hotkey, repo, commit, docker, weight,
+    effective_block). Per-round, rejected_hotkeys and qualified lists track miner status.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "Competitions/competition0.md"
+    - "shared/subnet_common/competition/config.py"
+    - "weights-setter/weights_service.py"
+  completeness: high
+
+provenance:
+  confidence_overall: high
+  extracted_by: "im-extract (Opus 4.8)"
+  extractor_notes: >-
+    Production numeric thresholds (win_margin, weight_decay, weight_floor, round timing) are
+    NOT in the source tree: they live in an external competition git repo's config.json
+    (require_competition_config reads config.json from a GitHub ref). The values seen in
+    round-manager/tests/test_finalize_round.py (win_margin=0.05, weight_decay=0.2,
+    weight_floor=0.5) are test fixtures only and are therefore left null, not adopted.
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "weights-setter/settings.py"
+      line_ref: "9"
+      quote: "netuid: int = Field(default=17, description=\"Netuid of the Subtensor network\")"
+      confidence: high
+    - claim_field: "/subnet/name"
+      source_path: "README.md"
+      line_ref: "1-3"
+      quote: "# 404-GEN Competition System ... running on Bittensor Subnet 17."
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "12-17"
+      quote: >-
+        The competition follows a winner-stays-in format with a proof-of-work model:
+        Miners generate ... Validators collect ... VLM judges ... Validators audit.
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "weights-setter/weights_service.py"
+      line_ref: "211-220"
+      quote: >-
+        return WeightsResult(uids=[self._subnet_owner_uid, leader_uid],
+        weights=[owner_weight, leader_weight])
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/dynamic"
+      source_path: "weights-setter/weights_service.py"
+      line_ref: "215"
+      quote: "owner_weight = 1.0 - leader_weight"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "weights-setter/settings.py"
+      line_ref: "32"
+      quote: "subnet_owner_uid: int = Field(default=199, ge=0, description=\"UID of the network owner\")"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "round-manager/round_manager/finalize_round.py"
+      line_ref: "229-241"
+      quote: >-
+        decayed_weight = round(max(config.weight_floor, current_leader.weight -
+        config.weight_decay), 10) ... return current_leader.model_copy(update={"weight": decayed_weight ...
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "round-manager/round_manager/finalize_round.py"
+      line_ref: "260-266"
+      quote: "return LeaderEntry(hotkey=round_result.winner_hotkey, ... weight=1.0, effective_block=effective_block)"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "weights-setter/weights_service.py"
+      line_ref: "155-162"
+      quote: >-
+        res, error_msg = await subtensor.set_weights(wallet=self._wallet, netuid=self._netuid,
+        weights=weights.weights, uids=weights.uids, wait_for_inclusion=False, wait_for_finalization=False)
+      confidence: high
+    - claim_field: "/scoring_signals/0"
+      source_path: "judge-service/judge_service/judges/multi_stage.py"
+      line_ref: "7-10"
+      quote: >-
+        Stage 1 - Prompt match (always runs). 4 front-hemisphere angles, each evaluated AB and
+        BA = 8 VLM calls. A weighted, split-aware aggregator either declares a winner or routes to Stage 2.
+      confidence: high
+    - claim_field: "/scoring_signals/1"
+      source_path: "judge-service/judge_service/judges/multi_stage.py"
+      line_ref: "13-16"
+      quote: >-
+        Best view: DINOv3 picks the highest-similarity rendered view per side; the VLM compares
+        those two views (AB+BA = 2 calls).
+      confidence: high
+    - claim_field: "/scoring_signals/3"
+      source_path: "judge-service/judge_service/judges/multi_stage.py"
+      line_ref: "971-973"
+      quote: "base = sum(S2_CHECKLIST_MATCH_SCORES.get(c.match, 0) for c in result.checks) return base + (S2_CHECKLIST_MAIN_BONUS if result.main_object_correct else 0)"
+      confidence: high
+    - claim_field: "/scoring_signals/5"
+      source_path: "judge-service/judge_service/match_execution.py"
+      line_ref: "59"
+      quote: "margin = score / len(duels) if duels else 0"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "judge-service/judge_service/judges/multi_stage.py"
+      line_ref: "63"
+      quote: "MODEL = \"glm-4.6v-flash\""
+      confidence: high
+    - claim_field: "/anti_gaming/0"
+      source_path: "README.md"
+      line_ref: "18-19"
+      quote: "Validators audit: Winners are verified by regenerating their outputs using the miner's Docker image on serverless GPUs."
+      confidence: high
+    - claim_field: "/anti_gaming/2"
+      source_path: "judge-service/judge_service/judges/multi_stage.py"
+      line_ref: "116-117"
+      quote: "# Stage 4 - per-angle side guard. S4_K_THRESHOLD = 3"
+      confidence: high
+    - claim_field: "/anti_gaming/3"
+      source_path: "round-manager/round_manager/finalize_round.py"
+      line_ref: "257-258"
+      quote: "if round_result.repo == current_leader.repo and round_result.commit == current_leader.commit: return None"
+      confidence: high
+    - claim_field: "/sub_competitions/stages/0/advancement_rule"
+      source_path: "judge-service/judge_service/match_runner.py"
+      line_ref: "244-245"
+      quote: "if match.margin >= self._win_margin: qualified.append(hotkey)"
+      confidence: high
+    - claim_field: "/per_miner_state/notes"
+      source_path: "shared/subnet_common/competition/leader.py"
+      line_ref: "11-13"
+      quote: "class LeaderState(BaseModel): transitions: list[LeaderEntry] = Field(default_factory=list, description=\"Leadership history, append-only\")"
+      confidence: high
+    - claim_field: "/extractor_notes"
+      source_path: "shared/subnet_common/competition/config.py"
+      line_ref: "30-35"
+      quote: "path = \"config.json\" content = await git.get_file(path=path, ref=ref) ... return CompetitionConfig.model_validate_json(content)"
+      confidence: high
+  unresolved:
+    - "aggregation.decay_rate / weight_setting per-round decay magnitude: config.weight_decay value not in source (external config.json)."
+    - "aggregation.min_weight_floor: config.weight_floor value not in source (external config.json)."
+    - "Challenger win threshold (config.win_margin) value not in source (external config.json)."
+    - "weight_setting.tempo_or_interval exact seconds: set_weights_interval_sec is injected via settings, literal not committed."
+    - "Round cadence in real time (round_duration_days, round_start_time) governed by external config.json, not committed."

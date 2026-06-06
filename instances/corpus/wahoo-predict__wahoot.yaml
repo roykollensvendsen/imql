@@ -1,0 +1,236 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  Validator scores miners by EMA-smoothed trading profit (EMAVolumeScorer), then
+  normalizes those scores to sum to 1, scales the miner portion by
+  MINER_EMISSION_PERCENTAGE (0.25), and routes the remaining BURN_RATE (0.75) as a
+  single weight to owner/validator UID 176. So ~25% of emissions are distributed to
+  miners by the documented profit mechanism and ~75% is captured by the owner UID.
+
+subnet:
+  name: "Wahooτ (Wahoot)"
+  owner_repo: "wahoo-predict__wahoot"
+  netuid: null
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners are human traders on the Wahoo prediction-market platform (no code run by
+    miners). Validators fetch each registered hotkey's trading statistics from the
+    Wahoo API and reward miners by their realized trading profit over a trailing
+    window. A miner's score is an EMA of profit^0.7 (only positive profit counts);
+    scores are normalized into weights. A threshold gate requires positive profit.
+  submission_format: [api_response]
+
+scoring_signals:
+  - name: trading_profit
+    metric_kind: pnl
+    direction: higher_is_better
+    weight: 1.0
+    normalization: ema
+    notes: >-
+      raw_score = max(0, profit) ** PROFIT_EXPONENT (0.7); losses clipped to 0.
+      raw_score is EMA-smoothed per hotkey, then normalized to sum to 1 across miners.
+  - name: profit_threshold_gate
+    metric_kind: pnl
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      _check_thresholds requires profit > 0 (and win_rate >= MIN_WIN_RATE=0.0),
+      else the miner's weight is forced to 0.0 in reward().
+
+ground_truth_sources:
+  - kind: organic_traffic
+    description: >-
+      Wahoo prediction-market trading statistics per hotkey (profit, win_rate,
+      total_volume_usd) fetched from the Wahoo API v2 statistics endpoint.
+    source_identifier: "https://api.wahoopredict.com/api/v2/event/bittensor/statistics/v2"
+    trust_model: trusted
+    notes: >-
+      Validator trusts the centralized Wahoo API as the source of trading
+      performance; data described as public.
+
+aggregation:
+  method: exponential_decay_ema
+  composition: gated
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "176"
+    fraction: 0.75
+    dynamic: false
+    notes: >-
+      BURN_RATE = 1.0 - MINER_EMISSION_PERCENTAGE = 0.75. Miner rewards are scaled by
+      MINER_EMISSION_PERCENTAGE (0.25); owner_weight = BURN_RATE is appended as the
+      weight for OWNER_UID 176 in the final weight vector. If UID 176 is absent from
+      the metagraph the burn fraction is truly burned.
+  notes: >-
+    Per-hotkey EMA: smoothed = (1-alpha)*prev + alpha*raw, EMA_ALPHA derived from a
+    12-hour half-life over 360*12s epochs. New miners (prev==0) take raw directly;
+    a cliff reset sets smoothed=raw when raw < CLIFF_RESET_THRESHOLD*prev (0.5).
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Loop interval computed from blocks until the next epoch boundary
+    (tempo * BLOCK_TIME_SECONDS, default fallback 4800s). Each iteration recomputes
+    EMA weights, scales miners by 0.25, appends 0.75 to OWNER_UID 176, and calls
+    subtensor.set_weights with retry/cooldown handling (commit_period=32 blocks).
+  on_chain_call: set_weights
+  tempo_or_interval: "tempo blocks (BLOCK_TIME_SECONDS=12.0; default interval 4800s)"
+  smoothing:
+    kind: ema
+    alpha: null
+    window: null
+    notes: >-
+      EMA_ALPHA = 1 - 0.5**(1/HALF_LIFE_EPOCHS) where HALF_LIFE_SECONDS=12*3600 and
+      EPOCH_INTERVAL_SECONDS=360*12, so HALF_LIFE_EPOCHS=10. Alpha is computed, not a
+      literal constant, so left null. EMA scores persisted in SQLite across restarts.
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      _check_thresholds zeroes a miner's weight if profit is not strictly positive
+      (profit > 0 required; win_rate must be >= MIN_WIN_RATE=0.0).
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      _validate_response rejects malformed responses (prob_yes/prob_no out of [0,1],
+      prob_yes+prob_no != 1 within 1e-6, non-finite, invalid event_id/confidence),
+      though in main loop miner responses are passed as None (miners run no code).
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      EMA cliff reset: when raw_score < CLIFF_RESET_THRESHOLD (0.5) * stored EMA, the
+      stored EMA is discarded and the miner's score drops to the raw value, preventing
+      a miner from coasting on a past-inflated EMA after profit collapses.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score]
+  status_values: []
+  reset_policy: >-
+    Per-hotkey EMA score persisted in SQLite (scoring_runs). New miners (prev EMA == 0)
+    seed from raw score; cliff reset replaces stored EMA with raw when raw < 0.5*prev.
+    Unregistered miners removed from the database each iteration.
+  notes: >-
+    smoothed_scores returned in result.meta and saved as 'ema_update' scoring runs;
+    used as previous_scores on the next iteration. Old cache entries auto-cleaned
+    (7-day default).
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "wahoo/validator/scoring/rewards.py"
+      line_ref: "1-4"
+      quote: "import logging\nimport math\nimport os\nimport torch"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "44-49"
+      quote: "3. **We track** - Our validators peek at your performance through the Wahooτ API (don't worry, it's all public data)\n4. **You get scored** - Based on how much you trade, how much you profit, and how often you're right"
+    - claim_field: "/task/submission_format"
+      source_path: "wahoo/validator/validator.py"
+      line_ref: "546-547"
+      quote: "# Miner responses are not used in this subnet (miners don't run code)\n            miner_responses = [None] * len(active_uids)"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "wahoo/validator/scoring/operators.py"
+      line_ref: "71-73"
+      quote: "# Only positive profit contributes to score; losses are clipped to 0\n        clamped_profit = np.maximum(0.0, profit)\n        raw_scores = np.power(clamped_profit, self.profit_exp)"
+    - claim_field: "/scoring_signals/0/metric_kind"
+      source_path: "wahoo/validator/scoring/operators.py"
+      line_ref: "18"
+      quote: "PROFIT_EXPONENT = 0.7"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "wahoo/validator/scoring/rewards.py"
+      line_ref: "107-109"
+      quote: "profit = perf.profit\n    if profit is None or profit <= 0:\n        return False, f\"profit not positive (profit={profit})\""
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "wahoo/validator/validator.py"
+      line_ref: "26-28"
+      quote: "WAHOO_VALIDATION_ENDPOINT = (\n    \"https://api.wahoopredict.com/api/v2/event/bittensor/statistics/v2\"\n)"
+    - claim_field: "/aggregation/method"
+      source_path: "wahoo/validator/validator.py"
+      line_ref: "259-267"
+      quote: "logger.debug(\"Computing weights using EMAVolumeScorer...\")\n    df = records_to_dataframe(validation_data)\n\n    if df.empty:\n        logger.warning(\"No validation data to compute weights from\")\n        return {}, {}\n\n    scorer = EMAVolumeScorer()\n    result = scorer.run(df, previous_scores=previous_scores)"
+    - claim_field: "/aggregation/normalization"
+      source_path: "wahoo/validator/scoring/operators.py"
+      line_ref: "125-129"
+      quote: "total = smoothed_scores.sum()\n        if total > 0:\n            weights = smoothed_scores / total\n        else:\n            weights = np.zeros_like(smoothed_scores)"
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "wahoo/validator/scoring/rewards.py"
+      line_ref: "19-20"
+      quote: "MINER_EMISSION_PERCENTAGE = 0.25\nBURN_RATE = 1.0 - MINER_EMISSION_PERCENTAGE  # 0.75 = 75% burn rate"
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "wahoo/validator/scoring/rewards.py"
+      line_ref: "23-24"
+      quote: "# Owner/Validator UID that receives the burned portion (25% of emissions)\nOWNER_UID = 176"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "wahoo/validator/validator.py"
+      line_ref: "570-579"
+      quote: "owner_weight = BURN_RATE  # 0.5 = 50% burn rate\n            final_uids = list(active_uids)\n            final_weights = rewards.clone()\n\n            # Check if owner UID exists in metagraph\n            if OWNER_UID < len(metagraph.uids):\n                # Add owner UID to the list (it's a validator, not in active_uids)\n                final_uids.append(OWNER_UID)\n                # Add owner weight (burn_rate) to the weights tensor\n                final_weights = torch.cat([final_weights, torch.tensor([owner_weight], dtype=torch.float32)])"
+    - claim_field: "/aggregation/composition"
+      source_path: "wahoo/validator/scoring/rewards.py"
+      line_ref: "248"
+      quote: "rewards = rewards / total * MINER_EMISSION_PERCENTAGE"
+    - claim_field: "/aggregation/notes"
+      source_path: "wahoo/validator/scoring/operators.py"
+      line_ref: "107-110"
+      quote: "else:\n                smoothed_scores[i] = (\n                    1 - self.alpha\n                ) * prev_score + self.alpha * raw"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "wahoo/validator/blockchain.py"
+      line_ref: "64-69"
+      quote: "result = subtensor.set_weights(\n                wallet=wallet,\n                netuid=netuid,\n                uids=uids,\n                weights=weights,\n            )"
+    - claim_field: "/weight_setting/cadence"
+      source_path: "wahoo/validator/validator.py"
+      line_ref: "217-223"
+      quote: "blocks_since_last_epoch = current_block % tempo\n            blocks_until_next_epoch = tempo - blocks_since_last_epoch\n            \n            # Calculate time until next epoch\n            interval = blocks_until_next_epoch * BLOCK_TIME_SECONDS"
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "wahoo/validator/scoring/operators.py"
+      line_ref: "14-17"
+      quote: "HALF_LIFE_SECONDS = 12 * 3600\nEPOCH_INTERVAL_SECONDS = 360 * 12\nHALF_LIFE_EPOCHS = int(HALF_LIFE_SECONDS / EPOCH_INTERVAL_SECONDS)\nEMA_ALPHA = 1 - (0.5 ** (1 / HALF_LIFE_EPOCHS))"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "wahoo/validator/scoring/operators.py"
+      line_ref: "98-106"
+      quote: "elif prev_score > 0 and raw < CLIFF_RESET_THRESHOLD * prev_score:\n                smoothed_scores[i] = raw\n                cliff_reset_count += 1"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "wahoo/validator/scoring/rewards.py"
+      line_ref: "111-116"
+      quote: "win_rate = perf.win_rate\n    if win_rate is not None and win_rate < MIN_WIN_RATE:\n        return (\n            False,\n            f\"win_rate below threshold (win_rate={win_rate}, min={MIN_WIN_RATE})\","
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "wahoo/validator/scoring/rewards.py"
+      line_ref: "51-56"
+      quote: "if not (0.0 <= prob_yes <= 1.0):\n            logger.debug(f\"prob_yes out of range [0.0, 1.0]: {prob_yes}\")\n            return False\n\n        epsilon = 1e-6\n        if abs((prob_yes + prob_no) - 1.0) > epsilon:"
+    - claim_field: "/per_miner_state/state_kinds"
+      source_path: "wahoo/validator/validator.py"
+      line_ref: "529-533"
+      quote: "scores_to_save = updated_ema_scores if updated_ema_scores else wahoo_weights\n                    if scores_to_save:\n                        validator_db.add_scoring_run(\n                            scores_to_save, reason=\"ema_update\"\n                        )"
+    - claim_field: "/mechanism_status"
+      source_path: "wahoo/validator/scoring/rewards.py"
+      line_ref: "244-248"
+      quote: "if total > 0.0:\n        # Normalize to sum to 1.0 first, then scale by MINER_EMISSION_PERCENTAGE\n        # This implements the burn mechanism: only MINER_EMISSION_PERCENTAGE goes to miners\n        # The remaining BURN_RATE will be routed to owner UID 176\n        rewards = rewards / total * MINER_EMISSION_PERCENTAGE"
+  unresolved:
+    - "subnet.netuid not stated in source (NETUID read from env, default 0)."
+    - "EMA alpha and tempo are computed at runtime from constants, not stored as literals; left null."
+    - "Exact API field semantics for win_rate / total_volume_usd not defined in repo (provided by external Wahoo API)."

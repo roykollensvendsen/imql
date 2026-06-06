@@ -1,0 +1,278 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  Vault weight targets (fetched from an external API, e.g. "0:75,164:25") send the
+  dominant share to the burn UID 0. Arena scoring only redistributes a configurable
+  slice (default 25%, set server-side) carved OUT of the burn UID to the top-3 PnL
+  miners. When there is no active competition or no eligible miners, the arena slice
+  is ignored entirely and vault-only (burn-dominant) weights are submitted.
+
+subnet:
+  name: "Astrid (SN-127) Arena Trading Validator"
+  owner_repo: "astridintelligence__sn-127"
+  netuid: 127
+  implementation_lang: typescript
+
+task:
+  summary: >-
+    Arena miners register on the Astrid Arena platform, run an LLM trading agent against
+    a simulated wallet during a live Miner Competition, and are ranked by realized PnL
+    percentage. Validators fetch base "vault" weight targets from an external API (which
+    send a fixed share to a vault miner and the remainder to the burn UID 0), then
+    redirect a configurable percentage of the burn allocation to the top-3 eligible arena
+    miners by PnL (split 60/30/10), and submit the blended weights on-chain.
+  submission_format: [signals, api_response]
+
+scoring_signals:
+  - name: total_pnl_percent
+    metric_kind: pnl
+    direction: higher_is_better
+    weight: 1.0
+    normalization: rank
+    notes: >-
+      Eligible miners sorted by totalPnlPercent descending; only the top 3 receive
+      weight. totalPnlPercent is reported by the external Arena API, not computed in
+      this repo.
+  - name: trade_liveness_eligibility
+    metric_kind: uptime
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Gating signal (not additive). A miner is eligible only if it has >=1 trade AND
+      every trade in the most recent 12h window with trades has an execution run within
+      +/-2h of the trade timestamp. Failing the gate => zero weight.
+
+ground_truth_sources:
+  - kind: market_data
+    description: >-
+      Arena participants' trades, executions, and PnL are served by the external Astrid
+      Arena API (default https://arena-api.astrid.global). The repo only consumes
+      /public/arena/bittensor, /public/competitions/:id/wallet-activity, and
+      /public/competitions/:id/executions; PnL and winner election happen server-side.
+    source_identifier: "https://arena-api.astrid.global"
+    trust_model: oracle
+    notes: >-
+      arenaEmissionsPercent and (for delayed payouts) the winner list are pre-elected by
+      the platform; the validator trusts them, validating only hotkey/uid/coldkey against
+      the live metagraph.
+  - kind: other
+    kind_other: external_weight_feed
+    description: >-
+      Base vault weight targets (uid:weight pairs, e.g. "0:75,164:25") fetched from the
+      Vault API endpoint {API_URL}/bittensor/weights.
+    source_identifier: "https://api.astrid.global/v1/bittensor/weights"
+    trust_model: trusted
+    notes: >-
+      kind 'other' because the targets are an opaque external weight feed, not a
+      market/dataset/probe. This is the burn-dominant base allocation.
+
+aggregation:
+  method: rank_based
+  composition: gated
+  normalization: none
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: null
+    dynamic: true
+    notes: >-
+      UID 0 is the burn UID. Its weight comes from the external vault feed (e.g. 75) and
+      is reduced by the arena allocation percent (reducedBurnWeight =
+      max(0, burnTarget.weight - arenaPercent)). The literal burn fraction is set by the
+      external feed, not in this repo, so left null; dynamic=true because it is a
+      residual after the arena slice is carved out.
+  notes: >-
+    Eligible miners ranked by PnL; emission shares assigned by count: 1 miner -> [1.0],
+    2 -> [0.7,0.3], 3 -> [0.6,0.3,0.1] (SPLITS_BY_COUNT). Each arena weight =
+    floor(arenaPercent * emissionShare), with the integer remainder given to rank 1.
+    Vault (non-burn, non-arena) targets pass through unchanged. The "score" only
+    redistributes the arena slice carved from the burn UID.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    setInterval loop every BITTENSOR_WEIGHT_INTERVAL_MS (default 60000ms in env.ts /
+    documented 3600000ms = 1h). On-chain submission respects the subnet weightsSetRateLimit
+    queried from chain; if commitRevealWeightsEnabled is true it commits via
+    commitCrv3Weights/commitTimelockedWeights (Drand timelock), else it calls setWeights
+    directly.
+  on_chain_call: commit_reveal
+  tempo_or_interval: "60000ms loop (default); 3600000ms documented; on-chain rate-limited by weightsSetRateLimit"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA/SMA smoothing of the final weights in this repo; weights are recomputed each
+      cycle from current vault + arena state. Drand commit-reveal adds delay but not
+      smoothing.
+
+anti_gaming:
+  - kind: liveness_check
+    enforcement: elimination
+    description: >-
+      Rule 2 eligibility: every trade in the most recent 12h window with trades must have
+      an execution run (LLM agent decision cycle) within +/-2h of the trade. Intended to
+      stop front-running / stale-data agents. Failing => ineligible (zero weight).
+      Constants EXECUTION_WINDOW_MS = 2h, RECENT_TRADE_WINDOW_MS = 12h.
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Rule 1 eligibility: a participant with totalTrades == 0 (no trades during the
+      competition) is immediately ineligible.
+  - kind: commit_reveal
+    enforcement: barrier
+    description: >-
+      When the subnet has commitRevealWeightsEnabled, weights are timelock-encrypted via
+      Drand (commitCrv3Weights / commitTimelockedWeights v4) and revealed after
+      revealPeriodEpochs * tempo blocks, hiding weights until reveal.
+  - kind: rate_limit
+    enforcement: barrier
+    description: >-
+      submitWeights enforces the on-chain weightsSetRateLimit: it skips/sleeps if
+      blocksSinceLastCommit < weightsRateLimit.
+
+sub_competitions:
+  structure: single
+  stages: []
+  count: null
+  notes: >-
+    A single active Miner Competition drives live scoring. A separate "delayed
+    emissions" payout flow can pay multiple completed competitions in their payout
+    window (computeDelayedEmissionsWeights), where winners are pre-elected by the platform
+    and each winner weight = emissionsPercent * (splitPercent/100). Not modeled as
+    distinct stages.
+
+per_miner_state:
+  tracked: false
+  state_kinds: []
+  status_values: []
+  reset_policy: ""
+  notes: >-
+    No persistent per-miner ledger in this repo. An in-memory per-competition cache
+    (cache.ts) accumulates trades/executions across cycles for eligibility, but it is
+    transient, not a scored state ledger.
+
+documentation:
+  status: docs_and_code
+  source_version: "SN-127"
+  primary_docs:
+    - "docs/ranking-algorithm.md"
+    - "docs/overview.md"
+    - "README.md"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "docs/overview.md"
+      line_ref: "110"
+      quote: "| `BITTENSOR_NETUID`             | Subnet ID                    | `127`"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "src/config/env.ts"
+      line_ref: "1-3"
+      quote: "import dotenv from 'dotenv';"
+    - claim_field: "/task/summary"
+      source_path: "docs/overview.md"
+      line_ref: "43-44"
+      quote: "Arena miners participate in a live **Miner Competition** hosted on the **arena.astrid.global**. They trade with simulated wallets and are ranked by PnL."
+    - claim_field: "/scoring_signals/0/metric_kind"
+      source_path: "src/core/arena/ranking.ts"
+      line_ref: "38-39"
+      quote: ".map((r) => r.participant)\n        .sort((a, b) => b.totalPnlPercent - a.totalPnlPercent)"
+    - claim_field: "/scoring_signals/0/normalization"
+      source_path: "src/core/arena/ranking.ts"
+      line_ref: "39-40"
+      quote: ".sort((a, b) => b.totalPnlPercent - a.totalPnlPercent)\n        .slice(0, TOP_N);"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "src/core/arena/eligibility.ts"
+      line_ref: "3-7"
+      quote: "const EXECUTION_WINDOW_MS = 2 * 60 * 60 * 1000; // ±2 hours\n... const RECENT_TRADE_WINDOW_MS = 12 * 60 * 60 * 1000; // 12 hours"
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "src/config/env.ts"
+      line_ref: "10"
+      quote: "const defaultArenaApiUrl = 'https://arena-api.astrid.global';"
+    - claim_field: "/ground_truth_sources/1/source_identifier"
+      source_path: "src/config/env.ts"
+      line_ref: "67-68"
+      quote: "const configuredApiUrl = process.env.API_URL ?? 'https://api.astrid.global/v1';\nconst configuredWeightsUrl = `${configuredApiUrl}/bittensor/weights`;"
+    - claim_field: "/ground_truth_sources/1/description"
+      source_path: "docs/overview.md"
+      line_ref: "40"
+      quote: "The Vault API exposes these targets at `GET /v1/bittensor/weights`."
+    - claim_field: "/aggregation/method"
+      source_path: "docs/ranking-algorithm.md"
+      line_ref: "42-44"
+      quote: "Eligible miners are sorted by `totalPnlPercent` **descending** (highest PnL first). ... Only the **top 3** earn weight."
+    - claim_field: "/aggregation/notes"
+      source_path: "src/core/arena/ranking.ts"
+      line_ref: "19-23"
+      quote: "const SPLITS_BY_COUNT: Record<number, readonly number[]> = {\n    1: [1.0],\n    2: [0.7, 0.3],\n    3: [0.6, 0.3, 0.1]\n};"
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "src/core/arena/weights.ts"
+      line_ref: "93-99"
+      quote: "const burnTarget = vaultTargets.find((t) => t.uid === 0); ... const reducedBurnWeight = Math.max(0, burnTarget.weight - arenaPercent);"
+    - claim_field: "/aggregation/burn_allocation/dynamic"
+      source_path: "src/core/arena/weights.ts"
+      line_ref: "105-107"
+      quote: "const floorWeights = rankedMiners.map((m) => Math.floor(arenaPercent * m.emissionShare));\n    const remainder = arenaPercent - floorWeights.reduce((sum, w) => sum + w, 0);"
+    - claim_field: "/mechanism_status"
+      source_path: "docs/overview.md"
+      line_ref: "36-39"
+      quote: "- **75%** goes to UID 0 (burned / returned to root network)\n- **25%** goes to UID 164 (the Vault miner)"
+    - claim_field: "/mechanism_status_notes"
+      source_path: "src/core/arena/index.ts"
+      line_ref: "45-48"
+      quote: "if (arenaEmissionsPercent === 0 || !competition || participants.length === 0) {\n        logger.debug(... 'arena: no active arena competition');\n        return null;"
+    - claim_field: "/weight_setting/cadence"
+      source_path: "src/core/submit_weights.ts"
+      line_ref: "488-489"
+      quote: "const blocksSinceLastCommit = this.lastCommitBlock ? currentBlock - this.lastCommitBlock : Infinity;\n            const canCommit = blocksSinceLastCommit >= scheduleParams.weightsRateLimit;"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "src/core/submit_weights.ts"
+      line_ref: "122-148"
+      quote: "if (subnetInfo.commitRevealEnabled) { ... } else { ... const txHash = await this.setWeightsStandard(uids, weights);"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "src/config/env.ts"
+      line_ref: "88"
+      quote: "weightIntervalMs: int(process.env.BITTENSOR_WEIGHT_INTERVAL_MS, 60000),"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "src/core/arena/eligibility.ts"
+      line_ref: "68-83"
+      quote: "const hasNearbyExecution = executions.some((e) => { ... return Math.abs(execTime - tradeTime) <= EXECUTION_WINDOW_MS; });\n            if (!hasNearbyExecution) { return { participant: p, eligible: false, ..."
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "src/core/arena/eligibility.ts"
+      line_ref: "39-41"
+      quote: "if (trades.length === 0) {\n            return { participant: p, eligible: false, reason: 'no trades during competition' };"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "src/core/submit_weights.ts"
+      line_ref: "173-177"
+      quote: "if (api.tx.subtensorModule.commitCrv3Weights) { ... } else if (api.tx.subtensorModule.commitTimelockedWeights) { const commitRevealVersion = 4;"
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "src/core/submit_weights.ts"
+      line_ref: "489-505"
+      quote: "if (!canCommit) { ... await this.sleep(sleepMs); return null; }"
+    - claim_field: "/sub_competitions/notes"
+      source_path: "src/core/arena/index.ts"
+      line_ref: "167-168"
+      quote: "for (const winner of comp.winners) {\n            const rawWeight = comp.emissionsPercent * (winner.splitPercent / 100);"
+    - claim_field: "/per_miner_state/notes"
+      source_path: "src/core/arena/index.ts"
+      line_ref: "52-67"
+      quote: "const cache = getCache(competition.id); ... appendTrades(cache, newTrades); appendExecutions(cache, newExecutions);"
+    - claim_field: "/documentation/primary_docs"
+      source_path: "docs/ranking-algorithm.md"
+      line_ref: "1-4"
+      quote: "# SN-127 Arena Miner Ranking Algorithm ... This document describes the rules that determine which arena miners receive emissions and in what proportions."
+  unresolved:
+    - "arenaEmissionsPercent literal value (docs say 'currently at 25%') is configured server-side in the Arena API, not present as a code constant in this repo."
+    - "Vault burn fraction (e.g. 75% to UID 0) comes from the external Vault API feed string (e.g. '0:75,164:25'); no literal in this repo."
+    - "Active on-chain values for tempo / weightsSetRateLimit / commitRevealWeightsEnabled are queried live from chain at runtime; not statically known."

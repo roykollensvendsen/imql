@@ -1,0 +1,261 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: mixed
+mechanism_status_notes: >-
+  Daily winner-take-all competition: weights = 1 on the single winning UID (lowest eval_loss
+  among the earliest committers within a loss-percentile cutoff), 0 elsewhere. When no active
+  competition exists / the dataset commit is unchanged, weights are set entirely on the subnet
+  owner (burn) UID. So at any given time emissions go either fully to one miner or fully to the
+  burn UID — hence "mixed" rather than continuously active.
+
+subnet:
+  name: "FLock OFF"
+  owner_repo: "FLock-io__FLock-subnet"
+  netuid: null
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners curate and upload conversational instruction-tuning datasets (JSONL) to Hugging Face
+    and register the repo/commit metadata on-chain. Validators train a LoRA adapter on
+    Qwen/Qwen2.5-1.5B-Instruct using each miner's dataset and measure evaluation loss on a fixed
+    eval dataset. The miner whose dataset yields the lowest eval loss (subject to anti-duplication
+    and a loss-percentile + earliest-commit tie-break) wins the daily competition and receives all
+    emissions.
+  submission_format: [content_link, commitment_hash]
+
+scoring_signals:
+  - name: eval_loss
+    metric_kind: loss
+    direction: lower_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      train_lora returns the LoRA eval loss on the fixed eval dataset; stored as the miner's raw
+      score (eval_loss). select_winner sorts eligible submissions by eval_loss ascending. Invalid /
+      duplicate / errored submissions get DEFAULT_RAW_SCORE = 999.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Fixed evaluation dataset downloaded from a Hugging Face repo
+      (flock-io/flock-off-s1-competition, eval_commit "main"); validator trains/evaluates LoRA
+      against it.
+    source_identifier: "flock-io/flock-off-s1-competition"
+    trust_model: trusted
+    notes: >-
+      eval_commit = "main"; Competition.repo default. Miner datasets are also checked against this
+      eval dataset for plagiarism (count_similar must equal full miner dataset, else fallback score).
+
+aggregation:
+  method: winner_take_all
+  composition: rank
+  normalization: none
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "subnet owner UID (SubnetOwnerHotkey)"
+    fraction: 1.0
+    dynamic: false
+    notes: >-
+      In _comp_exists_in_db, when no valid stored competition exists, weights are zeroed and
+      weights[burn_uid] = 1, where burn_uid is the subnet owner's UID (get_burn_uid queries
+      SubnetOwnerHotkey). This is full burn when no competition is active.
+  notes: >-
+    Winner gets new_weights[winner] = 1 (all other UIDs 0). select_winner: take submissions with
+    eval_loss not None, keep the top LOSS_THRESHOLD_PCT (0.05) by loss (min 1), then pick the
+    earliest commitment_block/timestamp among those. compute_score() (a benchmark-curve scoring fn)
+    exists in validator_utils.py but is NOT called by the validator; winner selection uses raw
+    eval_loss directly.
+
+weight_setting:
+  cadence: daily
+  method: >-
+    Competition runs on a daily UTC schedule (submission window starting at 12:00 UTC,
+    validation, then rewarding). Weights committed when blocks-to-epoch <= block_threshold (50),
+    using commit-reveal.
+  on_chain_call: commit_reveal
+  tempo_or_interval: "blocks_per_epoch default 360; block_threshold 50"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA/SMA smoothing of weights; each rewarding cycle overwrites self.weights with a fresh
+      one-hot winner vector (or burn vector).
+
+anti_gaming:
+  - kind: plagiarism_detection
+    enforcement: penalty
+    description: >-
+      count_similar between miner dataset and the eval dataset must equal the full miner dataset
+      length (rows capped at competition.rows=100); otherwise the miner gets DEFAULT_RAW_SCORE
+      (999), effectively disqualifying them. Each row must come from the eval dataset.
+  - kind: deduplication
+    enforcement: penalty
+    description: >-
+      Pairwise count_similar between miners; if > DEFAULT_DUPLICATE_COUNT (33), miners are grouped
+      as duplicates, sorted by commitment block, and all but the earliest committer get
+      DEFAULT_RAW_SCORE (999).
+  - kind: commit_reveal
+    enforcement: barrier
+    description: >-
+      Weights are submitted via commit-reveal (commit_weights_extrinsic / reveal_weights_extrinsic)
+      with a fresh random 8-byte salt per commitment; revealed on a later interval.
+  - kind: rate_limit
+    enforcement: barrier
+    description: >-
+      Miner on-chain metadata commitment subject to a ~20-minute commit cooldown (README: retries
+      every 120s if the 20-minute commit cooldown applies).
+
+sub_competitions:
+  structure: single
+  stages: []
+  count: null
+  notes: >-
+    One daily dataset competition (Competition id "1", repo flock-io/flock-off-s1-competition).
+    Competition lifecycle has SUBMISSION / VALIDATION / REWARDING / COMPLETED states but it is a
+    single mechanism, not a ladder/tournament of distinct competitions.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [performance_ledger, status_enum, registration_age]
+  status_values: [submission, validation, rewarding, completed]
+  reset_policy: >-
+    Per-competition (daily). A new competition_id (YYYYMMDD) starts each day; scores/submissions are
+    recorded per competition_id in scores.db. Earliest commitment_block is used as a tie-break.
+  notes: >-
+    ScoreDB persists submissions, eval_loss, commitment_block/timestamp, eligibility, and competition
+    status per competition_id. CompetitionState enum: submission/validation/rewarding/completed.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs: ["README.md"]
+  completeness: medium
+
+provenance:
+  confidence_overall: high
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  extractor_notes: >-
+    Implementation is Python. Weight setting is winner-take-all one-hot or full burn to the subnet
+    owner UID. compute_score() in validator_utils.py is dead code w.r.t. on-chain weights (validator
+    uses raw eval_loss via select_winner), so its constants (bench=2.60, minb=2.40, maxb=2.80,
+    bheight=0.05, pow=2) are NOT reflected in scoring_signals.
+  evidence:
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "neurons/validator.py"
+      line_ref: "22-26"
+      quote: "import torch ... import bittensor as bt ... import numpy as np"
+      confidence: high
+    - claim_field: "/subnet/name"
+      source_path: "README.md"
+      line_ref: "1-5"
+      quote: "# FLock OFF ... FLock OFF is a Bittensor subnet designed to incentivize the creation of high-quality datasets for machine learning."
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "5"
+      quote: "Miners generate and upload datasets to Hugging Face, while validators assess their quality by training LoRA (Low-Rank Adaptation) models on a standardized base model (Qwen/Qwen2.5-1.5B-Instruct) and rewarding miners based on performance."
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "neurons/validator.py"
+      line_ref: "407-410"
+      quote: "self.score_db.record_submission(...metadata.id.namespace, metadata.id.commit)"
+      confidence: high
+    - claim_field: "/scoring_signals/0/name"
+      source_path: "neurons/validator.py"
+      line_ref: "662-673"
+      quote: "eval_loss = train_lora(...) ... raw_scores_this_epoch[uid] = eval_loss ... self.score_db.record_submission_loss(self.active_competition_id, uid, eval_loss, is_eligible=True)"
+      confidence: high
+    - claim_field: "/scoring_signals/0/direction"
+      source_path: "flockoff/validator/validator_utils.py"
+      line_ref: "97-98"
+      quote: "scored_by_loss = sorted(scored, key=lambda s: s['eval_loss'])\n    eligible = scored_by_loss[:threshold_number]"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "flockoff/constants.py"
+      line_ref: "8"
+      quote: "DEFAULT_RAW_SCORE = 999"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "flockoff/constants.py"
+      line_ref: "26-41"
+      quote: "repo: str = \"flock-io/flock-off-s1-competition\" ... eval_commit = \"main\""
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "neurons/validator.py"
+      line_ref: "706-712"
+      quote: "new_weights = torch.zeros_like(torch.tensor(self.metagraph.S), dtype=torch.float32)\n\n                if winner < len(new_weights):\n                    new_weights[winner] = 1 ... self.weights = new_weights"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "flockoff/validator/validator_utils.py"
+      line_ref: "96-108"
+      quote: "threshold_number = max(int(len(hotkeys) * constants.LOSS_THRESHOLD_PCT), 1)\n    scored_by_loss = sorted(scored, key=lambda s: s['eval_loss'])\n    eligible = scored_by_loss[:threshold_number] ... eligible_sorted = sorted(eligible, key=sort_key) ... winner = eligible_sorted[0]"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/enabled"
+      source_path: "neurons/validator.py"
+      line_ref: "305-310"
+      quote: "self.weights = torch.zeros_like(torch.tensor(self.metagraph.S))\n            # Get the burn UID.\n            burn_uid = self.get_burn_uid()\n            self.weights[burn_uid] = 1"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "neurons/validator.py"
+      line_ref: "208-223"
+      quote: "sn_owner_hotkey = self.subtensor.query_subtensor(\"SubnetOwnerHotkey\", params=[self.config.netuid]) ... sn_owner_uid = self.subtensor.get_uid_for_hotkey_on_subnet(...)"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "flockoff/validator/chain.py"
+      line_ref: "6"
+      quote: "from bittensor.core.extrinsics.commit_weights import commit_weights_extrinsic, reveal_weights_extrinsic"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "neurons/validator.py"
+      line_ref: "248-256"
+      quote: "blocks_to_epoch = next_epoch_block - current_block ... threshold = self.config.block_threshold\n        return blocks_to_epoch <= threshold"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "neurons/validator.py"
+      line_ref: "64-110"
+      quote: "\"--blocks_per_epoch\", type=int, default=360 ... \"--block_threshold\", type=int, default=50"
+      confidence: high
+    - claim_field: "/weight_setting/cadence"
+      source_path: "flockoff/constants.py"
+      line_ref: "17-20"
+      quote: "submission_start_utc_min = 12 * 60\nsubmission_window_mins = 30\nvalidate_start_utc_min = 12 * 60 + submission_window_mins\nreward_start_utc_min = 11 * 60 + 30"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "neurons/validator.py"
+      line_ref: "548-555"
+      quote: "if count_similar(eval_data_jsonl, miner_i_data_jsonl) != len(miner_i_data_jsonl):\n                    raw_scores_this_epoch[uid_i] = constants.DEFAULT_RAW_SCORE"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "neurons/validator.py"
+      line_ref: "589-609"
+      quote: "if count_similar(miner_j_data_jsonl, miner_i_data_jsonl) > constants.DEFAULT_DUPLICATE_COUNT: ... group.sort(key=lambda uid: block_per_uid[uid]) ... for uid in group[1:]: duplicates.add(uid)"
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "neurons/validator.py"
+      line_ref: "343-354"
+      quote: "commit_salt = list(os.urandom(8))\n            success, commit_msg, _ = set_weights_with_err_msg(... salt=commit_salt,)"
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "README.md"
+      line_ref: "159"
+      quote: "It registers this metadata on the Bittensor chain (retrying every 120 seconds if the 20-minute commit cooldown applies)"
+      confidence: medium
+    - claim_field: "/per_miner_state/status_values"
+      source_path: "neurons/validator.py"
+      line_ref: "52-57"
+      quote: "class CompetitionState(Enum):\n    SUBMISSION = \"submission\"\n    VALIDATION = \"validation\"\n    REWARDING = \"rewarding\"\n    COMPLETED = \"completed\""
+      confidence: high
+    - claim_field: "/sub_competitions/notes"
+      source_path: "flockoff/constants.py"
+      line_ref: "22-32"
+      quote: "class Competition: ... id: str = \"1\"\n    repo: str = \"flock-io/flock-off-s1-competition\" ... rows: int = SELECTION_SIZE"
+      confidence: high
+  unresolved:
+    - "subnet.netuid: not present anywhere in the repo (passed as required CLI arg --netuid)."
+    - "Exact loss-percentile / commit-block tie-break behavior interacts with hotkey/coldkey replacement logic in select_winner; weight floor MIN_WEIGHT_THRESHOLD (1e-6) and DECAY_RATE (1) are defined in constants but not used in the live weight path."

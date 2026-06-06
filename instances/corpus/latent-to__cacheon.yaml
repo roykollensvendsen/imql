@@ -1,0 +1,314 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Winner-take-all king mechanism is live in code: weights are a one-hot vector
+  on the current king's UID (validator/chain.py build_winner_take_all_weights /
+  set_weights, called from validator/loop.py run_once). No burn UID is wired in;
+  before any non-DQ'd evaluation produces a king the loop skips set_weights
+  entirely. Mechanism status assessed from source only (no live-chain check).
+
+subnet:
+  name: "Cacheon (SN14)"
+  owner_repo: "latent-to__cacheon"
+  netuid: 14
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners build a containerized LLM inference server (V1 arena: Qwen2.5-72B-Instruct),
+    push it to a public registry, and commit the image reference + manifest digest
+    on-chain. Validators pull the image, run it on the same GPU hardware against a
+    pinned vLLM baseline, and score speed improvement (TTFT and throughput) after a
+    greedy-decoding correctness gate. The single fastest correct server becomes "king"
+    and takes all subnet emission until dethroned.
+  submission_format: [commitment_hash, compute_service]
+  submission_format_other: ""
+
+scoring_signals:
+  - name: correctness_gate
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Hard pass/fail gate evaluated FIRST. First-mismatch greedy-token agreement
+      check vs baseline with a TP-noise logprob sanity allowance (baseline token in
+      miner top-5 and top-1/baseline logprob gap <= 0.5). Fail => score 0.0. Gating,
+      not additive — modeled as weight null.
+  - name: ttft_improvement
+    metric_kind: latency
+    direction: higher_is_better
+    weight: 0.5
+    normalization: none
+    notes: >-
+      Relative time-to-first-token improvement vs baseline: max(0, (baseline_ttft -
+      miner_ttft) / baseline_ttft), using median TTFT across prompts. Floored at 0.
+  - name: throughput_improvement
+    metric_kind: throughput
+    direction: higher_is_better
+    weight: 0.5
+    normalization: none
+    notes: >-
+      Relative throughput (tokens/s) improvement vs baseline: max(0, (miner_tps -
+      baseline_tps) / baseline_tps), using median throughput across prompts. Floored at 0.
+
+ground_truth_sources:
+  - kind: reference_model
+    description: >-
+      Pinned vLLM baseline server (default image vllm/vllm-openai:latest) run on the
+      same hardware as the miner; baseline TTFT/throughput and greedy baseline tokens
+      are the reference the miner is scored against.
+    source_identifier: "vllm/vllm-openai:latest"
+    trust_model: trusted
+    notes: "Baseline image/digest set via CACHEON_BASELINE_IMAGE / CACHEON_BASELINE_DIGEST."
+  - kind: deterministic_dataset
+    description: >-
+      Block-hash-seeded prompt set sampled deterministically from PG19 (Project
+      Gutenberg books) paired with instruction templates; same block hash always
+      produces the same prompt set.
+    source_identifier: "emozilla/pg19"
+    trust_model: trusted
+    notes: "Output capped at MAX_OUTPUT_TOKENS=256 per prompt; deterministic per block hash."
+
+aggregation:
+  method: winner_take_all
+  composition: gated
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: >-
+      No burn allocation in code. When there is no king (no non-DQ'd eval yet) the
+      loop skips set_weights rather than burning.
+  notes: >-
+    Per-miner score = 0.5*max(0,ttft_improvement) + 0.5*max(0,throughput_improvement),
+    gated to 0.0 on correctness failure or duplicate-of-king DQ. The single highest
+    scorer is "king" and receives a one-hot weight (1.0); all others get 0.0. A
+    challenger must STRICTLY EXCEED a decaying defender-advantage threshold
+    king_score*(1+epsilon) to dethrone (see anti_gaming).
+
+weight_setting:
+  cadence: continuous
+  method: >-
+    One-hot weight vector with all mass on the reigning king's UID
+    (build_winner_take_all_weights), pushed each loop tick via subtensor.set_weights
+    with wait_for_inclusion / wait_for_finalization. version_key tags the mechanism
+    version so Yuma consensus only trust-weights validators that agree on it.
+  on_chain_call: set_weights
+  tempo_or_interval: "36s poll interval (CACHEON_POLL_INTERVAL_S)"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: "No EMA/SMA smoothing of the final weight; weights are set directly to the king."
+
+anti_gaming:
+  - kind: deduplication
+    enforcement: elimination
+    description: >-
+      duplicate_of_king DQ: an incoming eval whose Docker manifest digest equals the
+      current king's, with a different hotkey and a strictly later commit_block, is
+      rewritten to score 0.0 / disqualified (reason 'duplicate_of_king'). Byte-identical
+      copies can never tie or dethrone — earliest-block-wins.
+  - kind: challenge_period
+    enforcement: barrier
+    description: >-
+      Decaying defender's advantage: a challenger must strictly exceed
+      king_score*(1+epsilon) where epsilon = KING_EPSILON_INITIAL (0.01) * linear decay
+      to 0 over KING_EPSILON_DECAY_BLOCKS (50400 blocks ~ 7 days). Suppresses noise-driven
+      churn near crowning; after the window any strict improvement dethrones.
+  - kind: commit_reveal
+    enforcement: rejection
+    description: >-
+      Miners commit (image, digest) on-chain via set_reveal_commitment; validators read
+      revealed commitments. Commitments must parse as JSON with a valid Docker image
+      reference and a sha256:<64hex> digest, else they are skipped/pre-rejected.
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Correctness gate: first-mismatch greedy-token agreement vs the vLLM baseline with a
+      logprob sanity allowance (baseline token in miner top-5, top-1/baseline logprob gap
+      <= 0.5); failing the gate (or non-greedy decoding) zeroes the score.
+
+sub_competitions:
+  structure: single
+  stages: []
+  count: 1
+  notes: >-
+    Single winner-take-all arena (V1: Qwen2.5-72B-Instruct on 4x H200 or equivalent).
+    Documented roadmap implies future arenas but only one is implemented.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [status_enum, cumulative_score, reputation]
+  status_values: [king, evaluated, disqualified, precheck_failed]
+  reset_policy: >-
+    Throne is cleared if the king's UID hotkey changes on chain (deregistration / UID
+    recycling). Evaluations are keyed by (hotkey, commit_block) so a re-commit triggers
+    re-eval; completed evals are append-only.
+  notes: >-
+    ValidatorState persists king (KingRecord), per-(hotkey,commit_block) EvaluationRecord
+    history, precheck_failures, and a king-history.jsonl audit log on dethronement.
+
+documentation:
+  status: docs_and_code
+  source_version: "V1"
+  primary_docs:
+    - "README.md"
+    - "https://cacheon.ai/docs/evaluation/scoring"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "validator/config.py"
+      line_ref: "15"
+      quote: 'NETUID: int = int(os.environ.get("CACHEON_NETUID", "14"))'
+    - claim_field: "/subnet/name"
+      source_path: "README.md"
+      line_ref: "3"
+      quote: "# Cacheon (SN14)"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "validator/scoring.py"
+      line_ref: "1-9"
+      quote: '"""Correctness checking and scoring for containerized evaluation.'
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "19-21"
+      quote: >-
+        Miners submit containerized inference servers. Validators evaluate them against
+        a vLLM baseline on the same hardware. The fastest correct server takes all emission.
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "25"
+      quote: "commit the image reference and image digest on-chain."
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "validator/scoring.py"
+      line_ref: "80-93"
+      quote: >-
+        First-mismatch correctness gate for TP-safe greedy decoding. ... If the baseline
+        token is in the miner's top-5 with a small gap, the flip is explainable by TP noise
+        -> pass. Otherwise -> fail.
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "validator/scoring.py"
+      line_ref: "210-214"
+      quote: "ttft_imp = max(0.0, (med_bl_ttft - med_mn_ttft) / med_bl_ttft)"
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "validator/scoring.py"
+      line_ref: "215-218"
+      quote: "tps_imp = max(0.0, (med_mn_tps - med_bl_tps) / med_bl_tps)"
+    - claim_field: "/scoring_signals/1/weight"
+      source_path: "validator/scoring.py"
+      line_ref: "220"
+      quote: "score = 0.5 * ttft_imp + 0.5 * tps_imp"
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "README.md"
+      line_ref: "34-35"
+      quote: "if not correctness_pass:\n    score = 0.0"
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "validator/config.py"
+      line_ref: "51-54"
+      quote: 'BASELINE_IMAGE: str = os.environ.get("CACHEON_BASELINE_IMAGE", "vllm/vllm-openai:latest")'
+    - claim_field: "/ground_truth_sources/1/source_identifier"
+      source_path: "validator/prompts.py"
+      line_ref: "25-26"
+      quote: 'DATASET_NAME: str = "emozilla/pg19"'
+    - claim_field: "/ground_truth_sources/1/notes"
+      source_path: "validator/prompts.py"
+      line_ref: "42"
+      quote: 'MAX_OUTPUT_TOKENS: int = 256'
+    - claim_field: "/aggregation/method"
+      source_path: "validator/chain.py"
+      line_ref: "173-180"
+      quote: 'def build_winner_take_all_weights(n_uids: int, winner_uid: int) -> list[float]: ... weights[winner_uid] = 1.0'
+    - claim_field: "/aggregation/notes"
+      source_path: "validator/state.py"
+      line_ref: "11-15"
+      quote: >-
+        A miner's score is 0.5 * max(0, ttft_improvement) + 0.5 * max(0, throughput_improvement)
+        ... The king is the miner with the highest score. Disqualified runs store score 0.0
+        and cannot take the crown.
+    - claim_field: "/aggregation/composition"
+      source_path: "README.md"
+      line_ref: "27"
+      quote: "Correctness is checked first -- fail it and the score is zero."
+    - claim_field: "/weight_setting/method"
+      source_path: "validator/chain.py"
+      line_ref: "388-409"
+      quote: >-
+        weights = build_winner_take_all_weights(n_uids, winner_uid) ... result =
+        subtensor.set_weights(wallet=wallet, netuid=netuid, uids=uids, weights=weights,
+        version_key=version_key, wait_for_inclusion=True, wait_for_finalization=True,)
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "validator/loop.py"
+      line_ref: "259-269"
+      quote: "set_weights(subtensor, wallet, netuid, n_uids=len(metagraph.hotkeys), winner_uid=state.king.uid, ...)"
+    - claim_field: "/weight_setting/cadence"
+      source_path: "validator/loop.py"
+      line_ref: "362-363"
+      quote: "sleep_fn(poll_interval_s)"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "validator/config.py"
+      line_ref: "23"
+      quote: 'POLL_INTERVAL_S: int = int(os.environ.get("CACHEON_POLL_INTERVAL_S", "36"))'
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "validator/state.py"
+      line_ref: "300-319"
+      quote: >-
+        if (self.king is not None and ev.digest and ev.digest == self.king.digest and
+        ev.hotkey != self.king.hotkey and ev.commit_block > self.king.commit_block):
+        stored = replace(ev, score=0.0, disqualified=True, disqualify_reason=DUPLICATE_OF_KING_REASON,)
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "validator/state.py"
+      line_ref: "219-224"
+      quote: >-
+        age = max(0, current_block - king_crowned_at_block); decay = max(0.0, 1.0 - age / decay_blocks);
+        epsilon = epsilon_initial * decay; return king_score * (1.0 + epsilon)
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "validator/config.py"
+      line_ref: "63-80"
+      quote: >-
+        KING_EPSILON_INITIAL: float = float(os.environ.get("CACHEON_KING_EPSILON_INITIAL", "0.01"))
+        ... KING_EPSILON_DECAY_BLOCKS: int = int(os.environ.get("CACHEON_KING_EPSILON_DECAY_BLOCKS", "50400"))
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "validator/chain.py"
+      line_ref: "93-121"
+      quote: >-
+        `image` must look like a Docker image reference ... `digest` must be a sha256 manifest
+        digest (`sha256:<64 hex chars>`).
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "validator/scoring.py"
+      line_ref: "46-72"
+      quote: >-
+        Check that a divergent position is explainable by TP numerical noise. ... the logprob gap
+        between the miner's top-1 and the baseline token is <= ``max_gap``.
+    - claim_field: "/per_miner_state/state_kinds"
+      source_path: "validator/state.py"
+      line_ref: "228-245"
+      quote: "king: KingRecord | None = None; evaluations: dict[str, EvaluationRecord] = field(default_factory=dict)"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "validator/loop.py"
+      line_ref: "149-157"
+      quote: >-
+        King was deregistered or UID recycled — clearing throne. state.king = None
+    - claim_field: "/sub_competitions/notes"
+      source_path: "README.md"
+      line_ref: "21"
+      quote: "**V1 arena:** `Qwen2.5-72B-Instruct` on 4x H200 or equivalent GPUs."
+    - claim_field: "/mechanism_status"
+      source_path: "validator/loop.py"
+      line_ref: "245-249"
+      quote: "if state.king is None: ... skipping set_weights (waiting for first non-DQ'd evaluation)."
+  unresolved:
+    - "/scoring_signals/0/notes: max_gap=0.5 and top_k=5 are defaults in check_logprob_sanity; the live call site values were not traced."
+    - "/aggregation/normalization: one-hot vector sums to 1.0 (sum_to_one) only because a single weight is 1.0; no explicit normalization call exists in source."
+    - "Live mainnet emission behavior (actual king vs burn on chain) was not verified — assessed from source only."

@@ -1,0 +1,280 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  Miner emissions are split proportionally to public demand via off-chain
+  auctions (tower API). Any emission not allocated to winning auction bids is
+  burned across three randomized burn keys (uids 28, 15, 243). Per miner.md:
+  "The remainder of emissions not allocated to auctions is burned."
+
+subnet:
+  name: "Targon"
+  owner_repo: "manifold-inc__targon"
+  netuid: 4
+  implementation_lang: go
+
+task:
+  summary: >-
+    Miners run confidential-compute (CC/PPCIE) GPU and CPU nodes (NVIDIA Hopper/Blackwell
+    via Intel TDX, AMD EPYC SEV-SNP) that serve secure attestable inference hardware. Each
+    miner reports node IPs and a per-GPU-hour bid price. Validators collect remote
+    attestations from each node and verify them via the tower attestation service; verified
+    nodes enter demand-driven auctions keyed by hardware type. Emission is paid as the
+    percentage of the USD emission pool a miner's winning bids represent; unallocated
+    emission is burned.
+  submission_format: [compute_service]
+
+scoring_signals:
+  - name: attestation_validity
+    metric_kind: other
+    metric_kind_other: confidential_compute_remote_attestation_pass
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Gating signal. A node only enters the auction if its remote attestation verifies via
+      the tower /verify-attestation endpoint (attestResponse.Valid) and the nonce matches;
+      duplicate CVM node ids are rejected. Nodes below the auction's min_cluster_size GPU
+      count are excluded.
+  - name: auction_bid_payout
+    metric_kind: other
+    metric_kind_other: demand_driven_auction_emission_share
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      Per verified node, per-miner USD payout = min(pool/nodes, MaxPrice) where pool =
+      TargetPrice * TargetCards for that auction. Miner incentive (emission share) =
+      (perMiner * 1.2 * count) / (EmissionPool * 100). This share is multiplied by U16MAX
+      (65535) and floored to produce the on-chain weight.
+
+ground_truth_sources:
+  - kind: hardware_probe
+    description: >-
+      Remote attestation of confidential-compute GPU/CPU hardware. Validator requests an
+      attestation quote from each miner node (/api/v1/evidence) and verifies it against the
+      tower attestation service (/api/v1/verify-attestation). GPU/switch remote attestation
+      results carried in NVCCResponse.
+    source_identifier: "tower.targon.com (verify-attestation, auctions APIs)"
+    trust_model: oracle
+    notes: >-
+      The tower service is an off-chain trusted oracle: it returns the auction definitions
+      (target cards/price, max price, min cluster size), the burn distribution, the tao
+      price, and the attestation verdict. Auction allocation reflects "public demand".
+
+aggregation:
+  method: proportional
+  composition: gated
+  normalization: none
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "uids 28, 15, 243"
+    fraction: null
+    dynamic: true
+    notes: >-
+      forBurn = max(U16MAX - sumScores, 0); distributed across burn keys by
+      c.BurnDistribution (uid -> percent, supplied by the tower auction API). Remaining
+      rounding remainder added to the last burn key. burnKeys = [28, 15, 243], "randomized
+      across 3 keys for WC combat".
+  notes: >-
+    Per-uid payout percentages are summed across auctions, scaled by U16MAX and floored.
+    No on-chain normalization is done by the validator ("we are sending weights via the
+    bittensor sdk which is going to normalize anyways"). The 1.2 multiplier and the *100 /
+    EmissionPool divisor are literal in getWeights; the emission pool itself is computed as
+    (alphaOut/1e9)*0.41*360*taoPrice*movingPrice.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    On the block where getBlocksFrom(h)==1 within each tempo interval (tempo=360), the
+    validator computes auction payouts via getWeights and POSTs uids/weights to the local
+    weights-api, which calls subtensor.set_weights with wait_for_finalization. Skipped if
+    no miner nodes or within 180 blocks of validator startup.
+  on_chain_call: set_weights
+  tempo_or_interval: "360 blocks"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA/SMA smoothing of the final weights in the validator; scores are recomputed each
+      interval from current verified nodes and auction state (resetState clears state after
+      each set).
+
+anti_gaming:
+  - kind: hardware_validation
+    enforcement: rejection
+    description: >-
+      Remote confidential-compute attestation is mandatory; a node's hardware must verify via
+      the tower service (attestResponse.Valid) and the attestation nonce must match. Failed
+      or invalid attestation excludes the node from the auction.
+  - kind: deduplication
+    enforcement: rejection
+    description: >-
+      Duplicate CVM node ids are rejected: if c.NodeIds[userData.CVMID] is already seen,
+      the node errors with "duplicate node id found" and is not counted, preventing one
+      physical node from being claimed by multiple miners/IPs.
+  - kind: other
+    kind_other: minimum_cluster_size_requirement
+    enforcement: rejection
+    description: >-
+      For auctions with MinClusterSize != 0, a node must report at least that many GPU cards
+      or it is marked with an error ("Node reporting N cards, M required") and excluded.
+
+sub_competitions:
+  structure: per_task_type
+  stages: []
+  count: null
+  notes: >-
+    Multiple independent auctions keyed by hardware type (e.g. SEV-CPU-AMD-EPYC-V4,
+    TDX-NVCC-NVIDIA-H200), each with its own target_cards, target_price, max_price and
+    min_cluster_size. A node is routed to its auction by userData.AuctionName. Auction set
+    is supplied dynamically by the tower API, so the count is not fixed in source.
+
+per_miner_state:
+  tracked: false
+  state_kinds: []
+  status_values: []
+  reset_policy: >-
+    State is rebuilt each interval: resetState(c) runs after every setWeights; VerifiedNodes,
+    MinerErrors, EmissionPool and auction data are recollected per interval.
+  notes: >-
+    No persistent per-miner ledger/reputation affecting scoring; verified-node and error maps
+    are per-interval working state, not accumulated history.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/miner/miner.md"
+    - "docs/validator/validator.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "targon/internal/callbacks/weights.go"
+      line_ref: "1-16"
+      quote: "package callbacks ... import ( ... \"targon/internal/setup\" \"targon/internal/targon\" )"
+      confidence: high
+    - claim_field: "/subnet/netuid"
+      source_path: "weights-api/main.py"
+      line_ref: "27"
+      quote: "NETUID = int(os.getenv(\"NETUID\", \"4\"))"
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "docs/miner/miner.md"
+      line_ref: "291-292"
+      quote: "\"nodes\": [{\"ip\":\"0.0.0.0\", \"price\": 120}, {\"ip\":\"0.0.1.1\", \"price\": 220}]"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "targon/internal/cvm/cvm.go"
+      line_ref: "171-176"
+      quote: "if !attestResponse.Valid { return nil, utils.Wrap(\"attestation invalid\", attestResponse.Error) } return &attestRes.UserData, nil"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "targon/internal/callbacks/weights.go"
+      line_ref: "122-125"
+      quote: "if auc.MinClusterSize != 0 && auc.MinClusterSize > len(*c.VerifiedNodes[uid][n.IP].GPUCards) { c.MinerErrors[uid][n.IP] = fmt.Sprintf(\"Node reporting %d cards, %d required\" ...) continue }"
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "targon/internal/callbacks/weights.go"
+      line_ref: "146-160"
+      quote: "pool := aucInfo.TargetPrice * aucInfo.TargetCards ... perMiner := min(pool/nodes, aucInfo.MaxPrice) ... minerIncentive := (float64(perMiner) * 1.2 * float64(bid.Count)) / (*c.EmissionPool * 100)"
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "targon/internal/callbacks/weights.go"
+      line_ref: "172"
+      quote: "fw := int(math.Floor(float64(setup.U16MAX) * payout))"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/notes"
+      source_path: "targon/internal/callbacks/callbacks.go"
+      line_ref: "94-101"
+      quote: "auctionData, err := c.Deps.Tower.AuctionDetails() ... c.Auctions = auctionData.Auctions c.BurnDistribution = auctionData.BurnDistribution"
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "targon/internal/callbacks/weights.go"
+      line_ref: "158-159"
+      quote: "minerIncentive := (float64(perMiner) * 1.2 * float64(bid.Count)) / (*c.EmissionPool * 100) payouts[bid.UID] += minerIncentive"
+      confidence: medium
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "targon/internal/callbacks/weights.go"
+      line_ref: "24-25"
+      quote: "// final burn keys, randomized across 3 keys for WC combat\nvar burnKeys = []int{28, 15, 243}"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/dynamic"
+      source_path: "targon/internal/callbacks/weights.go"
+      line_ref: "185-203"
+      quote: "forBurn := max(setup.U16MAX-sumScores, 0) ... thisBurn := uint16(math.Floor(float64(forBurn) * (float64(percent) / 100))) ... finalScores[len(finalScores)-1] += uint16(forBurn)"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/enabled"
+      source_path: "docs/miner/miner.md"
+      line_ref: "78"
+      quote: "The remainder of emissions not allocated to auctions is burned."
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "targon/internal/callbacks/callbacks.go"
+      line_ref: "122"
+      quote: "emi := (float64(*alphaOut) / 1e9) * .41 * 360 * *c.TaoPrice * price.Float64()"
+      confidence: high
+    - claim_field: "/aggregation/normalization"
+      source_path: "targon/internal/callbacks/weights.go"
+      line_ref: "167-170"
+      quote: "// we are sending weights via the bittensor sdk which is going to normalize anyways, so no use doing it here."
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "weights-api/main.py"
+      line_ref: "64-75"
+      quote: "res = await sub.set_weights( wallet=wallet, uids=req.uids, weights=req.weights, netuid=NETUID, version_key=req.version, wait_for_finalization=True ...)"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "targon/internal/callbacks/callbacks.go"
+      line_ref: "39-40"
+      quote: "tempo := 360 return ((tempo + 1 + c.Deps.Env.Netuid + 1 + int(b.Number)) % (tempo + 1))"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "targon/internal/callbacks/callbacks.go"
+      line_ref: "173-210"
+      quote: "if getBlocksFrom(h) != 1 { return } ... if int(h.Number)-c.StartupBlock < 180 { ... return } uids, scores, results, err := getWeights(c) ... setWeights(c, uids, scores)"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "targon/internal/cvm/cvm.go"
+      line_ref: "128-130"
+      quote: "if nonce != attestRes.UserData.Nonce { return nil, errors.New(\"invalid nonce\") }"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "targon/internal/callbacks/cvms.go"
+      line_ref: "72-75"
+      quote: "if c.NodeIds[userData.CVMID] { err = errors.New(\"duplicate node id found\") } c.NodeIds[userData.CVMID] = true"
+      confidence: high
+    - claim_field: "/sub_competitions/notes"
+      source_path: "docs/miner/miner.md"
+      line_ref: "60-72"
+      quote: "\"SEV-CPU-AMD-EPYC-V4\": { \"max_bid\": 100, \"emission\": 5, \"min_cluster_size\": 0 ... } \"TDX-NVCC-NVIDIA-H200\": { \"max_bid\": 300, \"emission\": 60, \"min_cluster_size\": 8 ... }"
+      confidence: high
+    - claim_field: "/sub_competitions/structure"
+      source_path: "targon/internal/callbacks/weights.go"
+      line_ref: "113-118"
+      quote: "auctionName := c.VerifiedNodes[uid][n.IP].AuctionName auc, ok := c.Auctions[auctionName]"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "targon/internal/callbacks/weights.go"
+      line_ref: "27-30"
+      quote: "func setWeights(c *targon.Core, uids []uint16, scores []uint16) { defer func() { resetState(c) }()"
+      confidence: high
+    - claim_field: "/mechanism_status"
+      source_path: "docs/miner/miner.md"
+      line_ref: "50"
+      quote: "Miner emissions are currently split proportionally to public demand."
+      confidence: high
+  unresolved:
+    - "Auction parameters (target_cards, target_price, max_price, min_cluster_size, burn_distribution, tao_price, emission pool fractions) are served dynamically by the off-chain tower API and are not literal constants in this repo; only example values appear in docs/miner/miner.md."
+    - "The exact fraction of emission burned vs. paid is data-dependent (residual U16MAX - sumScores) and not a fixed constant; cannot be pinned without live auction data."
+    - "Number of concurrent sub-competition auctions is dynamic (keys of c.Auctions from the tower API); not fixed in source."

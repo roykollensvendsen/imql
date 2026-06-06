@@ -1,0 +1,253 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: mixed
+mechanism_status_notes: >-
+  This repo is a multi-challenge MASTER orchestrator only. It does not itself score
+  miners: each challenge runs in its own external Docker image/repo (not in this tree)
+  and exposes GET /internal/v1/get_weights returning hotkey->weight. The master
+  normalizes each challenge's weights, applies fixed per-challenge emission percentages,
+  aggregates a weighted sum, maps hotkeys to UIDs, and calls set_weights. No burn logic
+  exists. The actual scoring signals / ground truth are delegated to challenge repos
+  that are not part of this codebase, so the operative scoring is undocumented here.
+
+subnet:
+  name: "Platform (PlatformNetwork multi-challenge)"
+  owner_repo: "CortexLM__platform"
+  netuid: null
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners submit to one or more independent challenges, each of which lives in its own
+    repository and Docker image and owns its scoring logic, submissions, and SQLite state.
+    Each challenge returns per-hotkey weights via a standard internal get_weights contract.
+    The master platform aggregates these across active challenges using fixed emission
+    percentages and submits final per-UID weights to Bittensor. What a miner produces and
+    how it is scored is defined entirely by each external challenge, not by this repo.
+  submission_format: [other]
+  submission_format_other: >-
+    Per-challenge / challenge-defined. The master is challenge-agnostic; each external
+    challenge image defines its own submission type and scoring.
+
+scoring_signals:
+  - name: per_challenge_hotkey_weight
+    metric_kind: other
+    metric_kind_other: >-
+      Opaque per-hotkey weight emitted by each external challenge's GET
+      /internal/v1/get_weights; the underlying metric is challenge-defined and not visible
+      in this repo.
+    direction: higher_is_better
+    weight: null
+    normalization: other
+    normalization_other: "l1 / sum-to-one across the challenge's hotkeys (value / total)"
+    notes: >-
+      Each challenge's raw weights are L1-normalized (sum-to-one) by normalize_weights in
+      master/aggregator.py before being scaled by the challenge emission share. Non-finite
+      and non-positive weights are dropped by _clean_weights.
+
+ground_truth_sources:
+  - kind: other
+    kind_other: >-
+      External challenge container. Ground truth/scoring is owned by each independent
+      challenge repo+image and is not present in this codebase; the master only consumes
+      the get_weights output over an authenticated internal HTTP contract.
+    description: >-
+      "A challenge is an independent repository and Docker image. It owns its logic, public
+      routes, submissions, scoring data, and SQLite schema."
+    source_identifier: "GET /internal/v1/get_weights"
+    trust_model: unknown
+    notes: >-
+      Per-challenge shared token authenticates the internal endpoint. A signed-weights
+      fallback (HMAC-SHA256) can supply cached weights when a challenge is unavailable.
+
+aggregation:
+  method: weighted_average
+  composition: weighted_sum
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: "No burn / no emission-to-owner logic anywhere in the master pipeline."
+  notes: >-
+    aggregate_challenge_weights: emissions = normalize_emissions (each active challenge's
+    emission_percent divided by total active emission_percent); for each ok challenge,
+    hotkey_scores[hotkey] += emission * normalized_weight. Hotkeys with no UID in the
+    metagraph are dropped, then uid_scores are L1-normalized to sum to one. A challenge
+    whose get_weights fails (and has no usable fallback) is skipped (contributes zero).
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    MasterWeightService.run_epoch: read metagraph hotkey->uid cache, collect get_weights
+    from each active challenge (with capability check and optional signed fallback),
+    aggregate, then WeightSetter.set_weights(final.uids, final.weights). Empty weights are
+    skipped; with no subtensor it is a dry run.
+  on_chain_call: set_weights
+  tempo_or_interval: "360 seconds (master.epoch_interval_seconds default)"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No temporal smoothing/EMA of the final weights in the master; weights are recomputed
+      fresh each epoch from current challenge get_weights output.
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      _clean_weights drops any hotkey weight that is non-finite or <= 0 before
+      normalization; unknown hotkeys (not in metagraph hotkey_to_uid) are ignored when
+      mapping to UIDs.
+  - kind: other
+    kind_other: >-
+      Per-challenge shared-token authentication on the internal get_weights endpoint plus
+      HMAC-SHA256 signed-weights fallback with max-age expiry; protects weight provenance
+      rather than miner-side gaming.
+    enforcement: rejection
+    description: >-
+      FallbackWeightClient verifies the HMAC signature of cached weights and rejects
+      payloads older than max_age_seconds; the master blocks /internal/* from the public
+      proxy.
+
+sub_competitions:
+  structure: multi_mechanism
+  stages: []
+  count: null
+  notes: >-
+    Multiple independent challenges run concurrently, each its own scoring mechanism with a
+    fixed emission_percent share; the master blends their normalized weights. Number of
+    challenges is registry-driven (not a fixed constant in this repo).
+
+per_miner_state:
+  tracked: false
+  state_kinds: []
+  status_values: []
+  reset_policy: ""
+  notes: >-
+    The master holds no per-miner ledger; it recomputes from challenge get_weights each
+    epoch. Any per-miner state lives inside each external challenge's SQLite, outside this
+    repo.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/architecture.md"
+    - "docs/validator.md"
+    - "docs/challenges.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "README.md"
+      line_ref: "11"
+      quote: "[![Python](https://img.shields.io/badge/python-3.12-blue.svg)]"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "25"
+      quote: >-
+        A master validator orchestrates independent challenge containers, exposes a registry
+        and public challenge proxy, collects `get_weights` from each active challenge,
+        normalizes emissions, maps hotkeys to UIDs, and submits final weights to Bittensor.
+    - claim_field: "/task/submission_format_other"
+      source_path: "docs/challenges.md"
+      line_ref: "7"
+      quote: >-
+        A challenge is an independent repository and Docker image. It owns its logic, public
+        routes, submissions, scoring data, and SQLite schema.
+    - claim_field: "/scoring_signals/0/metric_kind_other"
+      source_path: "README.md"
+      line_ref: "143-154"
+      quote: '"GET /internal/v1/get_weights" ... `get_weights` returns hotkey weights: { "weights": { "5F...hotkey": 1.0 } }'
+    - claim_field: "/scoring_signals/0/normalization"
+      source_path: "src/platform_network/master/aggregator.py"
+      line_ref: "21-26"
+      quote: >-
+        def normalize_weights(raw): cleaned = _clean_weights(raw); total = sum(cleaned.values());
+        if total <= 0: return {}; return {hotkey: value / total for ...}
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "src/platform_network/master/aggregator.py"
+      line_ref: "9-18"
+      quote: >-
+        if not math.isfinite(weight): continue; if weight <= 0: continue
+    - claim_field: "/ground_truth_sources/0/notes"
+      source_path: "docs/challenges.md"
+      line_ref: "17"
+      quote: "The internal endpoint is authenticated with a per-challenge shared token mounted by the master."
+    - claim_field: "/aggregation/method"
+      source_path: "src/platform_network/master/aggregator.py"
+      line_ref: "44-49"
+      quote: >-
+        emission = emissions.get(result.slug, 0.0); for hotkey, weight in
+        normalize_weights(result.weights).items(): hotkey_scores[hotkey] += emission * weight
+    - claim_field: "/aggregation/normalization"
+      source_path: "src/platform_network/master/aggregator.py"
+      line_ref: "60-65"
+      quote: >-
+        total = sum(uid_scores.values()); if total > 0: normalized = {uid: value / total for ...}
+    - claim_field: "/aggregation/notes"
+      source_path: "src/platform_network/master/aggregator.py"
+      line_ref: "29-34"
+      quote: >-
+        active = {r.slug: max(float(r.emission_percent), 0.0) for r in results if r.ok}; total =
+        sum(active.values()); ... return {slug: value / total for slug, value in active.items()}
+    - claim_field: "/aggregation/burn_allocation/enabled"
+      source_path: "src/platform_network/master/aggregator.py"
+      line_ref: "37-71"
+      quote: >-
+        aggregate_challenge_weights ... return FinalWeights(uids=..., weights=..., hotkey_weights=...)
+        [no burn/owner allocation present]
+    - claim_field: "/weight_setting/method"
+      source_path: "src/platform_network/master/service.py"
+      line_ref: "65-76"
+      quote: >-
+        async def run_epoch(...): hotkey_to_uid = self.metagraph_cache.get(); results = await
+        self.collect_weights(...); final = aggregate_challenge_weights(results, hotkey_to_uid);
+        self.weight_setter.set_weights(final.uids, final.weights)
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "src/platform_network/bittensor/weight_setter.py"
+      line_ref: "23-30"
+      quote: >-
+        return self.subtensor.set_weights(wallet=self.wallet, netuid=self.netuid, uids=uids,
+        weights=weights, wait_for_inclusion=False, wait_for_finalization=False)
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "src/platform_network/config/settings.py"
+      line_ref: "21"
+      quote: "epoch_interval_seconds: int = 360"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "src/platform_network/master/aggregator.py"
+      line_ref: "13-17"
+      quote: >-
+        if not math.isfinite(weight): continue; if weight <= 0: continue; cleaned[str(hotkey)] = weight
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "src/platform_network/master/weight_fallback.py"
+      line_ref: "84-88"
+      quote: >-
+        if not verify_payload(...): raise WeightFallbackError("invalid fallback weight signature");
+        age = ...; if age > self.max_age_seconds: raise WeightFallbackError("fallback weights are too old")
+    - claim_field: "/sub_competitions/structure"
+      source_path: "README.md"
+      line_ref: "156"
+      quote: >-
+        The master normalizes each challenge, applies fixed emission percentages, ignores unknown
+        hotkeys, and sets a challenge contribution to zero if it fails.
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "src/platform_network/schemas/challenge.py"
+      line_ref: "29"
+      quote: 'emission_percent: Decimal = Field(default=Decimal("0"), ge=0)'
+  unresolved:
+    - "/subnet/netuid — network.netuid defaults to 0 in settings.py; no real netuid is committed."
+    - "Actual scoring metric/ground truth per challenge — lives in external challenge repos not in this tree."
+    - "/aggregation/burn_allocation — emission_percent values per challenge are registry-driven, not constants in this repo; no burn UID/fraction exists."
+    - "Whether any challenge applies temporal smoothing/EMA — defined inside external challenge code, not visible here."

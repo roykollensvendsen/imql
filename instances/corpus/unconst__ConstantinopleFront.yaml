@@ -1,0 +1,271 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+# This repo is the marketing/landing-site frontend (React + Vite + TypeScript) for the
+# Constantinople subnet (SN97), not the validator/miner source. The incentive mechanism is
+# described only in human-readable docs (MinerDocsPage.tsx, public/SKILL.md, .well-known/
+# inference.json). No scoring/weight-setting code is present, so all numeric weights/thresholds
+# below come from prose. Live burn/dormancy state cannot be determined from this tree.
+mechanism_status: unknown
+mechanism_status_notes: >-
+  Docs-only frontend; no validator code in this repo. The site renders live weights/scores from
+  an external status API but contains no scoring logic, so whether the documented mechanism is
+  active, burning, or dormant on-chain is not determinable here.
+
+subnet:
+  name: "Constantinople"
+  owner_repo: "unconst__ConstantinopleFront"
+  netuid: 97
+  implementation_lang: none_docs_only
+
+task:
+  summary: >-
+    Miners serve always-on, OpenAI-compatible LLM inference (Qwen/Qwen2.5-7B-Instruct) on
+    decentralized GPUs. Alongside each inference response, a miner commits the model's hidden
+    state at a validator-chosen layer/position so the validator can verify the miner runs the
+    genuine model. Miners are rewarded for inference speed, hidden-state verification pass rate,
+    and consistency/uptime.
+  submission_format: [api_response, commitment_hash]
+
+scoring_signals:
+  - name: speed
+    metric_kind: throughput
+    direction: higher_is_better
+    weight: 0.40
+    normalization: none
+    notes: >-
+      "Speed (40%) ... Tokens per second and time to first token. Faster miners earn more."
+      Measured wall-clock at the gateway; self-reported metrics are capped.
+  - name: verification
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 0.40
+    normalization: none
+    notes: >-
+      "Verification (40%) ... Hidden state commitment pass rate and cosine similarity." Validator
+      recomputes the reference hidden state and compares via cosine similarity (verification
+      passes around cosine ~1.0; manifest cites threshold 0.995).
+  - name: consistency
+    metric_kind: uptime
+    direction: higher_is_better
+    weight: 0.20
+    normalization: none
+    notes: >-
+      "Consistency (20%) ... Uptime and reliability over time. Miners that maintain steady
+      performance with low variance get rewarded."
+
+ground_truth_sources:
+  - kind: reference_model
+    description: >-
+      The validator runs its own copy of Qwen/Qwen2.5-7B-Instruct, independently computes the
+      reference hidden state at the randomly chosen layer/position, and compares it to the
+      miner's commitment via cosine similarity. Honest miners on the correct model produce
+      near-identical hidden states (cosine ~1.0).
+    source_identifier: "Qwen/Qwen2.5-7B-Instruct"
+    trust_model: adversarial
+    notes: >-
+      Random layer/position selection plus per-request, per-miner nonce binding (cryptographic
+      hash) is described as anti-relay; miners cannot predict what is checked.
+  - kind: organic_traffic
+    description: >-
+      Speed and consistency are measured from real client inference requests routed through the
+      gateway (wall-clock TPS / TTFT, uptime).
+    source_identifier: "https://api.constantinople.cloud/v1"
+    trust_model: trusted
+    notes: "Self-reported throughput is clamped against gateway wall-clock measurements."
+
+aggregation:
+  method: weighted_average
+  composition: weighted_sum
+  normalization: none
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: >-
+      No burn described or implemented in this docs-only repo; not determinable on-chain from
+      this tree.
+  notes: >-
+    Documented as a three-factor weighted score: Speed 40% + Verification 40% + Consistency 20%.
+    Weights stated as percentages in prose; the precise combination formula and any
+    normalization/penalty multipliers are not given in source.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Validator sets per-miner weights on-chain based on the three-factor performance score; at each
+    tempo boundary Bittensor's Yuma Consensus distributes emissions proportional to weights.
+  on_chain_call: commit_reveal
+  tempo_or_interval: null
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA/SMA smoothing constant given in source. SKILL.md lists "On-chain weight setting via
+      commit-reveal"; StatusPage references a commit_reveal hyperparameter but no numeric tempo
+      is hard-coded in this repo.
+
+anti_gaming:
+  - kind: challenge_period
+    enforcement: penalty
+    description: >-
+      Hidden-state commitment protocol: validator demands the hidden state at a random layer and
+      position each request; fabricated/cached/wrong-model states yield low cosine similarity and
+      "trigger immediate score penalties."
+  - kind: commit_reveal
+    enforcement: rejection
+    description: >-
+      Each commitment is bound to a per-request, per-miner nonce via cryptographic hash to prevent
+      relay/proxy attacks (forwarding to another miner's hardware or an external API is caught by
+      nonce verification).
+  - kind: rate_limit
+    enforcement: penalty
+    description: >-
+      "TPS inflation -- Self-reported metrics are validated against wall-clock measurements at the
+      gateway. Inflated numbers are automatically clamped."
+  - kind: liveness_check
+    enforcement: penalty
+    description: >-
+      Commitment evasion (dropping/ignoring commitment requests) is tracked; high miss rates draw
+      "progressive weight penalties that compound." Intermittent availability lowers consistency
+      score over time. Penalties are described as "layered, compounding."
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: true
+  state_kinds: [performance_ledger]
+  status_values: []
+  reset_policy: ""
+  notes: >-
+    Docs imply per-miner tracking over time (pass rate, miss rate, consistency/variance, uptime;
+    StatusPage shows per-UID avg_cosine, passed/failed challenges, reliability, weight). No
+    explicit state machine or reset policy is documented in source.
+
+documentation:
+  status: docs_only
+  source_version: null
+  primary_docs:
+    - "src/components/MinerDocsPage.tsx"
+    - "public/SKILL.md"
+    - "public/.well-known/inference.json"
+    - "src/components/DocsPage.tsx"
+  completeness: low
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8"
+  extracted_at: "2026-06-06"
+  confidence_overall: low
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "public/.well-known/inference.json"
+      line_ref: "5"
+      quote: '"subnet": 97,'
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "package.json"
+      line_ref: "1"
+      quote: "React/Vite/TypeScript frontend landing site; no validator or scoring code present in repo"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "public/SKILL.md"
+      line_ref: "124-136"
+      quote: "Decentralized GPU Miners (serve inference + hidden states) -> Audit Validator (samples requests, verifies hidden states) -> Scoring Engine (speed x verification x consistency)"
+      confidence: medium
+    - claim_field: "/task/submission_format"
+      source_path: "src/components/MinerDocsPage.tsx"
+      line_ref: "63-67"
+      quote: "the validator tells the miner to commit the hidden state at a randomly selected layer and position. The miner returns this commitment alongside the inference response."
+      confidence: medium
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "src/components/MinerDocsPage.tsx"
+      line_ref: "110-115"
+      quote: 'Speed (40%) ... Tokens per second and time to first token. Faster miners earn more. We measure wall-clock speed from the gateway -- self-reported metrics are capped'
+      confidence: high
+    - claim_field: "/scoring_signals/1/weight"
+      source_path: "src/components/MinerDocsPage.tsx"
+      line_ref: "116-120"
+      quote: 'Verification (40%) ... Hidden state commitment pass rate and cosine similarity. Miners running the correct model honestly will consistently pass at cosine ~1.0.'
+      confidence: high
+    - claim_field: "/scoring_signals/2/weight"
+      source_path: "src/components/MinerDocsPage.tsx"
+      line_ref: "121-125"
+      quote: 'Consistency (20%) Uptime and reliability over time. Miners that maintain steady performance with low variance get rewarded.'
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/kind"
+      source_path: "src/components/MinerDocsPage.tsx"
+      line_ref: "68-74"
+      quote: "The validator then independently computes the reference hidden state using its own copy of the model and compares it against the miner's commitment via cosine similarity."
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "public/.well-known/inference.json"
+      line_ref: "9-11"
+      quote: '"name": "Qwen/Qwen2.5-7B-Instruct", ... "verification": "hidden_state_cosine_similarity_0.995"'
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "src/components/MinerDocsPage.tsx"
+      line_ref: "107-108"
+      quote: "Your weight is determined by three factors:"
+      confidence: medium
+    - claim_field: "/weight_setting/method"
+      source_path: "src/components/MinerDocsPage.tsx"
+      line_ref: "101-106"
+      quote: "The validator sets weights on-chain for each miner based on their performance. At each tempo boundary, Bittensor's Yuma Consensus distributes emissions proportional to these weights."
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "public/SKILL.md"
+      line_ref: "132"
+      quote: "On-chain weight setting via commit-reveal"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "src/components/MinerDocsPage.tsx"
+      line_ref: "212-215"
+      quote: "Fake hidden states -- Returning fabricated or cached hidden states from a different model will produce low cosine similarity and trigger immediate score penalties."
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "src/components/MinerDocsPage.tsx"
+      line_ref: "75-78"
+      quote: "Each commitment is also bound to a per-request, per-miner nonce via cryptographic hash. This prevents relay attacks where a miner forwards requests to someone else's hardware."
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "src/components/MinerDocsPage.tsx"
+      line_ref: "234-235"
+      quote: "TPS inflation -- Self-reported metrics are validated against wall-clock measurements at the gateway. Inflated numbers are automatically clamped."
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "src/components/MinerDocsPage.tsx"
+      line_ref: "227-228"
+      quote: "Commitment evasion -- Dropping or ignoring commitment requests is tracked. Miners with high miss rates receive progressive weight penalties that compound with other scores."
+      confidence: high
+    - claim_field: "/per_miner_state/tracked"
+      source_path: "src/components/StatusPage.tsx"
+      line_ref: "123"
+      quote: "uid: number; avg_cosine: number; passed_challenges: number; failed_challenges: number;"
+      confidence: medium
+    - claim_field: "/documentation/status"
+      source_path: "src/components/MinerDocsPage.tsx"
+      line_ref: "55-57"
+      quote: "Everything you need to start mining on SN97 -- hardware requirements, setup instructions, and how the verification and incentive system works."
+      confidence: high
+  unresolved:
+    - "Exact aggregation formula: whether the three factors combine additively (weighted_sum) or multiplicatively (SKILL.md flow writes 'speed x verification x consistency'); chosen weighted_sum from the percentage framing but this is ambiguous."
+    - "Cosine similarity pass/fail threshold used in scoring: docs say 'cosine ~1.0' and manifest string '0.995'; no scoring-code constant to confirm it is a hard threshold vs a continuous score input."
+    - "Per-signal normalization, any penalty multipliers, and how compounding penalties are numerically applied -- not given in source."
+    - "weight_setting cadence/tempo (blocks), commit-reveal interval, and any EMA/SMA smoothing alpha -- not hard-coded in this repo (StatusPage reads them from a live API)."
+    - "mechanism_status (active vs burn vs dormant) -- no on-chain weight-setting code in this frontend repo to determine operative reality."
+    - "Burn allocation existence/fraction -- not mentioned in docs and no code to confirm."
+  extractor_notes: >-
+    Repo is the Constantinople (SN97) marketing site, not the subnet implementation. Actual
+    validator/miner source is referenced as github.com/unconst/Constantinople (not in this tree).
+    All scoring weights (40/40/20) and the cosine reference come from human-readable docs, not
+    code; numeric thresholds beyond those literal percentages and the '0.995' manifest string were
+    left unresolved rather than guessed.

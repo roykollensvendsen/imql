@@ -1,0 +1,261 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Synthetic and organic molecular-dynamics jobs are scored live: validators evaluate miner
+  energies, run a credibility-gated validation, and update an EMA scores tensor that becomes
+  on-chain weights. No burn/owner-allocation logic is present in the source.
+
+subnet:
+  name: "Mainframe (Subnet 25, formerly Protein-Folding)"
+  owner_repo: "macrocosm-os__mainframe"
+  netuid: 25
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners run molecular-dynamics protein-folding simulations (OpenMM) drawn from a Global Job
+    Pool and post their solutions to S3. The objective is to find the lowest free-energy
+    configuration of a specified protein system; reported energy (analogous to loss) is the
+    quality metric. Validators recompute/validate the energy of submitted checkpoints. For each
+    challenge the top-K (K=5) unique miners are ranked, with 80% of the challenge reward going to
+    the top miner and the remaining 20% distributed in linearly decreasing fashion to the rest.
+  submission_format: [content_link, signals]
+
+scoring_signals:
+  - name: reported_energy
+    metric_kind: loss
+    direction: lower_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      Miners are ranked by their reported (validator-checked) free energy; lower energy is better.
+      Validator takes the median of the last ENERGY_WINDOW_SIZE (10) energy steps as the final
+      energy. Only the top-K (5) valid, non-duplicate energies receive reward.
+  - name: credibility
+    metric_kind: reward
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Per-miner, per-task credibility (EMA, starting 0.50) determines the probability that the
+      validator re-validates a submission: validation_probability = 1 if cred <= 0.5 else
+      exp(-4.605*(cred-0.5)). Acts as a gating/trust signal rather than an additive score.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Protein structures pulled from RCSB / PDBe and simulated deterministically via OpenMM;
+      energy is recomputable so both miners and validators can verify a configuration's energy.
+    source_identifier: "rcsb | pdbe (--protein.input_source)"
+    trust_model: oracle
+    notes: >-
+      Energy minimization is deterministic given the system config and seed, so the ground truth
+      is the recomputed energy of the submitted checkpoint.
+
+aggregation:
+  method: rank_based
+  composition: gated
+  normalization: l1
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: "No burn or owner-allocation logic found in source."
+  notes: >-
+    Per challenge: best miner gets top_reward = TOP_SYNTHETIC_MD_REWARD = 0.80; remaining (1 -
+    0.80 = 0.20) is split among the other non-zero miners via divide_decreasing (weights n,
+    n-1, ..., 1 scaled to sum to 0.20). Ranking is done over the top-K=5 valid, non-duplicate
+    energies (sorted ascending). Final per-challenge rewards are multiplied by job.priority
+    (and an extra organic_priority_multiplier=10 for organic jobs). The final on-chain weights
+    are an L1 normalization (normalize p=1) of the EMA scores tensor.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    EMA scores tensor (per-miner) accumulated from per-job computed_rewards, then L1-normalized
+    (torch.nn.functional.normalize p=1) and passed through bittensor process_weights_for_netuid /
+    convert_weights_and_uids_for_emit before subtensor.set_weights. Validator-permit UIDs are
+    zeroed before normalization.
+  on_chain_call: set_weights
+  tempo_or_interval: "100 blocks (neuron.epoch_length default)"
+  smoothing:
+    kind: ema
+    alpha: null
+    window: null
+    notes: >-
+      Asymmetric EMA on the scores tensor: scores = alpha*reward + (1-alpha)*scores, with
+      alpha = neuron.positive_alpha (default 0.10) when reward > 0 else neuron.negative_alpha
+      (default 0.03). These are CLI defaults, not hard-coded constants. The credibility EMA uses
+      separate constants CREDIBILITY_ALPHA_POSITIVE=0.15 / CREDIBILITY_ALPHA_NEGATIVE=0.25.
+
+anti_gaming:
+  - kind: deduplication
+    enforcement: rejection
+    description: >-
+      Duplicate energies are rejected: a submission whose median energy is within
+      DIFFERENCE_THRESHOLD (1e-6) of an already-counted unique energy is flagged is_duplicate and
+      receives no reward. Each miner uses a separate random seed to force unique exploration.
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      Validator re-runs the simulation and compares its energy to the miner's reported energy;
+      if percent difference exceeds ANOMALY_THRESHOLD (1) the run is marked invalid
+      (reason "energy_difference_too_large") and scored zero.
+  - kind: code_inspection
+    enforcement: penalty
+    description: >-
+      State/checkpoint exploit detection: if the credibility pipeline sees reason
+      "state-checkpoint", the miner's score is halved (scores[uid] = 0.5 * scores[uid]).
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      Credibility-gated validation: low-credibility miners are validated with probability 1,
+      high-credibility miners less often (exp decay), starting credibility 0.50; invalid runs
+      push credibility down via the negative alpha.
+
+sub_competitions:
+  structure: multi_mechanism
+  stages: []
+  count: null
+  notes: >-
+    Mechanism is per-job-type via REWARD_REGISTRY / EVALUATION_REGISTRY (SyntheticMD, OrganicMD).
+    Organic jobs apply a 10x priority multiplier. README lists DFT as a planned future task
+    ("Coming soon..."). Currently molecular dynamics is the active task.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [reputation, cumulative_score]
+  status_values: []
+  reset_policy: >-
+    On hotkey replacement the miner's score is zeroed and miner_registry.reset() reinitializes its
+    credibility to STARTING_CREDIBILITY (0.50).
+  notes: >-
+    MinerRegistry tracks per-task credibility (EMA), credibility_over_time, and overall_credibility
+    (mean across tasks). The validator also maintains a persistent EMA scores tensor per UID.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "documentation/gjp/README.md"
+    - "documentation/api/README.md"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: /subnet/netuid
+      source_path: folding/utils/config.py
+      line_ref: "36"
+      quote: 'parser.add_argument("--netuid", type=int, help="Subnet netuid", default=25)'
+    - claim_field: /subnet/name
+      source_path: README.md
+      line_ref: "32"
+      quote: "Subnet 25, Mainframe (formerly known as Protein-Folding) is the first decentralized science subnet on Bittensor."
+    - claim_field: /task/summary
+      source_path: README.md
+      line_ref: "138-142"
+      quote: "miners compete to provide protein configurations that coincide with the lowest energy (analogous to loss). ... The top-K miners (currently, K = 5) are ranked, where 80% of the reward for that challenge is given to the top miner in the batch, and the remaining 20% is distributed to the (K-1) miners."
+    - claim_field: /scoring_signals/0/direction
+      source_path: folding/validators/reward.py
+      line_ref: "132-134"
+      quote: 'sorted_dict = dict(sorted(all_miner_logs.items(), key=lambda item: item[1]["reported_energy"]))'
+    - claim_field: /scoring_signals/0/notes
+      source_path: folding/validators/reward.py
+      line_ref: "257-261"
+      quote: 'energies[uid] = np.median(miner_registry.registry[uid].logs["checked_energies"]["final"][-c.ENERGY_WINDOW_SIZE :])'
+    - claim_field: /scoring_signals/1/notes
+      source_path: folding/registries/miner_registry.py
+      line_ref: "132-137"
+      quote: "validation_probability = (1 if miner_credibility <= 0.5 else math.exp(-4.605 * (miner_credibility - 0.5)))"
+    - claim_field: /ground_truth_sources/0/source_identifier
+      source_path: folding/utils/config.py
+      line_ref: "178-184"
+      quote: 'parser.add_argument("--protein.input_source", ... default="rcsb", choices=["rcsb", "pdbe"])'
+    - claim_field: /aggregation/notes
+      source_path: folding/rewards/md_rewards.py
+      line_ref: "41-78"
+      quote: "rewards[best_index] = top_reward ... rewards_per_miner = divide_decreasing(amount_to_distribute=1 - top_reward, number_of_elements=num_reminaing_miners)"
+    - claim_field: /aggregation/notes
+      source_path: folding/utils/constants.py
+      line_ref: "24"
+      quote: "TOP_SYNTHETIC_MD_REWARD = 0.80"
+    - claim_field: /aggregation/notes
+      source_path: folding/rewards/linear_reward.py
+      line_ref: "9-16"
+      quote: "weights = [number_of_elements - i for i in range(number_of_elements)] ... scaling_factor = amount_to_distribute / total_weight"
+    - claim_field: /aggregation/notes
+      source_path: folding/rewards/md_rewards.py
+      line_ref: "117-119"
+      quote: "organic_priority_multiplier = 10 ; return rewards * self.priority * organic_priority_multiplier"
+    - claim_field: /aggregation/normalization
+      source_path: folding/base/validator.py
+      line_ref: "146-148"
+      quote: "raw_weights = (torch.nn.functional.normalize(self.scores, p=1, dim=0).to(\"cpu\").numpy())"
+    - claim_field: /weight_setting/on_chain_call
+      source_path: folding/base/validator.py
+      line_ref: "177-185"
+      quote: "result = self.subtensor.set_weights(wallet=self.wallet, netuid=self.config.netuid, uids=uint_uids, weights=uint_weights, ..."
+    - claim_field: /weight_setting/tempo_or_interval
+      source_path: folding/utils/config.py
+      line_ref: "52-57"
+      quote: 'parser.add_argument("--neuron.epoch_length", ... help="The default epoch length (how often we set weights, measured in 12 second blocks).", default=100)'
+    - claim_field: /weight_setting/smoothing/notes
+      source_path: folding/base/validator.py
+      line_ref: "249-258"
+      quote: "alpha = (self.config.neuron.positive_alpha if rewards[ii] > 0 else self.config.neuron.negative_alpha) ... self.scores = (scattered_alpha * scattered_rewards + (1 - scattered_alpha) * self.scores)"
+    - claim_field: /weight_setting/smoothing/notes
+      source_path: folding/utils/config.py
+      line_ref: "355-367"
+      quote: '"--neuron.positive_alpha", ... default=0.10) ... "--neuron.negative_alpha", ... default=0.03)'
+    - claim_field: /anti_gaming/0/description
+      source_path: folding/validators/reward.py
+      line_ref: "225-229"
+      quote: "is_duplicate = any(abs(median_energy - energy) < c.DIFFERENCE_THRESHOLD for energy in unique_energies)"
+    - claim_field: /anti_gaming/0/description
+      source_path: folding/utils/constants.py
+      line_ref: "25"
+      quote: "DIFFERENCE_THRESHOLD = 1e-6  # The threshold for 2 energy values to be considered equal"
+    - claim_field: /anti_gaming/1/description
+      source_path: folding/validators/reward.py
+      line_ref: "209-221"
+      quote: "percent_diff = (abs((median_energy - reported_energy) / reported_energy) * 100) ... if percent_diff > c.ANOMALY_THRESHOLD: ... reason = \"energy_difference_too_large\""
+    - claim_field: /anti_gaming/2/description
+      source_path: neurons/validator.py
+      line_ref: "392-396"
+      quote: 'if reason == "state-checkpoint": ... self.scores[uid] = 0.5 * self.scores[uid]'
+    - claim_field: /anti_gaming/3/description
+      source_path: folding/utils/constants.py
+      line_ref: "21"
+      quote: "STARTING_CREDIBILITY = 0.50"
+    - claim_field: /per_miner_state/notes
+      source_path: folding/registries/miner_registry.py
+      line_ref: "112-127"
+      quote: "alpha = (c.CREDIBILITY_ALPHA_POSITIVE if cred > 0 else c.CREDIBILITY_ALPHA_NEGATIVE) ... miner.overall_credibility = round(mean(all_credibilities), 3)"
+    - claim_field: /per_miner_state/reset_policy
+      source_path: folding/base/validator.py
+      line_ref: "208-211"
+      quote: "if hotkey != self.metagraph.hotkeys[uid]: self.scores[uid] = 0  # hotkey has been replaced ; self.miner_registry.reset(miner_uid=uid)"
+    - claim_field: /sub_competitions/notes
+      source_path: folding/rewards/md_rewards.py
+      line_ref: "122-125"
+      quote: 'REWARD_REGISTRY = {"SyntheticMD": SyntheticMDReward, "OrganicMD": OrganicMDReward}'
+    - claim_field: /sub_competitions/notes
+      source_path: README.md
+      line_ref: "152-157"
+      quote: "### Density Functional Theory (DFT) ... Coming soon..."
+    - claim_field: /mechanism_status
+      source_path: neurons/validator.py
+      line_ref: "441-451"
+      quote: "model: BaseReward = REWARD_REGISTRY[job.job_type](priority=job.priority) ... job.computed_rewards = reward_event.rewards.numpy().tolist()"
+  unresolved:
+    - "Exact value of job.priority for synthetic jobs (store.py defaults priority to 1 via event.get('priority', 1); the live per-job priority assigned by the GJP is not in this repo)."
+    - "EMA alpha/window not fixed constants: weight-setting alphas are CLI-configurable (positive_alpha 0.10 / negative_alpha 0.03 defaults), so no single canonical value."

@@ -1,0 +1,342 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: full_burn
+mechanism_status_notes: >-
+  Operational defaults set burn_mode=True and burn_percentage=1.0
+  (DEFAULT_BURN_MODE = True, DEFAULT_BURN_PERCENTAGE = 1.0 in constants.py).
+  When burn_mode is True, _set_weights routes 100% of weight to BURN_UID
+  (UID 200) and the documented 8-stage scoring pipeline does not influence
+  on-chain weights. The full scoring path (classifier-graduated weight)
+  exists and runs, but only contributes to on-chain weights when an operator
+  or the remote Central API flips burn_mode off / lowers burn_percentage.
+
+subnet:
+  name: "Aurelius Protocol"
+  owner_repo: "Aurelius-Protocol__Aurelius-Protocol"
+  netuid: 37
+  implementation_lang: python
+
+task:
+  summary: >-
+    A miner is a Bittensor axon that serves a library of operator-authored
+    ethical-dilemma scenario configs (JSON). When a validator queries with a
+    ScenarioConfigSynapse, the miner returns the next config in round-robin
+    order, stamped with a work_id and signed by the miner's hotkey. The
+    validator runs the config through an 8-stage pipeline (version, schema,
+    work-id, work-token balance, rate limit, novelty, classifier gate,
+    Concordia generative-agent simulation, plus optional gatekeeper/semantic
+    coherence) and sets on-chain weight graduated by classifier confidence.
+    Accepted scenarios are simulated through Concordia; transcripts form
+    training data for moral-reasoning benchmarks (MoReBench).
+  submission_format: [content_link, commitment_hash]
+  submission_format_other: ""
+
+scoring_signals:
+  - name: classifier_confidence
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: 1.0
+    normalization: min_max
+    notes: >-
+      The only signal that produces a non-zero graduated weight. The Central
+      API classifier returns a confidence score; compute_weight maps a score
+      above threshold linearly into [WEIGHT_MIN=0.1, 1.0] via
+      (score - threshold) / (1 - threshold). Below threshold => WEIGHT_FAIL
+      (0.0). Default classifier_threshold = 0.5; custom tension_archetype
+      bumps threshold by DEFAULT_CUSTOM_ARCHETYPE_THRESHOLD_BUMP = 0.1.
+  - name: pipeline_gate_pass
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Gating signal, not additive. The 8-stage pipeline short-circuits on
+      first failure (version, schema, verify_work_id, work_token balance,
+      rate_limit, novelty, classifier, simulate, optional gatekeeper, optional
+      semantic_coherence). Any stage failure yields weight=WEIGHT_FAIL (0.0)
+      regardless of classifier confidence.
+
+ground_truth_sources:
+  - kind: llm_judgment
+    description: >-
+      Central-API-hosted classifier scores scenario configs for quality; an
+      optional remote-prompt LLM "gatekeeper" rubric judges whether the
+      Concordia transcript is a valid moral-reasoning outcome; optional
+      semantic coherence check via the configured LLM provider.
+    source_identifier: "Central API (https://new-collector-api-production.up.railway.app)"
+    trust_model: oracle
+    notes: >-
+      Classifier threshold, novelty threshold, gatekeeper prompt, and other
+      knobs are fetched from the Central API remote config and cached ~5 min.
+  - kind: reference_model
+    description: >-
+      Concordia (google-deepmind/concordia) generative-agent simulation run
+      in a sandboxed Docker container; the resulting transcript is the payload
+      that determines the miner's weight.
+    source_identifier: "ghcr.io/aurelius-protocol/aurelius-concordia"
+    trust_model: trusted
+    notes: "Simulation uses an OpenAI-compatible LLM (default deepseek-chat)."
+
+aggregation:
+  method: proportional
+  composition: gated
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: 0.1
+  burn_allocation:
+    enabled: true
+    address_or_uid: "200"
+    fraction: 1.0
+    dynamic: false
+    notes: >-
+      DEFAULT_BURN_MODE = True and DEFAULT_BURN_PERCENTAGE = 1.0. In burn_mode,
+      weights are np.array([1.0]) to BURN_UID (200). When burn_mode is off,
+      burn_percentage still carves a fixed slice: miner weights are normalized
+      to sum to 1.0 then scaled by (1 - burn_pct), and burn_pct is appended to
+      UID 200. burn_percentage is bounded (0.0, 1.0) in remote config.
+  notes: >-
+    Non-burn path: each passing miner's graduated weight (result.weight) is
+    multiplied by a validator consistency multiplier, then all miner weights
+    are normalized to sum to (1 - burn_pct). min_weight_floor (0.1) is
+    WEIGHT_MIN, the minimum weight a passing submission receives before
+    normalization.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    Main loop sets weights when blocks_since_last >= (weight_interval // 12).
+    DEFAULT_WEIGHT_INTERVAL = 300s => ~25 blocks. Burn_mode: single weight 1.0
+    to UID 200. Otherwise per-passing-miner graduated weight * consistency
+    multiplier, normalized to (1 - burn_pct), burn slice appended. Weights run
+    through process_weights_for_netuid before subtensor.set_weights(mechid=0).
+    Subtensor's own per-subnet weights rate limit defers most attempts.
+  on_chain_call: set_weights
+  tempo_or_interval: "TEMPO_BLOCKS = 360 blocks (~4320s); weight_interval default 300s (~25 blocks)"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA/SMA on the final reward in this repo. Cross-validator aggregation
+      is left to Bittensor Yuma consensus. A per-validator consistency
+      multiplier (rate - floor)/(1 - floor), with consistency_floor default
+      0.4, attenuates low-agreement validators but is not temporal smoothing.
+
+anti_gaming:
+  - kind: deduplication
+    enforcement: rejection
+    description: >-
+      Novelty check (stage 5) embeds the config and queries the Central API
+      FAISS novelty index; configs too similar (novelty_threshold default 0.88)
+      are rejected. Embedding is added to the index before token deduction;
+      fail-closed if indexing fails to prevent duplicate resubmission bypass.
+  - kind: rate_limit
+    enforcement: rejection
+    description: >-
+      Per-hotkey rate limiter (DEFAULT_RATE_LIMIT_PER_UID_PER_TEMPO = 1 per
+      TEMPO_SECONDS window), persisted across restarts.
+  - kind: collateral
+    enforcement: barrier
+    description: >-
+      Work-token economy: each accepted submission costs DEFAULT_WORK_TOKEN_COST
+      = 1.0 alpha (raised from 0.01 to mitigate Sybil). Balance checked in
+      stage 3 and deducted only after the full pipeline passes (stage 8);
+      zero-balance miners are rejected before simulation.
+  - kind: commit_reveal
+    enforcement: rejection
+    description: >-
+      Work-id verification (stage 2b): validator recomputes
+      sha256(config_json + hotkey + time_ns + nonce) and rejects on mismatch.
+      Freshness window (work_id_freshness_seconds default 300s) rejects stale
+      work ids; the work_id is signed by the miner hotkey.
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Self-validation prevention: validator never sets weight for its own
+      hotkey. Version gate rejects miners below remote min_miner_version.
+      Schema validation enforces scenario structure and a max config size
+      (DEFAULT_MAX_CONFIG_SIZE = 65536 bytes).
+  - kind: liveness_check
+    enforcement: penalty
+    description: >-
+      Ramp-up: for the first RAMP_UP_TEMPOS (3) tempos a validator skips miners
+      with validation_counts < MIN_VALIDATIONS_FOR_WEIGHT (2). Concordia
+      simulation runs sandboxed (capped CPU/RAM, egress allowlisted).
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: >-
+    Single mechanism. Scenarios carry one of 9 tension_archetype enum values
+    (or "custom"), but these are content tags within one task, not separate
+    scored competitions; "custom" only raises the classifier threshold.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, cooldown, reputation]
+  status_values: []
+  reset_policy: >-
+    Results retained RESULT_RETENTION_BLOCKS (= TEMPO_BLOCKS = 360 blocks)
+    after the recording cycle; results for hotkeys unseen for 3 tempos are
+    evicted. Validation counts persisted to disk for ramp-up survival.
+  notes: >-
+    Per-hotkey: latest PipelineResult (self.results), validation_counts
+    (ramp-up), last-seen time, and rate-limiter window. Off-chain in the
+    Central API: work-token balance and a per-miner work-token ledger;
+    novelty index of prior submissions; validator consistency / agreement_rate.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs: ["README.md"]
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract (Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/mechanism_status"
+      source_path: "aurelius/common/constants.py"
+      line_ref: "46-48"
+      quote: "DEFAULT_BURN_MODE = True\nDEFAULT_BURN_PERCENTAGE = 1.0"
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "34"
+      quote: "## Quickstart — Mainnet validator (SN 37)"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "aurelius/validator/validator.py"
+      line_ref: "10"
+      quote: "import bittensor as bt"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "138-147"
+      quote: >-
+        A miner is a Bittensor axon that serves a library of operator-authored
+        scenario configs. When a validator queries with a ScenarioConfigSynapse
+        ... The validator runs the returned config through an 8-stage pipeline
+        (schema, rate-limit, novelty, classifier, Concordia simulation, etc.)
+        and sets on-chain weights based on the outcome.
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "aurelius/common/constants.py"
+      line_ref: "90-102"
+      quote: >-
+        def compute_weight(classifier_score: float | None, threshold: float) -> float:
+        ... return max(WEIGHT_MIN, (classifier_score - threshold) / (1.0 - threshold))
+    - claim_field: "/scoring_signals/0/normalization"
+      source_path: "aurelius/common/constants.py"
+      line_ref: "86-87"
+      quote: "WEIGHT_FAIL = 0.0\nWEIGHT_MIN = 0.1  # Minimum weight for a passing submission"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "aurelius/validator/pipeline.py"
+      line_ref: "123-169"
+      quote: >-
+        # Stage 1: Version check ... if not result.passed: return
+        PipelineResult(weight=WEIGHT_FAIL, stages=stages)
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "aurelius/validator/pipeline.py"
+      line_ref: "500-503"
+      quote: "result = await self.api_client.classify_config(config, threshold)\n            confidence = result[\"confidence\"]\n            passed = result[\"passed\"]"
+    - claim_field: "/ground_truth_sources/1/description"
+      source_path: "README.md"
+      line_ref: "4-7"
+      quote: >-
+        validators score them through an 8-stage pipeline and run accepted
+        scenarios through Concordia generative-agent simulations.
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "aurelius/common/constants.py"
+      line_ref: "55"
+      quote: "BURN_UID = 200"
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "aurelius/common/constants.py"
+      line_ref: "47-48"
+      quote: "DEFAULT_BURN_MODE = True\nDEFAULT_BURN_PERCENTAGE = 1.0"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "aurelius/validator/validator.py"
+      line_ref: "959-961"
+      quote: "if self.remote_config.burn_mode:\n            uid_array = np.array([BURN_UID], dtype=np.int64)\n            weight_array = np.array([1.0], dtype=np.float32)"
+    - claim_field: "/aggregation/notes"
+      source_path: "aurelius/validator/validator.py"
+      line_ref: "1010-1019"
+      quote: >-
+        burn_pct = self.remote_config.burn_percentage
+            miner_share = 1.0 - burn_pct ... scaled_weights = [w / total_weight * miner_share for w in weights] ...
+            uids.append(BURN_UID)\n            scaled_weights.append(burn_pct)
+    - claim_field: "/aggregation/min_weight_floor"
+      source_path: "aurelius/common/constants.py"
+      line_ref: "87"
+      quote: "WEIGHT_MIN = 0.1  # Minimum weight for a passing submission"
+    - claim_field: "/weight_setting/method"
+      source_path: "aurelius/validator/validator.py"
+      line_ref: "635-639"
+      quote: >-
+        blocks_since = current_block - self.last_weight_block
+                block_interval = self.remote_config.weight_interval // 12
+                if blocks_since >= block_interval:
+                    await self._set_weights()
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "aurelius/validator/validator.py"
+      line_ref: "1040-1046"
+      quote: >-
+        return self.subtensor.set_weights(\n                wallet=self.wallet,\n
+        netuid=self.config.NETUID,\n                uids=processed_uids,\n
+        weights=processed_weights,\n                mechid=0,\n            )
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "aurelius/common/constants.py"
+      line_ref: "4-5"
+      quote: "TEMPO_BLOCKS = 360\nTEMPO_SECONDS = TEMPO_BLOCKS * 12  # ~4320s (~72 min)"
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "aurelius/validator/validator.py"
+      line_ref: "928-939"
+      quote: >-
+        floor = self.remote_config.consistency_floor ... if rate < floor: ...
+        return 0.0\n            return (rate - floor) / (1.0 - floor)
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "aurelius/validator/pipeline.py"
+      line_ref: "468-476"
+      quote: >-
+        threshold = self.remote_config.novelty_threshold
+                result = await self.api_client.check_novelty(... )
+                if not result.get("novel", True): ... return StageResult(passed=False, reason=msg, stage="novelty_check")
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "aurelius/common/constants.py"
+      line_ref: "32-33"
+      quote: "# Rate limiting\nDEFAULT_RATE_LIMIT_PER_UID_PER_TEMPO = 1"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "aurelius/common/constants.py"
+      line_ref: "35-36"
+      quote: "# Work token — cost per submission in alpha (raised from 0.01 to mitigate Sybil)\nDEFAULT_WORK_TOKEN_COST = 1.0"
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "aurelius/validator/pipeline.py"
+      line_ref: "414-418"
+      quote: >-
+        payload = config_json + miner_hotkey + synapse.work_id_time_ns + synapse.work_id_nonce
+                expected = hashlib.sha256(payload.encode()).hexdigest()
+                if expected != synapse.work_id:
+    - claim_field: "/anti_gaming/4/description"
+      source_path: "aurelius/validator/validator.py"
+      line_ref: "991-998"
+      quote: >-
+        if self.in_ramp_up and self.validation_counts[hotkey] < MIN_VALIDATIONS_FOR_WEIGHT:
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "aurelius/common/constants.py"
+      line_ref: "11-18"
+      quote: >-
+        RESULT_RETENTION_BLOCKS = TEMPO_BLOCKS
+    - claim_field: "/per_miner_state/notes"
+      source_path: "aurelius/validator/validator.py"
+      line_ref: "140-145"
+      quote: >-
+        self.results: dict[str, PipelineResult] = {} ...
+        self.validation_counts: dict[str, int] = defaultdict(int)
+    - claim_field: "/documentation/status"
+      source_path: "README.md"
+      line_ref: "385-413"
+      quote: >-
+        ## How it works ... Code landmarks: wire format in aurelius/protocol.py,
+        pipeline in aurelius/validator/pipeline.py
+  unresolved:
+    - "Exact live remote-config values (classifier_threshold, novelty_threshold, burn_mode, burn_percentage) are fetched from the Central API at runtime; only code defaults are citable here."
+    - "consistency_floor default (0.4) and min_consistency_reports (10) appear as DEFAULT_* constants but the live remote values are unknown."

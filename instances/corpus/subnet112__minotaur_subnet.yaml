@@ -1,0 +1,369 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: full_burn
+mechanism_status_notes: >-
+  _build_weights_mapping and build_bootstrap_or_champion_weights route 100% of
+  emissions to the subnet-owner hotkey (burn) until a "real miner-backed
+  champion" exists (is_real_miner_hotkey returns False for the genesis/empty
+  hotkey). The documented scored/ranked decay path only activates once a real
+  miner champion has been adopted, so the operative default is a full burn to
+  the owner hotkey.
+
+subnet:
+  name: "Minotaur — Agentic Intent Execution Platform"
+  owner_repo: "subnet112__minotaur_subnet"
+  netuid: 112
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners write and continuously update a "Solving Engine" (solver) that turns
+    user/agent App Intents (e.g. swaps) into execution plans. Validators run the
+    highest-scoring submitted solver inside isolated Docker containers, simulate
+    its plans on an Anvil fork, and double-score each plan against both a
+    JavaScript scoring module and an on-chain constraint score. Submissions are
+    benchmarked; the highest benchmark_score becomes the "champion" engine, and
+    weights are emitted toward champion-eligible miners (decay-ranked) — or
+    burned to the owner hotkey before a real champion exists.
+  submission_format: [source_code, compute_service]
+
+scoring_signals:
+  - name: plan_quality_js_score
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: 0.6
+    normalization: none
+    notes: >-
+      Plan is scored by the app's JavaScript scoring module via the JS engine
+      (PlanScorer.score / ScoringEngine._score_via_js). When no JS engine is
+      available, compute_mock_score returns a deterministic mock in [0.3,1.0].
+      In run_benchmark this term is combined with plan_quality_weight=0.6.
+      Marked llm_judgment as the closest enum to an app-defined scoring program
+      (see provenance.unresolved: metric_kind is a stress point).
+  - name: auto_trigger_accuracy
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.4
+    normalization: none
+    notes: >-
+      For auto-triggered intents, trigger_score is 1.0 if the solver's
+      trigger_decision matches trigger_ground_truth, else 0.0. Combined with
+      auto_trigger_weight=0.4 in run_benchmark. Only applied when the intent is
+      auto-triggered and ground truth is available; otherwise the composite is
+      just the plan JS score.
+  - name: on_chain_constraint_score
+    metric_kind: other
+    metric_kind_other: on_chain_constraint_score_bps
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Gating signal (not additive). simulation.on_chain_score must be >=
+      threshold (app_def.config.on_chain_threshold, default 5000 BPS) or the
+      proposal is rejected (ON_CHAIN_SCORE_BELOW_THRESHOLD). Also the JS
+      local_score must be >= score_threshold (default 0.5) or rejected
+      (SCORE_BELOW_THRESHOLD).
+
+ground_truth_sources:
+  - kind: market_data
+    description: >-
+      Plans are re-simulated on an Anvil fork (mainnet/Base/Bittensor-EVM) of
+      real chain state; simulation produces gas_used, token_transfers and an
+      on_chain_score used to gate and score solver plans.
+    source_identifier: "Anvil fork (ANVIL_RPC_URL / BASE_RPC_URL / ETHEREUM_RPC_URL)"
+    trust_model: oracle
+    notes: >-
+      README: "Execute the solver software ... within isolated Docker
+      containers to simulate plans on an Anvil fork." Followers independently
+      re-simulate (FOLLOWER_PROPOSAL_RESIMULATE default "1").
+  - kind: deterministic_dataset
+    description: >-
+      Benchmark scenarios with trigger_ground_truth (correct auto-trigger
+      decision per intent app_id) used to score trigger accuracy.
+    source_identifier: "run_benchmark trigger_ground_truth"
+    trust_model: trusted
+    notes: "Validator-supplied ground-truth trigger decisions per intent."
+
+aggregation:
+  method: exponential_decay_ema
+  composition: hybrid
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: 0.6
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "subnet owner hotkey (SUBNET_OWNER_HOTKEY / OWNER_HOTKEY env)"
+    fraction: 1.0
+    dynamic: false
+    notes: >-
+      build_bootstrap_or_champion_weights returns {owner: 1.0} (100% burn) when
+      no real miner champion exists; once a real champion exists, burn stops and
+      weights go to champion-eligible miners.
+  notes: >-
+    Champion-eligible scored submissions are sorted by benchmark_score
+    descending; raw weight = weight_decay**rank (rank 0 = champion,
+    weight_decay default 0.6), then normalized to sum to 1.0. Composition is
+    hybrid: per-plan benchmark_score itself is a weighted sum (0.6*JS_score +
+    0.4*trigger_score) gated by JS and on-chain thresholds, while the
+    cross-miner weight distribution is exponential rank decay.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Epoch loop (default 5-minute windows per README; ChampionWeights epoch
+    default 60s) builds a hotkey→weight mapping via _build_weights_mapping, then
+    WeightsEmitter.emit_async maps hotkeys→UIDs and calls subtensor.set_weights.
+    Only the leader (highest-stake validator) emits (metagraph_sync.is_leader).
+  on_chain_call: set_weights
+  tempo_or_interval: "epoch (README default 5 minutes; ChampionWeights epoch_seconds default 60)"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA/SMA smoothing of the final emitted weights found; weights are
+      rebuilt and normalized each epoch.
+
+anti_gaming:
+  - kind: code_inspection
+    enforcement: rejection
+    description: >-
+      is_submission_champion_eligible rejects inline-source/subprocess
+      submissions (non-None solver_path or repo_url starting 'source://'),
+      requires an image_tag and an immutable image_id starting 'sha256:'.
+  - kind: commit_reveal
+    enforcement: rejection
+    description: >-
+      Signed provenance required by default (REQUIRE_SIGNED_PROVENANCE and
+      REQUIRE_ASYMMETRIC_PROVENANCE default True). verify_signed_provenance
+      checks the submission's provenance against allowed signers / expected
+      image_id; failure makes the submission not champion-eligible.
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Consensus proposals must carry a valid EIP-191 proposer_signature from a
+      registered validator (verify_proposer_signature); followers independently
+      re-simulate plans (FOLLOWER_PROPOSAL_RESIMULATE default 1) and re-score
+      via JS rather than trusting the leader's reported score.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      Leader-based OrderBook: only the highest-stake validator maintains the
+      OrderBook and emits weights (metagraph_sync.is_leader); consensus requires
+      a quorum (QUORUM_BPS, default 8000).
+
+sub_competitions:
+  structure: single
+  stages: []
+  count: null
+  notes: >-
+    Single champion competition: submissions ranked by benchmark_score; the top
+    eligible submission becomes the champion engine run across all validators.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [status_enum, cumulative_score]
+  status_values: [SCORED, ADOPTED]
+  reset_policy: >-
+    StateStore persists watermarks, last scores and last emitted block per
+    validator; recoverable across restarts via JSON snapshot + .backup.
+  notes: >-
+    Submissions carry a status (only SCORED/ADOPTED are champion-eligible) and a
+    benchmark_score; champion submission tracked with submission_id, image_id,
+    hotkey, activated_round_id/epoch. The active champion can be re-benchmarked
+    (_refresh_incumbent_score) when scenarios change.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/validator/README.md"
+    - "docs/miner/README.md"
+    - "docs/code-verified-runtime.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "minotaur_subnet/validator/weights_emitter.py"
+      line_ref: "35"
+      quote: "netuid: int = 112,"
+    - claim_field: "/subnet/name"
+      source_path: "README.md"
+      line_ref: "1"
+      quote: "# Minotaur — Agentic Intent Execution Platform"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "7"
+      quote: >-
+        Miners compete to write the best Solving Engine; validators run it,
+        simulate plans, double-score results, and reach off-chain consensus.
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "78"
+      quote: >-
+        Miners provide and continuously update their Solving Engine software.
+        The highest-scoring engine becomes the Champion and runs across all
+        validators.
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "minotaur_subnet/harness/orchestrator.py"
+      line_ref: "569"
+      quote: "plan_quality_weight: float = 0.6"
+    - claim_field: "/scoring_signals/0/metric_kind"
+      source_path: "minotaur_subnet/validator/scoring_engine.py"
+      line_ref: "250-251"
+      quote: "score_result = await self.js_engine.score(app_id, plan, simulation, state)\n        return score_result.score"
+    - claim_field: "/scoring_signals/1/weight"
+      source_path: "minotaur_subnet/harness/orchestrator.py"
+      line_ref: "568"
+      quote: "auto_trigger_weight: float = 0.4"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "minotaur_subnet/harness/orchestrator.py"
+      line_ref: "723-728"
+      quote: >-
+        trigger_correct = (br.trigger_decision == gt)
+        br.trigger_score = 1.0 if trigger_correct else 0.0
+        br.score = (config.auto_trigger_weight * br.trigger_score +
+        config.plan_quality_weight * score_result.score)
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "minotaur_subnet/validator/scoring_engine.py"
+      line_ref: "443-456"
+      quote: >-
+        threshold = (app_def.config.on_chain_threshold ... else 5000) ...
+        if simulation.on_chain_score < threshold: return {"approved": False,
+        ... ON_CHAIN_SCORE_BELOW_THRESHOLD ...}
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "minotaur_subnet/validator/scoring_engine.py"
+      line_ref: "459-463"
+      quote: >-
+        if local_score < score_threshold: return {"approved": False,
+        "reason": f"Score {local_score:.4f} below threshold",
+        "reason_code": RejectionCode.SCORE_BELOW_THRESHOLD.value}
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "minotaur_subnet/harness/orchestrator.py"
+      line_ref: "39"
+      quote: "_SCORE_THRESHOLD = 0.5"
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "README.md"
+      line_ref: "62"
+      quote: >-
+        Execute the solver software written by miners within isolated Docker
+        containers to simulate plans on an Anvil fork.
+    - claim_field: "/ground_truth_sources/0/notes"
+      source_path: "minotaur_subnet/validator/scoring_engine.py"
+      line_ref: "285-288"
+      quote: >-
+        resimulate_proposals = os.environ.get("FOLLOWER_PROPOSAL_RESIMULATE",
+        "1",).strip().lower() in ("1", "true", "yes", "on")
+    - claim_field: "/aggregation/method"
+      source_path: "minotaur_subnet/epoch/manager.py"
+      line_ref: "1130-1134"
+      quote: >-
+        # Apply exponential decay: weight = decay^(rank-1)
+        for rank, sub in enumerate(scored): weight = self._weight_decay ** rank
+    - claim_field: "/aggregation/decay_rate"
+      source_path: "minotaur_subnet/epoch/manager.py"
+      line_ref: "129"
+      quote: "weight_decay: float = 0.6,"
+    - claim_field: "/aggregation/normalization"
+      source_path: "minotaur_subnet/epoch/manager.py"
+      line_ref: "1136-1139"
+      quote: >-
+        # Normalize to sum=1
+        total = sum(raw_weights.values())
+        if total > 0: return {k: v / total for k, v in raw_weights.items()}
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "minotaur_subnet/weight_policy.py"
+      line_ref: "24-37"
+      quote: >-
+        def build_bootstrap_or_champion_weights(...): """Return 100% burn-to-owner
+        before miner champion, else 100% to champion.""" if
+        is_real_miner_hotkey(champion_hotkey): ... return {champion_hotkey.strip(): 1.0}
+        owner = ... if owner: return {owner: 1.0}
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "minotaur_subnet/weight_policy.py"
+      line_ref: "10-15"
+      quote: >-
+        def get_subnet_owner_hotkey() -> str: return
+        (os.environ.get("SUBNET_OWNER_HOTKEY", "").strip() or
+        os.environ.get("OWNER_HOTKEY", "").strip())
+    - claim_field: "/mechanism_status"
+      source_path: "minotaur_subnet/epoch/manager.py"
+      line_ref: "1098-1114"
+      quote: >-
+        Before a real miner-backed champion exists, emits 100% to the subnet
+        owner hotkey (burn behavior). ... if not
+        is_real_miner_hotkey(self._champion.hotkey): return
+        build_bootstrap_or_champion_weights(self._champion.hotkey,
+        owner_hotkey=self._owner_hotkey,)
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "minotaur_subnet/validator/weights_emitter.py"
+      line_ref: "118-126"
+      quote: >-
+        result = self.subtensor.set_weights(wallet=self.wallet,
+        netuid=self.netuid, uids=uid_array, weights=weight_array,
+        version_key=self.version_key, ...)
+    - claim_field: "/weight_setting/method"
+      source_path: "minotaur_subnet/validator/weights_emitter.py"
+      line_ref: "63-65"
+      quote: >-
+        # BT-8: Only the leader should emit weights
+        if self.metagraph_sync is not None and not self.metagraph_sync.is_leader:
+        logger.debug("Skipping weight emission — not leader")
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "README.md"
+      line_ref: "64"
+      quote: "Run epochs (time windows, default: 5 minutes) to collect validation results"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "minotaur_subnet/harness/champion_policy.py"
+      line_ref: "39-53"
+      quote: >-
+        if getattr(submission, "solver_path", None): return False,
+        "source/subprocess submission is not champion-eligible by policy" ...
+        if not str(image_id).startswith("sha256:"): return False, ...
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "minotaur_subnet/harness/champion_policy.py"
+      line_ref: "60-61"
+      quote: >-
+        require_provenance = _env_true("REQUIRE_SIGNED_PROVENANCE", default=True)
+        require_asymmetric = _env_true("REQUIRE_ASYMMETRIC_PROVENANCE", default=True)
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "minotaur_subnet/validator/scoring_engine.py"
+      line_ref: "56-73"
+      quote: >-
+        def verify_proposer_signature(self, body: dict) ... Rejecting unsigned
+        consensus proposal (CONSENSUS_REQUIRE_SIGNED_PROPOSALS=1)
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "README.md"
+      line_ref: "32"
+      quote: "Leader-based OrderBook: The highest-stake validator maintains the OrderBook of App Intents."
+    - claim_field: "/per_miner_state/status_values"
+      source_path: "minotaur_subnet/epoch/manager.py"
+      line_ref: "562"
+      quote: "if submission.status not in (SubmissionStatus.SCORED, SubmissionStatus.ADOPTED):"
+    - claim_field: "/per_miner_state/notes"
+      source_path: "minotaur_subnet/epoch/manager.py"
+      line_ref: "564"
+      quote: "if submission.benchmark_score is None or submission.benchmark_score <= 0:"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "README.md"
+      line_ref: "332"
+      quote: >-
+        Runtime state (watermarks, last scores, last emitted block) is stored
+        under the validator's data directory (StateStore).
+    - claim_field: "/documentation/status"
+      source_path: "README.md"
+      line_ref: "300-301"
+      quote: >-
+        ### Code-Verified Runtime (Current)
+        - [Runtime Guide](docs/code-verified-runtime.md) - Canonical runtime
+        behavior from current code paths
+  unresolved:
+    - "metric_kind of the JS plan score: the score comes from an app-defined JavaScript scoring module run in the JS engine; no fixed metric semantics are in this repo, so metric_kind is approximated as llm_judgment (app-defined scoring program). compute_mock_score is only the fallback."
+    - "Exact epoch cadence used for weight emission in production: README says 5 minutes; ChampionWeights.epoch_seconds defaults to 60; SOLVER_ROUND_EPOCH_SECONDS env can override. No single authoritative constant."
+    - "version_key default 6 and max_attempts default 10 in WeightsEmitter are commit-reveal tuning params, not scoring constants; not mapped to a schema field."

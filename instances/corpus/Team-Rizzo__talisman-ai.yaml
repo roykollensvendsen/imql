@@ -1,0 +1,299 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+# Live validators compute a USD-pegged points->weight allocation and redirect ALL
+# un-earned emission to BURN_UID (189) via weights[BURN_UID] = 1 - min(total_percent,100)/100.
+# Miner points are real (+1 per accepted tweet/telegram message), but unless the
+# subnet's total earned points are large, the dominant share of emission is burned.
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  Earned weight per miner is derived from points converted to a USD-pegged fraction of
+  miner alpha emission (get_percent_needed_to_equal_points). The residual fraction
+  (1 - min(total_percent_needed,100)/100) is assigned to BURN_UID=189 in
+  calculate_weights(). The legacy BaseValidatorNeuron.set_weights() burn_modifier
+  (burn_modifier=0.9 -> burn_uid 189) is commented out and not used; burn instead
+  happens dynamically inside calculate_weights via the residual.
+
+subnet:
+  name: "Talisman AI (SN45) — Perception Subnet for On-Chain Trading Insights"
+  owner_repo: "Team-Rizzo__talisman-ai"
+  netuid: 45
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners receive batches of X (Twitter) posts and Telegram messages from validators over
+    Bittensor (TweetBatch / TelegramBatch synapses) and return an LLM classification for each
+    item: subnet_id (which Bittensor subnet it is about), sentiment, content_type,
+    technical_quality, market_analysis, and impact_potential. Validators re-run their own
+    analyzer on a sampled item and require an EXACT match on those categorical fields; a fully
+    matching batch earns +1 point per item, a mismatch penalizes the miner for the epoch.
+  submission_format: [api_response, signals]
+
+scoring_signals:
+  - name: classification_exact_match
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      Binary per-batch acceptance. validate_miner_batch samples sample_size=1 item and requires
+      m_subnet/sentiment/content_type/technical_quality/market_analysis/impact_potential to match
+      the validator's re-classification (case-insensitive for strings). is_valid only when
+      matches == sample_size and zero discrepancies. Accepted batches reward +1 per item.
+  - name: batch_completeness
+    metric_kind: other
+    metric_kind_other: returned_batch_size_equals_sent
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Gate: miner must return exactly what was sent (len(tweet_batch) == len(sent_batch)); a size
+      mismatch adds a penalty and resets the items, bypassing the classification check.
+
+ground_truth_sources:
+  - kind: llm_judgment
+    description: >-
+      The validator's own SubnetRelevanceAnalyzer / TelegramRelevanceAnalyzer re-classifies a
+      sampled post/message with the configured LLM (e.g. Qwen/Qwen3-32B via LLM_BASE) and treats
+      its output as ground truth for the exact-match comparison.
+    source_identifier: "talisman_ai/analyzer/scoring.py (validate_miner_batch / validate_miner_telegram_batch)"
+    trust_model: oracle
+    notes: >-
+      X API validation (post existence, author/timestamp/metric checks) is stated to be performed
+      API-side before items reach validators; validators only do LLM analysis re-checking.
+
+aggregation:
+  method: proportional
+  composition: gated
+  normalization: l1
+  normalization_other: ""
+  temperature: null
+  decay_rate: null
+  min_weight_floor: 0.003
+  burn_allocation:
+    enabled: true
+    address_or_uid: "189"
+    fraction: null
+    dynamic: true
+    notes: >-
+      weights[config.BURN_UID] = (1 - (min(total_percent_needed, 100) / 100)) in
+      calculate_weights(); BURN_UID defaults to 189. The burned fraction is the residual of the
+      total USD-pegged percent earned by all miners, so it is computed, not fixed.
+  notes: >-
+    Per-miner weight = percent_needed_to_equal_points(points) (USD-pegged via TAO/alpha price and
+    USD_PRICE_PER_POINT=0.040), floored at MIN_PERCENT_PER_POINT=0.003 per point, scaled to <=100%
+    total, then converted to fraction. update_scores() then OVERWRITES self.scores with these
+    weights (no EMA: self.scores = scattered_rewards). BaseValidatorNeuron.set_weights() L1-normalizes
+    self.scores (norm = ||scores||_1) before process_weights_for_netuid.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    ValidationClient.run() aggregates local + validator-broadcast points for target_epoch =
+    current_epoch - 2 (delayed E-2 window), zeroes a UID's reward when penalized by >=2 validators
+    or when penalties >= rewards, calls calculate_weights() (which assigns the residual to BURN_UID),
+    then update_scores(weights, uids). BaseNeuron.sync() calls set_weights() when block - last_update
+    > neuron.epoch_length (default 100 blocks). set_weights() L1-normalizes scores and emits via
+    subtensor.set_weights().
+  on_chain_call: set_weights
+  tempo_or_interval: "100 blocks (neuron.epoch_length default)"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      update_scores() sets self.scores = scattered_rewards directly (the EMA comment is vestigial;
+      no moving average is applied). MinerReward keeps points bucketed per epoch (last 10 epochs).
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Anti-cherry-picking: the validator rebuilds the original sent batch from its local store and
+      requires the returned batch size to equal it; mismatch -> penalty + reset (forward_tweets /
+      _handle_miner_batch_response in neurons/validator.py).
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      Re-classification exact-match: validator re-runs its analyzer on a sampled item and penalizes
+      (+1 penalty, items reset to unprocessed) if any of the 6 categorical fields disagree.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      Penalties only zero a miner's reward when >=2 validators (local + broadcast) penalized that UID
+      in the target epoch (uid_validator_counts[uid] >= 2 in validation_client.py).
+  - kind: rate_limit
+    enforcement: penalty
+    description: >-
+      Idempotent reward: each tweet_id / message_id is rewarded at most once (is_rewarded /
+      mark_rewarded guards in neurons/validator.py).
+
+sub_competitions:
+  structure: multi_mechanism
+  stages:
+    - name: x_tweets
+      role: main
+      advancement_rule: "exact-match accept -> +1 point per tweet (validate_miner_batch, SubnetRelevanceAnalyzer)"
+    - name: telegram_messages
+      role: main
+      advancement_rule: "exact-match accept -> +1 point per message (validate_miner_telegram_batch, TelegramRelevanceAnalyzer)"
+  count: 2
+  notes: >-
+    Two parallel data-source pipelines (X posts and Telegram messages) share the same +1-per-item
+    points scheme and the same calculate_weights burn allocation.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, performance_ledger]
+  status_values: []
+  reset_policy: >-
+    MinerReward / MinerPenalty store epoch -> {hotkey: points}; only the last 10 epochs are kept
+    (max_epochs = 10, delete_oldest_epoch). Rewards/penalties are applied for the delayed epoch
+    E-2; per-item rewards are one-shot (idempotent via tweet/message store flags).
+  notes: >-
+    Tracked as epoch-bucketed integer points (MinerReward.add_reward adds +1) and epoch-bucketed
+    penalties (MinerPenalty.add_penalty). Validators also broadcast compact epoch snapshots to
+    other validators (RewardBroadcastStore / PenaltyBroadcastStore).
+
+documentation:
+  status: docs_and_code
+  source_version: "V3"
+  primary_docs:
+    - "README.md"
+    - "talisman_ai/validator/README.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8"
+  extracted_at: "2026-06-06"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "talisman_ai/utils/burn.py"
+      line_ref: "14"
+      quote: "NETUID = 45"
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "189-193"
+      quote: "-m neurons.miner \\\n  --netuid 45 \\"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "talisman_ai/config.py"
+      line_ref: "1-2"
+      quote: "Centralized configuration loader for talisman_ai_subnet."
+    - claim_field: "/task/summary"
+      source_path: "talisman_ai/analyzer/scoring.py"
+      line_ref: "112-120"
+      quote: "All fields require exact match:\n    subnet_id, sentiment, content_type, technical_quality, market_analysis, impact_potential"
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "53-58"
+      quote: "Receives TweetBatch requests from validators over the Bittensor network\n- Analyzes each tweet using LLM to determine"
+    - claim_field: "/scoring_signals/0/metric_kind"
+      source_path: "talisman_ai/analyzer/scoring.py"
+      line_ref: "233"
+      quote: "is_valid = matches == sample_size and len(discrepancies) == 0"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "talisman_ai/analyzer/scoring.py"
+      line_ref: "181-188"
+      quote: "all_ok = subnet_ok and sentiment_ok and content_ok and tech_ok and market_ok and impact_ok"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "206-211"
+      quote: "if len(tweet_batch) != len(sent_batch):\n            bt.logging.warning(\n                f\"[VALIDATION] Batch size mismatch from miner {miner_hotkey} \""
+    - claim_field: "/ground_truth_sources/0/kind"
+      source_path: "neurons/validator.py"
+      line_ref: "219-224"
+      quote: "# Validate by re-running analyzer on sampled posts.\n        loop = asyncio.get_running_loop()\n        is_valid, validation_result = await loop.run_in_executor(\n            self._validation_executor,\n            validate_miner_batch, tweet_batch, self._analyzer, 1\n        )"
+    - claim_field: "/aggregation/method"
+      source_path: "talisman_ai/utils/burn.py"
+      line_ref: "190-194"
+      quote: "def calculate_weights(rewards: list[Reward], metagraph) -> np.ndarray:\n    \"\"\"\n    Calculates the weights for a given list of points and hotkeys."
+    - claim_field: "/aggregation/min_weight_floor"
+      source_path: "talisman_ai/utils/burn.py"
+      line_ref: "195-196"
+      quote: "# Minimum percent per point to survive uint16 conversion (1/65535 ... )\n    MIN_PERCENT_PER_POINT = 0.003"
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "talisman_ai/config.py"
+      line_ref: "126"
+      quote: "BURN_UID = int(os.getenv(\"BURN_UID\", \"189\"))"
+    - claim_field: "/aggregation/burn_allocation/dynamic"
+      source_path: "talisman_ai/utils/burn.py"
+      line_ref: "238"
+      quote: "weights[config.BURN_UID] = (1 - (min(total_percent_needed, 100) / 100))"
+    - claim_field: "/aggregation/notes"
+      source_path: "talisman_ai/utils/burn.py"
+      line_ref: "172-187"
+      quote: "Returns the percentage of the total miner alpha needed to equal the given points over the epoch length."
+    - claim_field: "/aggregation/notes"
+      source_path: "talisman_ai/config.py"
+      line_ref: "121"
+      quote: "USD_PRICE_PER_POINT = float(os.getenv(\"USD_PRICE_PER_POINT\", \"0.040\"))"
+    - claim_field: "/aggregation/normalization"
+      source_path: "talisman_ai/base/validator.py"
+      line_ref: "569-576"
+      quote: "norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True)\n...\n        raw_weights = self.scores / norm"
+    - claim_field: "/weight_setting/method"
+      source_path: "talisman_ai/validator/validation_client.py"
+      line_ref: "286-292"
+      quote: "target_epoch = current_epoch - 2\n...\n                    local_rewards_map = self._validator._miner_reward.get_rewards(epoch=target_epoch)"
+    - claim_field: "/weight_setting/method"
+      source_path: "talisman_ai/validator/validation_client.py"
+      line_ref: "368-372"
+      quote: "weights = calculate_weights(rewards, self._validator.metagraph)\n...\n                self._validator.update_scores(weights, self._validator.metagraph.uids.tolist())"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "talisman_ai/base/validator.py"
+      line_ref: "611-619"
+      quote: "result, msg = self.subtensor.set_weights(\n            wallet=self.wallet,\n            netuid=self.config.netuid,\n            uids=uint_uids,\n            weights=uint_weights,"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "talisman_ai/utils/config.py"
+      line_ref: "84-89"
+      quote: "\"--neuron.epoch_length\",\n        type=int,\n        help=\"The default epoch length (how often we set weights, measured in 12 second blocks).\",\n        default=100,"
+    - claim_field: "/weight_setting/method"
+      source_path: "talisman_ai/base/neuron.py"
+      line_ref: "168-172"
+      quote: "(self.block - self.metagraph.last_update[self.uid])\n            > self.config.neuron.epoch_length"
+    - claim_field: "/weight_setting/smoothing/kind"
+      source_path: "talisman_ai/base/validator.py"
+      line_ref: "700-702"
+      quote: "self.scores: np.ndarray = (\n            scattered_rewards\n        )"
+    - claim_field: "/mechanism_status"
+      source_path: "talisman_ai/base/validator.py"
+      line_ref: "578-582"
+      quote: "# # Apply burn modifier: redirect portion of emissions to burn_uid\n        # if self.burn_modifier > 0 and 0 <= self.burn_uid < len(raw_weights):"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "talisman_ai/validator/validation_client.py"
+      line_ref: "344-347"
+      quote: "for uid, count in uid_validator_counts.items():\n                    if count >= 2:\n                        penalized_uids.add(uid)"
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "neurons/validator.py"
+      line_ref: "277-282"
+      quote: "if not self._tweet_store.is_rewarded(tweet.id):\n                self._miner_reward.add_reward(miner_hotkey, 1)"
+    - claim_field: "/sub_competitions/structure"
+      source_path: "neurons/validator.py"
+      line_ref: "33-34"
+      quote: "from talisman_ai.analyzer.scoring import validate_miner_batch, validate_miner_telegram_batch"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "talisman_ai/utils/reward.py"
+      line_ref: "50-53"
+      quote: "max_epochs = 10\n            while len(self.epoch_rewards) > max_epochs:\n                self.delete_oldest_epoch()"
+    - claim_field: "/per_miner_state/notes"
+      source_path: "talisman_ai/utils/reward.py"
+      line_ref: "63-66"
+      quote: "def add_reward(self, hotkey: str, reward: int):\n        self.update_current_epoch()\n        rewards = self.epoch_rewards[self.current_epoch]\n        rewards[hotkey] = rewards.get(hotkey, 0) + reward"
+    - claim_field: "/documentation/status"
+      source_path: "README.md"
+      line_ref: "81-93"
+      quote: "V3 rewards are tracked as **epoch-bucketed points** inside validators:\n\n- ✅ **Valid batch**: miner earns points (currently +1 per accepted tweet)"
+  unresolved:
+    - "Exact MODEL used by the analyzer is env-driven (MODEL defaults to 'null'); README mentions Qwen/Qwen3-32B and DeepSeek-V3 as examples but no authoritative literal in code."
+    - "scoring.py compute_post_score/score_post_entry (RELEVANCE_WEIGHT=0.50, VALUE_WEIGHT=0.40, RECENCY_WEIGHT=0.10) appear to be a value/recency scoring path NOT wired into the V3 binary points reward; their role in live emission is unconfirmed — the reward path uses +1 per accepted item, not these weights."
+    - "talisman_ai/validator/README.md describes a token/sentiment tolerance scoring (TOKEN_TOLERANCE=0.05, quantity modifiers 1.00/0.95/0.90) that does not match the actual V3 exact-match code in analyzer/scoring.py; treated as stale documentation."
+    - "Whether penalties additionally subtract from BURN residual vs only zeroing miner reward is bounded by code read but full live emission split depends on chain-side alpha price."
+  extractor_notes: >-
+    Python Bittensor subnet (netuid 45). Real per-miner incentive exists (+1 point per accepted
+    X/Telegram classification item), converted to a USD-pegged weight via on-chain alpha/TAO price
+    (USD_PRICE_PER_POINT=0.040) with a 0.003%/point floor, and the residual emission assigned to
+    BURN_UID=189 inside calculate_weights -> partial_burn. The legacy fixed burn_modifier=0.9 in
+    set_weights is commented out. No EMA smoothing (scores overwritten each cycle). Weights computed
+    on a delayed E-2 epoch window and combined with validator-to-validator broadcasts.

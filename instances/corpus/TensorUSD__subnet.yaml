@@ -1,0 +1,288 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+# Two mechanisms (mechid 0 = liquidation auctions, mechid 1 = price oracle), both with
+# concrete reward code. Burn is wired into both reward functions but the live call sites
+# pass burn_weight_percent=0, so no burn is active in the checked-in code.
+mechanism_status: active
+mechanism_status_notes: >-
+  Both reward functions accept burn_uid/burn_weight_percent and can route weight to a burn
+  UID, but forward.py and forward_mech1.py both call them with burn_weight_percent=0, so burn
+  is inactive in the committed code. Rewards fall back to weight 1.0 on UID 0 only when there
+  are no auction wins / no submissions.
+
+subnet:
+  name: "TensorUSD Subnet"
+  owner_repo: "TensorUSD__subnet"
+  netuid: 113
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners participate in two mechanisms for the TensorUSD stablecoin system. Mechanism 0:
+    bid in on-chain liquidation auctions of undercollateralized vaults; validators read
+    finalized AuctionWin records from a local SQLite DB and reward winners by how much they
+    paid relative to the debt balance. Mechanism 1: a price oracle where miners submit TAO/USD
+    prices to an oracle contract each round and validators reward submissions whose price is
+    within an accepted percentage of the actual round price.
+  submission_format: [signals, api_response]
+
+scoring_signals:
+  - name: auction_win_overpay
+    metric_kind: reward
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      Mechanism 0. Per win: bonus_ratio = min((winning_bid - debt_balance)/debt_balance, 0.20);
+      reward = bonus_ratio + 1.0. So paying exactly the debt gives 1.0; paying >=20% over gives
+      1.2 (header comment says up to 2.0 but the BONUS_THRESHOLD cap is 0.20). Multiple wins by
+      the same hotkey accumulate additively.
+  - name: oracle_price_accuracy
+    metric_kind: regression_error
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      Mechanism 1. accepted_diff = 0.05. diff_percent = |submitted - actual|/actual; if
+      diff_percent <= 0.05 then reward = 2.0 - diff_percent/0.05 (so 2.0 at exact match, 1.0 at
+      the 5% boundary). Submissions beyond 5% deviation get no reward. README quotes a different
+      tiered scheme (1.0 / 0.85 / 0.0) that does not match the code.
+
+ground_truth_sources:
+  - kind: market_data
+    description: >-
+      Mechanism 1 reference price is the actual round price fetched from the oracle contract
+      (validators query get_round_price(round_id)); miners source TAO/USD from CoinMarketCap.
+    source_identifier: "oracle_contract.get_round_price / CoinMarketCap"
+    trust_model: oracle
+    notes: ""
+  - kind: organic_traffic
+    description: >-
+      Mechanism 0 ground truth is finalized on-chain auction outcomes recorded as AuctionWin
+      rows in the validator's local SQLite DB (winner_hotkey, winning_bid, debt_balance,
+      block_number).
+    source_identifier: "AuctionWin (validator SQLite db)"
+    trust_model: oracle
+    notes: ""
+
+aggregation:
+  method: proportional
+  composition: other
+  composition_other: >-
+    The two mechanisms are scored and weighted independently (separate scores arrays and
+    separate set_weights calls per mechid); within a mechanism, per-miner rewards are summed
+    and then L1-normalized at weight-setting time.
+  normalization: l1
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: "0"
+    fraction: null
+    dynamic: true
+    notes: >-
+      burn_weight = (total_reward/(1-burn_weight_percent)) * burn_weight_percent is computed in
+      both reward functions, but both call sites pass burn_weight_percent=0, so no burn weight
+      is added. UID 0 only receives weight 1.0 as a fallback when there are no wins/submissions.
+  notes: >-
+    Rewards are returned as a raw array per mechanism; normalization to weights happens in
+    set_weights via L1 norm (raw_weights = self.scores / norm).
+
+weight_setting:
+  cadence: per_round
+  method: >-
+    Per mechanism: update_scores scatters the reward array into the mechanism's scores array
+    (alpha hardcoded to 1, i.e. no EMA — full overwrite), then set_weights(mechid) L1-normalizes
+    scores, processes them via process_weights_for_netuid, and calls subtensor.set_weights with
+    the mechid.
+  on_chain_call: set_weights
+  tempo_or_interval: "epoch_length default 100 blocks; mech0 sleeps tempo//2*12s, mech1 sleeps 300s"
+  smoothing:
+    kind: none
+    alpha: 1.0
+    window: null
+    notes: >-
+      update_scores has a commented-out moving_average_alpha and instead hardcodes alpha = 1, so
+      updated_scores = 1*scattered_rewards + 0*scores — each step fully replaces prior scores
+      (no EMA smoothing). A --neuron.moving_average_alpha default 0.1 arg exists but is unused.
+
+anti_gaming:
+  - kind: collateral
+    enforcement: barrier
+    description: >-
+      Mechanism 0 requires miners to actually pay TUSDT in on-chain auctions (winning_bid against
+      debt_balance); reward is grounded in real on-chain auction wins recorded in the DB, so a
+      miner must outbid and pay to earn.
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Only wins whose winner_hotkey is in metagraph.hotkeys are rewarded; mech1 only rewards
+      submissions whose price is within accepted_diff (5%) of the actual round price, rejecting
+      out-of-band submissions.
+
+sub_competitions:
+  structure: multi_mechanism
+  stages:
+    - name: "Mechanism 0 - Liquidation auctions"
+      role: main
+      advancement_rule: ""
+    - name: "Mechanism 1 - Price oracle"
+      role: main
+      advancement_rule: ""
+  count: 2
+  notes: >-
+    Two parallel Bittensor mechanisms (mechid 0 and 1) run as concurrent forward loops with
+    independent scores arrays (self.scores, self.scores_mech1) and independent set_weights calls.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, performance_ledger]
+  status_values: []
+  reset_policy: >-
+    scores arrays persisted to state.npz (scores, scores_mech1). Hotkeys replaced in the
+    metagraph have their scores zeroed on resync. With alpha=1 each step overwrites scores, so
+    they are effectively reset every step rather than accumulated across steps.
+  notes: >-
+    Mechanism 0 also keeps a SQLite AuctionWin ledger; processed wins are marked with tempo_block
+    so they are only counted once per tempo window.
+
+documentation:
+  status: docs_and_code
+  source_version: "SN113"
+  primary_docs:
+    - "README.md"
+    - "docs/validator.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract / Claude Opus 4.8"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "1"
+      quote: "# TensorUSD Subnet (SN113)"
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "README.md"
+      line_ref: "15"
+      quote: "1. **Python 3.10+** installed"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "41-44"
+      quote: >-
+        Miners can participate in **two mechanisms** to earn rewards: - **Mechanism 0**:
+        Liquidation auctions (bid on undercollateralized vaults) - **Mechanism 1**: Price oracle
+        (submit TAO/USD prices)
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "tensorusd/validator/reward.py"
+      line_ref: "29-52"
+      quote: >-
+        BASE_REWARD = 1.0 ... BONUS_THRESHOLD = 0.20 ... bonus_ratio = min((winning_bid -
+        debt_balance) / debt_balance, BONUS_THRESHOLD); reward = bonus_ratio + BASE_REWARD
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "tensorusd/validator/reward.py"
+      line_ref: "101-104"
+      quote: >-
+        hotkey_rewards[win.winner_hotkey] = (hotkey_rewards.get(win.winner_hotkey, 0.0) + reward)
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "tensorusd/validator/reward.py"
+      line_ref: "175-184"
+      quote: >-
+        accepted_diff = 0.05 ... diff_percent = diff / actual_price; if diff_percent <=
+        accepted_diff: reward = 2.0 - diff_percent / accepted_diff
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "tensorusd/validator/forward_mech1.py"
+      line_ref: "31-33"
+      quote: "to_validate_round_price = self.oracle_contract.get_round_price(to_validate_round_id)"
+      confidence: high
+    - claim_field: "/ground_truth_sources/1/source_identifier"
+      source_path: "tensorusd/validator/reward.py"
+      line_ref: "85-93"
+      quote: >-
+        wins = (session.query(AuctionWin).filter(AuctionWin.block_number > tempo_start_block,
+        AuctionWin.block_number <= tempo_end_block, AuctionWin.tempo_block.is_(None),).all())
+      confidence: high
+    - claim_field: "/aggregation/normalization"
+      source_path: "tensorusd/base/validator.py"
+      line_ref: "272-279"
+      quote: >-
+        norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True) ... raw_weights =
+        self.scores / norm
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "tensorusd/validator/reward.py"
+      line_ref: "125-131"
+      quote: >-
+        if burn_uid is not None and 0 < burn_weight_percent < 1.0: ... burn_weight =
+        (total_reward / (1 - burn_weight_percent)) * burn_weight_percent
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/enabled"
+      source_path: "tensorusd/validator/forward.py"
+      line_ref: "48-51"
+      quote: "burn_uid=0, # TODO: get this from api burn_weight_percent=0,"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "tensorusd/base/validator.py"
+      line_ref: "308-317"
+      quote: >-
+        result, msg = self.subtensor.set_weights(wallet=self.wallet, netuid=self.config.netuid,
+        uids=uint_uids, weights=uint_weights, ... version_key=self.spec_version, mechid=mechid,)
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "tensorusd/base/validator.py"
+      line_ref: "407-410"
+      quote: >-
+        # alpha: float = self.config.neuron.moving_average_alpha alpha: float = 1 ...
+        updated_scores: np.ndarray = alpha * scattered_rewards + (1 - alpha) * scores
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "tensorusd/utils/config.py"
+      line_ref: "89-94"
+      quote: >-
+        "--neuron.epoch_length", ... "The default epoch length (how often we set weights,
+        measured in 12 second blocks).", default=100,
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "tensorusd/validator/forward_mech1.py"
+      line_ref: "12"
+      quote: "SLEEP_TIME = 300  # Sleep for 5 minutes between mech1 validations, adjust as needed"
+      confidence: high
+    - claim_field: "/sub_competitions/structure"
+      source_path: "tensorusd/base/validator.py"
+      line_ref: "124-128"
+      quote: >-
+        tasks = [asyncio.create_task(forward_with_sync(mechid=0)),
+        asyncio.create_task(forward_with_sync(mechid=1)),]
+      confidence: high
+    - claim_field: "/per_miner_state/state_kinds"
+      source_path: "tensorusd/base/validator.py"
+      line_ref: "424-430"
+      quote: >-
+        np.savez(self.config.neuron.full_path + "/state.npz", step=self.step,
+        scores=self.scores, scores_mech1=self.scores_mech1, hotkeys=self.hotkeys,)
+      confidence: high
+    - claim_field: "/per_miner_state/notes"
+      source_path: "tensorusd/validator/reward.py"
+      line_ref: "107-108"
+      quote: "for win in processed_wins: win.tempo_block = tempo_end_block"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "tensorusd/validator/reward.py"
+      line_ref: "99-101"
+      quote: >-
+        if win.winner_hotkey in metagraph.hotkeys: reward = calculate_win_reward(win.winning_bid,
+        win.debt_balance)
+      confidence: high
+  unresolved:
+    - "No moving-average smoothing is applied (alpha hardcoded to 1); the --neuron.moving_average_alpha default 0.1 arg is defined but unused — chosen smoothing kind is none."
+    - "README mech1 reward tiers (1.0/0.85/0.0 by accuracy band) do not match the code formula (2.0 - diff_percent/0.05); code treated as authoritative."
+    - "Auction reward header docstring claims up to 2x bonus, but BONUS_THRESHOLD=0.20 caps the bonus at +0.2 (max 1.2); code value used."
+    - "burn_weight_percent is hardcoded to 0 at both call sites with a TODO to source it from an API; whether burn is active in production is unknown from the repo."

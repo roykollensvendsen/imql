@@ -1,0 +1,270 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  The validator routes all miner scoring to an external API (api.storyai.art /score-miners/),
+  not the local scoring/ modules. Weights apply a "burn UID" mechanism that diverts a dynamic
+  owner_share (max(0.10, 0.50 - 0.01*num_miners)) of all weight to the subnet owner UID every
+  weight-setting round, while the documented 100-point local scoring code (technical/structure/
+  content/narrative) is not invoked in the live validation path.
+
+subnet:
+  name: "StoryNet Subnet"
+  owner_repo: "StorynetAI__storynet-subnet"
+  netuid: 92
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners generate AI-powered interactive story content across a 4-stage pipeline
+    (blueprint, characters, story_arc, chapters). The validator deterministically selects a
+    task type by block, queries miners, then submits each miner's structured JSON output to an
+    external scoring API which returns a 0-100 score per miner (with technical/structure/content/
+    narrative breakdown). EMA-smoothed scores drive weights.
+  submission_format: [api_response]
+
+scoring_signals:
+  - name: api_quality_score
+    metric_kind: composite
+    direction: higher_is_better
+    weight: 0.75
+    normalization: ema
+    notes: >-
+      Per-miner score (0-100) returned by external API /score-miners/. Composite weight is
+      0.75 in calculate_weights (normalized_quality). Documented breakdown components
+      (technical/structure/content/narrative) are computed server-side, not in this repo.
+  - name: historical_score
+    metric_kind: composite
+    direction: higher_is_better
+    weight: 0.25
+    normalization: ema
+    notes: >-
+      Average of stored per-miner historical scores (normalized to 0-1); contributes 0.25 of
+      composite. Defaults to 0.5 when no history exists.
+
+ground_truth_sources:
+  - kind: llm_judgment
+    description: >-
+      External scoring API (api.storyai.art) returns per-miner scores with a breakdown of
+      technical/structure/content/narrative. Narrative is described as AI-based subjective
+      evaluation whose prompts are loaded server-side (not in repo).
+    source_identifier: "https://api.storyai.art/score-miners/"
+    trust_model: oracle
+    notes: >-
+      Scoring is off-repo; the documented local scoring modules describe the intended rubric
+      but are not called by validator.py.
+
+aggregation:
+  method: weighted_average
+  composition: weighted_sum
+  normalization: sum_to_one
+  temperature: 2.0
+  decay_rate: null
+  min_weight_floor: 0.001
+  burn_allocation:
+    enabled: true
+    address_or_uid: "subnet_owner_uid (get_subnet_owner_hotkey)"
+    fraction: null
+    dynamic: true
+    notes: >-
+      owner_share = max(0.10, 0.50 - 0.01 * num_miners); miner weights scaled by
+      (1 - owner_share) and remaining owner_share assigned to the subnet owner UID each round.
+  notes: >-
+    composite = 0.75 * normalized_quality + 0.25 * historical_score; incentives = composite **
+    temperature (2.0); normalized to sum 1.0; min_weight 0.001 applied then re-normalized;
+    then burn-UID owner_share carve-out.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    set_weights called every weight_update_frequency steps (default 10), gated by an on-chain
+    blocks-since-last rate limit (weights_rate_limit hyperparameter, fallback 100 blocks).
+  on_chain_call: set_weights
+  tempo_or_interval: "weights_rate_limit blocks (fallback 100)"
+  smoothing:
+    kind: ema
+    alpha: 0.1
+    window: null
+    notes: >-
+      EMA_ALPHA env default 0.1; scores[uid] = exponential_moving_average(score, scores[uid],
+      ema_alpha) where EMA = alpha*new + (1-alpha)*old.
+
+anti_gaming:
+  - kind: plagiarism_detection
+    enforcement: penalty
+    description: >-
+      README: "Plagiarism Detection: Responses too similar to history are penalized" and
+      "Originality Scoring". Implemented (if at all) server-side / in unused scoring modules,
+      not in the live validator weight path.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      Blacklist set tracked in validator state for known bad-actor UIDs; model-quality policy
+      (apply_model_quality_multiplier) can zero out blacklisted models. Not invoked in live
+      run_step path.
+  - kind: rate_limit
+    enforcement: barrier
+    description: >-
+      Weight submission is block-rate-limited via can_set_weights (weights_rate_limit, fallback
+      100 blocks) to avoid excessive on-chain updates.
+
+sub_competitions:
+  structure: per_task_type
+  stages:
+    - name: "blueprint"
+      role: main
+    - name: "characters"
+      role: main
+    - name: "story_arc"
+      role: main
+    - name: "chapters"
+      role: main
+  count: 4
+  notes: >-
+    task_distribution = {blueprint:0.40, characters:0.25, story_arc:0.25, chapters:0.10};
+    one task type deterministically selected per block. Scores are pooled into a single EMA per
+    miner, not separate weight pools.
+
+per_miner_state:
+  tracked: true
+  state_kinds:
+    - cumulative_score
+    - performance_ledger
+    - status_enum
+  status_values:
+    - "blacklisted"
+  reset_policy: >-
+    State persisted to validator_state.json across restarts; history deques capped at maxlen 100.
+  notes: >-
+    Per-miner EMA score (self.scores), score/timestamp history (deque maxlen 100), violation
+    counts, and blacklist set are tracked and persisted.
+
+documentation:
+  status: docs_and_code
+  source_version: "Protocol v3.2.1"
+  primary_docs:
+    - "README.md"
+    - "docs/VALIDATOR_SETUP_GUIDE.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "neurons/validator.py"
+      line_ref: "1047"
+      quote: 'parser.add_argument("--netuid", type=int, default=92, help="Subnet netuid (StoryNet subnet ID)")'
+    - claim_field: "/subnet/name"
+      source_path: "README.md"
+      line_ref: "1"
+      quote: "# StoryNet Subnet (SN92)"
+    - claim_field: "/task/submission_format"
+      source_path: "neurons/validator.py"
+      line_ref: "1001-1004"
+      quote: 'api_url = f"{self.config.api_endpoint}/score-miners/" ... response = requests.post(api_url, json=api_data, timeout=120)'
+    - claim_field: "/task/summary"
+      source_path: "template/protocol.py"
+      line_ref: "9-13"
+      quote: "Task Types: - blueprint ... - characters ... - story_arc ... - chapters: Generate detailed chapter content with choices"
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "neurons/validator.py"
+      line_ref: "634-637"
+      quote: "composite = ( 0.75 * normalized_quality + 0.25 * historical_score )"
+    - claim_field: "/scoring_signals/1/weight"
+      source_path: "neurons/validator.py"
+      line_ref: "634-637"
+      quote: "composite = ( 0.75 * normalized_quality + 0.25 * historical_score )"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "624-629"
+      quote: "historical_score = 0.5  # Default to 50% if no historical data ... hist_avg = sum(self.history[uid]['scores']) / len(self.history[uid]['scores']); historical_score = hist_avg / 100.0"
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "neurons/validator.py"
+      line_ref: "1001"
+      quote: 'api_url = f"{self.config.api_endpoint}/score-miners/"'
+    - claim_field: "/ground_truth_sources/0/kind"
+      source_path: "scoring/narrative.py"
+      line_ref: "5-19"
+      quote: "Calculates Narrative Merit Score (30 points) using AI-based evaluation. ... The evaluation prompts are loaded from server-side config (not in repo)"
+    - claim_field: "/aggregation/temperature"
+      source_path: "neurons/validator.py"
+      line_ref: "93"
+      quote: 'self.temperature = float(os.getenv("SOFTMAX_TEMPERATURE", "2.0"))'
+    - claim_field: "/aggregation/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "642-645"
+      quote: "incentives = { uid: score ** self.temperature for uid, score in composite_scores.items() }"
+    - claim_field: "/aggregation/min_weight_floor"
+      source_path: "neurons/validator.py"
+      line_ref: "651-652"
+      quote: "min_weight = 0.001; weights = {uid: max(w, min_weight) for uid, w in weights.items()}"
+    - claim_field: "/aggregation/normalization"
+      source_path: "template/utils.py"
+      line_ref: "187-193"
+      quote: "total = sum(weights.values()) ... return {uid: w / total for uid, w in weights.items()}"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "667-674"
+      quote: "owner_share = max(0.10, 0.50 - 0.01 * num_miners); miner_share = 1.0 - owner_share ... weights[burn_uid] = owner_share"
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "neurons/validator.py"
+      line_ref: "574"
+      quote: "owner_hotkey = self.subtensor.get_subnet_owner_hotkey(self.config.netuid)"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "neurons/validator.py"
+      line_ref: "770-777"
+      quote: "success, message = self.subtensor.set_weights( netuid=self.config.netuid, wallet=self.wallet, uids=uids_tensor, weights=weights_tensor, ... )"
+    - claim_field: "/weight_setting/method"
+      source_path: "neurons/validator.py"
+      line_ref: "905-906"
+      quote: "if self.step > 0 and self.step % self.weight_update_frequency == 0: await self.set_weights()"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "neurons/validator.py"
+      line_ref: "701-705"
+      quote: "self.weights_rate_limit = self.subtensor.weights_rate_limit(self.config.netuid) ... can_set = blocks_since_last >= self.weights_rate_limit"
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "neurons/validator.py"
+      line_ref: "92"
+      quote: 'self.ema_alpha = float(os.getenv("EMA_ALPHA", "0.1"))'
+    - claim_field: "/weight_setting/smoothing/kind"
+      source_path: "template/utils.py"
+      line_ref: "220"
+      quote: "return alpha * new_value + (1 - alpha) * old_value"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "README.md"
+      line_ref: "170-172"
+      quote: "Plagiarism Detection: Responses too similar to history are penalized ... Originality Scoring: Rewards unique, creative content"
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "neurons/validator.py"
+      line_ref: "274-278"
+      quote: "blacklist = policy.get(\"blacklisted_models\", []) ... bt.logging.error(f\"🚫 Blacklisted model detected: {model_name}\"); return 0.0, multiplier_info"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "neurons/validator.py"
+      line_ref: "705-708"
+      quote: "can_set = blocks_since_last >= self.weights_rate_limit"
+    - claim_field: "/sub_competitions/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "102-107"
+      quote: 'self.task_distribution = { "blueprint": 0.40, "characters": 0.25, "story_arc": 0.25, "chapters": 0.10 }'
+    - claim_field: "/per_miner_state/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "110-113"
+      quote: "self.scores = {} ... self.history = {} ... self.blacklist = set() ... self.violations = {}"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "neurons/validator.py"
+      line_ref: "166-168"
+      quote: "'scores': deque(hist_data['scores'], maxlen=100), 'timestamps': deque(hist_data['timestamps'], maxlen=100)"
+    - claim_field: "/documentation/source_version"
+      source_path: "template/protocol.py"
+      line_ref: "15"
+      quote: "PROTOCOL VERSION: 3.2.1"
+    - claim_field: "/mechanism_status"
+      source_path: "neurons/validator.py"
+      line_ref: "661-674"
+      quote: "if burn_uid >= 0: ... owner_share = max(0.10, 0.50 - 0.01 * num_miners) ... weights[burn_uid] = owner_share"
+  unresolved:
+    - "Whether the external scoring API actually implements the documented 100-point breakdown (technical/structure/content/narrative); server-side and not in repo."
+    - "Live netuid: README and code default both say 92; whether deployed on mainnet 92 is unverified from repo."
+    - "Violation/blacklist enforcement thresholds: blacklist and violations dicts are tracked but no add/penalty logic is present in the live run_step path."

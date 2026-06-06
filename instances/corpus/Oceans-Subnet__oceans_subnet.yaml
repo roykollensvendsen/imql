@@ -1,0 +1,235 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: mixed
+mechanism_status_notes: >-
+  The documented and recommended validator (neurons/neuron_validator.py, the one in
+  docs/validator.md) runs the real liquidity-weighted scoring via validator/forward.py and
+  RewardCalculator. However the repo also ships neurons/burn_validator.py whose forward()
+  assigns weight 1.0 to UID 0 and 0.0 to every other UID — a full burn to UID 0. Which one
+  is actually run on-chain cannot be determined from the source alone, so the operative
+  reality is mixed.
+
+subnet:
+  name: "Oceans Subnet 66"
+  owner_repo: "Oceans-Subnet__oceans_subnet"
+  netuid: 66
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners provide liquidity to Bittensor subnet pools. Each epoch a miner is rewarded in
+    proportion to its share of the total liquidity (measured in TAO) it supplies to each
+    target subnet, weighted by a "master weight" vector over subnets derived from sn66
+    alpha-stake holder votes. The reward for a miner is the sum over subnets of
+    (miner_LP_in_subnet / total_LP_in_subnet) * subnet_master_weight.
+  submission_format: [signals]
+
+scoring_signals:
+  - name: liquidity_provided
+    metric_kind: volume
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Per-subnet liquidity a miner supplies, measured as total TAO value of its positions
+      (lp_amt). Within each subnet, a miner's contribution is lp_amt * (1/total_LP) * w_sub,
+      i.e. its share of total subnet liquidity scaled by the subnet's master weight. Not an
+      additive standalone weight, hence weight: null.
+  - name: subnet_master_weight
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Per-subnet weight w_sub derived from holder votes (stake-weighted, normalised to sum
+      to 1.0) in RewardCalculator._build_master_vector. Acts as a multiplier on each subnet's
+      liquidity share; not an additive per-miner signal.
+
+ground_truth_sources:
+  - kind: market_data
+    description: >-
+      On-chain liquidity positions of each registered miner across Bittensor subnet pools,
+      converted to TAO value, fetched by the LiquidityFetcher.
+    source_identifier: "validator/forward.py liq_fetcher.fetch_and_store()"
+    trust_model: trusted
+    notes: "Returns {subnet: {uid: tao}} liquidity map consumed by RewardCalculator.compute."
+  - kind: other
+    kind_other: stake_weighted_offchain_vote
+    description: >-
+      sn66 alpha-stake holder votes fetched off-chain via the VoteFetcher (vote API), each
+      carrying a voter_stake; combined into a stake-weighted normalised per-subnet weight
+      vector.
+    source_identifier: "validator/vote_fetcher.py VoteFetcher.fetch_and_store()"
+    trust_model: crowd
+    notes: >-
+      V1/V2 votes are off-chain web votes; roadmap (V3-V5) plans migration to on-chain
+      smart contracts.
+
+aggregation:
+  method: proportional
+  composition: multiplicative
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: 1.0
+    dynamic: false
+    notes: >-
+      Only in neurons/burn_validator.py: weights = [1.0 if uid == 0 else 0.0 for uid in
+      range(0,256)], a full burn of all emission to UID 0. The documented
+      neuron_validator.py path performs no burn — it distributes proportionally by liquidity.
+  notes: >-
+    Documented path: reward[uid] += lp_amt * (1/total_lp) * w_sub summed over subnets, then
+    normalised so the reward vector sums to 1.0 (uniform fallback if the vector is all zero).
+
+weight_setting:
+  cadence: continuous
+  method: >-
+    BaseValidatorNeuron.set_weights L1-normalises self.scores and emits via
+    subtensor.set_weights. neuron_validator.py runs forward() then sleeps a random 10-20
+    minutes per iteration (no explicit epoch detection); burn_validator.py sleeps 300s then
+    sets weights.
+  on_chain_call: set_weights
+  tempo_or_interval: "random 10-20 minutes per iteration (neuron_validator.py)"
+  smoothing:
+    kind: ema
+    alpha: 0.1
+    window: null
+    notes: >-
+      update_scores applies EMA: self.scores = alpha * scattered + (1 - alpha) * self.scores
+      with alpha = 0.1 (base/validator.py).
+
+anti_gaming:
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      Voter influence on the master subnet vector is proportional to voter_stake
+      (stake * weight/sum), so vote weight is gated by alpha-stake holdings rather than vote
+      count.
+
+sub_competitions:
+  structure: multi_asset
+  stages: []
+  count: null
+  notes: >-
+    Rewards are computed independently per target Bittensor subnet pool (multiple liquidity
+    pools), then summed per miner. No staged/tournament structure.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score]
+  status_values: []
+  reset_policy: >-
+    self.scores persisted via save_state/load_state (state.npz); EMA-decayed each update and
+    zeroed for replaced hotkeys on metagraph resync.
+  notes: >-
+    Per-UID EMA score vector maintained in base/validator.py; no debt ledger or status enum.
+
+documentation:
+  status: docs_and_code
+  source_version: "v0 / V1 (July 2025)"
+  primary_docs: ["README.md", "docs/validator.md", "docs/miner.md"]
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "config.py"
+      line_ref: "25"
+      quote: "DEFAULT_NETUID = 66"
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "validator/rewards.py"
+      line_ref: "14"
+      quote: "import bittensor as bt"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "validator/rewards.py"
+      line_ref: "5"
+      quote: "Reward(N) = Σ_subnets  ( LP_N,sub / Σ LP_all,sub ) × MasterWeight_sub"
+      confidence: high
+    - claim_field: "/scoring_signals/0/name"
+      source_path: "validator/rewards.py"
+      line_ref: "102-103"
+      quote: "contrib = lp_amt * inv_total_lp * w_sub\n                rewards[uid_int] += contrib"
+      confidence: high
+    - claim_field: "/scoring_signals/1/name"
+      source_path: "validator/rewards.py"
+      line_ref: "163"
+      quote: "master_w = {sid: w / total_stake for sid, w in raw.items()}"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "validator/forward.py"
+      line_ref: "23"
+      quote: "liq_map = await neuron.liq_fetcher.fetch_and_store()           # asynchronous, returns {subnet: {uid: tao}}"
+      confidence: high
+    - claim_field: "/ground_truth_sources/1/source_identifier"
+      source_path: "validator/rewards.py"
+      line_ref: "146"
+      quote: "stake = float(getattr(v, \"voter_stake\", 0.0))"
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "validator/rewards.py"
+      line_ref: "108-112"
+      quote: "ttl = sum(rewards.values())\n        if ttl > 0.0:\n            factor = 1.0 / ttl\n            rewards = {uid: r * factor for uid, r in rewards.items()}"
+      confidence: high
+    - claim_field: "/aggregation/composition"
+      source_path: "validator/rewards.py"
+      line_ref: "102"
+      quote: "contrib = lp_amt * inv_total_lp * w_sub"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "neurons/burn_validator.py"
+      line_ref: "36"
+      quote: "weights = [1.0 if uid == 0 else 0.0 for uid in miner_uids]"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "neurons/burn_validator.py"
+      line_ref: "35-36"
+      quote: "miner_uids: List[int] = list(range(0,256))\n        weights = [1.0 if uid == 0 else 0.0 for uid in miner_uids]"
+      confidence: high
+    - claim_field: "/mechanism_status"
+      source_path: "neurons/burn_validator.py"
+      line_ref: "16-18"
+      quote: "Minimal validator: on every epoch head, zeroes all miners’ weights\n    except UID 0, which receives 100 % of the emission."
+      confidence: medium
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "base/validator.py"
+      line_ref: "144-152"
+      quote: "ok, msg = self.subtensor.set_weights(\n            wallet=self.wallet,\n            netuid=self.config.netuid,\n            uids=uint_uids,\n            weights=uint_weights,"
+      confidence: high
+    - claim_field: "/weight_setting/cadence"
+      source_path: "neurons/neuron_validator.py"
+      line_ref: "105-106"
+      quote: "# Sleep a random time between 10 and 20 minutes\n                sleep_s = random.uniform(10 * 60, 20 * 60)"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "base/validator.py"
+      line_ref: "220-222"
+      quote: "alpha = 0.1\n        # EMA update\n        self.scores = alpha * scattered + (1.0 - alpha) * self.scores"
+      confidence: high
+    - claim_field: "/anti_gaming/0/kind"
+      source_path: "validator/rewards.py"
+      line_ref: "156"
+      quote: "raw[int(sid)] += stake * (float(w) / s)"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "base/validator.py"
+      line_ref: "260-267"
+      quote: "np.savez(\n            f\"{self.config.neuron.full_path}/state.npz\",\n            step=self.step,\n            scores=self.scores,"
+      confidence: high
+    - claim_field: "/documentation/status"
+      source_path: "docs/validator.md"
+      line_ref: "60-74"
+      quote: "## 🎯 3. High-Level Validator Explanation"
+      confidence: high
+  unresolved:
+    - "No literal min_weight_floor, temperature, or within-aggregation decay constant exists in the source."
+    - "Whether neuron_validator.py (scoring) or burn_validator.py (full burn to UID 0) is actually deployed on-chain is undeterminable from the repo."
+    - "Reward formula image (formula.png) referenced in README is not text-extractable; relied on rewards.py docstring instead."

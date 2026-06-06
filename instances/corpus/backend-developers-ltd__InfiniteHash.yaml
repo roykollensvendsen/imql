@@ -1,0 +1,256 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  Live mechanism is the validator-managed auction (mechanism 1), mirrored onto
+  mechanism 0 ("Legacy mechanism 0 scheduling disabled. Auction weights are
+  mirrored to both mechanisms from the auction pipeline."). Unused auction budget
+  (total_budget_alpha - total_spent_alpha) is dynamically redirected to the subnet
+  owner's earliest-registered neuron (burn UID) and included in weight
+  normalization, so a variable fraction of emissions is burned each epoch.
+
+subnet:
+  name: "InfiniteHash (subnet auction incentive system)"
+  owner_repo: "backend-developers-ltd__InfiniteHash"
+  netuid: null
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners are Bitcoin hashrate providers. Each validation window they post on-chain
+    bid commitments encoding (hashrate, price) pairs. Validators run an integer linear
+    program that maximizes purchased PH/s under a budget derived from subnet emissions
+    and consensus prices (TAO/USDC, ALPHA/TAO, HASHP/USDC), selecting auction winners
+    subject to a per-bid max price multiplier. Winners must then deliver the committed
+    hashrate, verified against Luxor mining-pool scraping snapshots. Delivered winners
+    are paid in proportion to an ALPHA-denominated payment; unused budget is burned to
+    the subnet owner. Underdelivering hotkeys are banned from future auctions.
+  submission_format: [commitment_hash]
+
+scoring_signals:
+  - name: delivered_hashrate_payment_alpha
+    metric_kind: throughput
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      Per delivered winner, payment_alpha = delivered_hashrate * hashp_usdc *
+      price_multiplier * (window_blocks / blocks_per_day) / alpha_usdc. Summed across
+      6 windows per hotkey; final weight = payment / total_payments_alpha. Only winners
+      with delivered != False contribute.
+  - name: delivery_compliance
+    metric_kind: throughput
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Gating check: delivered_ph (from Luxor samples) must be >= DELIVERY_THRESHOLD_FRACTION
+      (0.1) * total_commitment to count as delivered. Failing winners are excluded from
+      payment and their hotkeys banned. (Docs prose says "at least 95%", but the code
+      constant is 0.1.)
+
+ground_truth_sources:
+  - kind: real_engagement
+    description: >-
+      Observed delivered hashrate from Luxor mining-pool scraping snapshots over the
+      validation window, compared against committed hashrate. If validator scraping has
+      gaps > 7 blocks the underdelivery check is skipped and all winners assumed delivered.
+    source_identifier: "Luxor scraping snapshots (LUXOR_SUBACCOUNT_NAME)"
+    trust_model: trusted
+    notes: ""
+  - kind: market_data
+    description: >-
+      Price consensus over miner/validator price commitments: TAO/USDC, ALPHA/TAO,
+      HASHP/USDC FP18 prices used for the auction budget and ALPHA payment normalization.
+    source_identifier: "compute_price_consensus (TAO_USDC, ALPHA_TAO, HASHP_USDC)"
+    trust_model: adversarial
+    notes: "Aggregated across commitments; banned hotkeys excluded from contributing bids."
+
+aggregation:
+  method: convex_optimization
+  composition: gated
+  normalization: l1
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "subnet owner earliest-registered neuron (burn UID)"
+    fraction: null
+    dynamic: true
+    notes: >-
+      total_burn_alpha = total_budget_alpha - total_spent_alpha is added to
+      payments_alpha[burn_hotkey] and included in the L1 weight normalization, so the
+      burned fraction is the residual of unspent auction budget each epoch.
+  notes: >-
+    Winner selection solves an ILP (PuLP/CBC) maximizing purchased hashrate under a PH/s
+    budget. Final on-chain weights normalize summed ALPHA payments to sum-to-one
+    (weights = payment / total_payments_alpha), then to u16 via division by max weight.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    calculate_auction_weights runs only in validation window 0 of the next epoch, after
+    all 6 windows of the previous validation epoch are processed; weights committed and
+    revealed for both mechanism 0 and mechanism 1. Celery beat triggers
+    calculate_auction_weights and set_auction_weights every 1 minute (gated to window 0).
+  on_chain_call: commit_reveal
+  tempo_or_interval: "6 validation windows/epoch; windows of 60 blocks (window 5 = 61)"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      commit_timelocked_mechanism_weights (CRV3, commit_reveal_version=4); falls back to
+      set_mechanism_weights if commit-reveal is disabled. No EMA on final weights.
+
+anti_gaming:
+  - kind: liveness_check
+    enforcement: elimination
+    description: >-
+      Delivery verification against Luxor snapshots; hotkeys whose delivered hashrate
+      falls below DELIVERY_THRESHOLD_FRACTION (0.1) of commitment in any bid are added to
+      BannedMiner and excluded from future auctions until ban expires/cleared.
+  - kind: commit_reveal
+    enforcement: barrier
+    description: >-
+      Bids, price feeds and ban bitmaps are on-chain commitments; weights published via
+      timelocked commit/reveal (CRV3) so validator weights are not front-runnable.
+  - kind: risk_limit
+    enforcement: rejection
+    description: >-
+      _build_worker_items discards bids priced more than MAX_PRICE_MULTIPLIER (1.05) above
+      the consensus price before the ILP, capping how far above market a bid can be.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      Ban consensus (compute_ban_consensus) aggregates ban bitmaps published by other
+      validators so excluded hotkeys are honored network-wide.
+
+sub_competitions:
+  structure: multi_mechanism
+  stages: []
+  count: 2
+  notes: >-
+    Two on-chain mechanisms (IDs 0 and 1). Mechanism 0 legacy hashrate scoring is
+    disabled; the auction pipeline (mechanism 1) computes weights and mirrors the same
+    normalized weights onto both mechanisms.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [status_enum]
+  status_values: [banned]
+  reset_policy: >-
+    Ban recorded in BannedMiner (banned_at, epoch_start, window_number, reason); repeat
+    offense updates the ban timestamp. Ban honored until it expires or is manually cleared.
+  notes: "Banned hotkeys' commitments are filtered out of future auctions."
+
+documentation:
+  status: docs_and_code
+  source_version: "commit 1c1d576"
+  primary_docs:
+    - "docs/subnet_auction_incentive_system.md"
+    - "README.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/mechanism_status"
+      source_path: "app/src/infinite_hashes/settings.py"
+      line_ref: "283-284"
+      quote: "Legacy mechanism 0 scheduling disabled. Auction weights are mirrored to both mechanisms from the auction pipeline."
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "app/src/infinite_hashes/validator/tasks.py"
+      line_ref: "568"
+      quote: "async def calculate_auction_weights_async():"
+    - claim_field: "/task/summary"
+      source_path: "docs/subnet_auction_incentive_system.md"
+      line_ref: "96-105"
+      quote: "select_auction_winners_async builds an optimisation problem that maximises hashrate purchased under the PH/s budget while respecting per-bid price limits."
+    - claim_field: "/task/submission_format"
+      source_path: "docs/subnet_auction_incentive_system.md"
+      line_ref: "71-73"
+      quote: "Bids - commitments posted by miners encode (hashrate, price) pairs."
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "app/src/infinite_hashes/validator/tasks.py"
+      line_ref: "746-749"
+      quote: "cost_usdc = hashrate_ph * hashp_usdc * price_multiplier * (window_blocks / blocks_per_day); payment_alpha = cost_usdc / alpha_usdc if alpha_usdc > 0 else 0.0; payments_alpha[hotkey] = payments_alpha.get(hotkey, 0.0) + payment_alpha"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "app/src/infinite_hashes/validator/auction_processing.py"
+      line_ref: "19"
+      quote: "DELIVERY_THRESHOLD_FRACTION = 0.1  # Minimum delivered share required to consider winner compliant"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "app/src/infinite_hashes/validator/auction_processing.py"
+      line_ref: "167-168"
+      quote: "threshold = DELIVERY_THRESHOLD_FRACTION * total_commitment; is_delivered = delivered_ph >= threshold"
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "docs/subnet_auction_incentive_system.md"
+      line_ref: "117-122"
+      quote: "Average delivered PH/s across the samples must meet at least 95% of the committed amount to pass. If the validator detects gaps in its own scraping activity (missing data for more than seven blocks) the underdelivery check is skipped and all winners are assumed to have delivered."
+    - claim_field: "/ground_truth_sources/1/description"
+      source_path: "docs/subnet_auction_incentive_system.md"
+      line_ref: "74-76"
+      quote: "Price commitments - TAO/USDC, ALPHA/TAO, and HASHP/USDC price feeds are combined into a consensus value for the window start block."
+    - claim_field: "/aggregation/method"
+      source_path: "docs/subnet_auction_incentive_system.md"
+      line_ref: "101-102"
+      quote: "Solves an integer linear program (ILP) using PuLP's CBC backend to choose the combination of bids that fit within the budget."
+    - claim_field: "/aggregation/normalization"
+      source_path: "app/src/infinite_hashes/validator/tasks.py"
+      line_ref: "842-844"
+      quote: "total_payments_alpha = sum(payments_alpha.values()); if total_payments_alpha > 0: weights = {hk: payment / total_payments_alpha for hk, payment in payments_alpha.items()}"
+    - claim_field: "/aggregation/burn_allocation/dynamic"
+      source_path: "app/src/infinite_hashes/validator/tasks.py"
+      line_ref: "790-820"
+      quote: "total_burn_alpha = total_budget_alpha - total_spent_alpha ... payments_alpha[burn_hotkey] = payments_alpha.get(burn_hotkey, 0.0) + total_burn_alpha"
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "app/src/infinite_hashes/validator/tasks.py"
+      line_ref: "442"
+      quote: "Get the UID used to receive the burn allocation (subnet owner's earliest neuron)."
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "app/src/infinite_hashes/validator/tasks.py"
+      line_ref: "123-128"
+      quote: "result = await bittensor.subtensor.subtensor_module.commit_timelocked_mechanism_weights(... reveal_round=reveal_round, commit_reveal_version=4,  # CRV3"
+    - claim_field: "/weight_setting/method"
+      source_path: "app/src/infinite_hashes/validator/tasks.py"
+      line_ref: "568-607"
+      quote: "Only runs during window 0 of validation epoch[n+1]. At this point, window[n][5] has finished, so all 6 windows of validation_epoch[n] are processed."
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "app/src/infinite_hashes/validator/tasks.py"
+      line_ref: "715"
+      quote: "window_blocks = 61 if window_num == 5 else 60"
+    - claim_field: "/weight_setting/cadence"
+      source_path: "app/src/infinite_hashes/settings.py"
+      line_ref: "292-301"
+      quote: "\"calculate_auction_weights\": { \"task\": \"infinite_hashes.validator.tasks.calculate_auction_weights\", \"schedule\": datetime.timedelta(minutes=1), ... \"set_auction_weights\""
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "docs/subnet_auction_incentive_system.md"
+      line_ref: "124-129"
+      quote: "Hotkeys that fail delivery in any bid during the window are added to the BannedMiner model. Subsequent auctions ignore their commitments until the ban expires or is manually cleared."
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "app/src/infinite_hashes/aps_miner/constants.py"
+      line_ref: "12"
+      quote: "MAX_PRICE_MULTIPLIER = 1.05  # Maximum acceptable price multiplier for bids"
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "docs/subnet_auction_incentive_system.md"
+      line_ref: "41-43"
+      quote: "price.compute_ban_consensus evaluates ban bitmaps carried in commitments and produces the set of hotkeys excluded from future auctions."
+    - claim_field: "/sub_competitions/structure"
+      source_path: "app/src/infinite_hashes/validator/tasks.py"
+      line_ref: "33"
+      quote: "AUCTION_WEIGHT_MECHANISM_IDS = (0, 1)"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "app/src/infinite_hashes/validator/auction_processing.py"
+      line_ref: "576-583"
+      quote: "ban, created = BannedMiner.objects.get_or_create(hotkey=hotkey, defaults={\"banned_at\": now, \"epoch_start\": subnet_epoch_start, \"window_number\": window_num, \"reason\": ...})"
+    - claim_field: "/documentation/source_version"
+      source_path: "docs/subnet_auction_incentive_system.md"
+      line_ref: "3-4"
+      quote: "validator-managed auction system introduced in commit 1c1d576."
+  unresolved:
+    - "subnet.netuid: read from env (BITTENSOR_NETUID = env.int(\"BITTENSOR_NETUID\")); no literal in repo (a 'dtao_netuid': 89 appears only in a simulator fixture)."
+    - "Ban duration / expiry: BannedMiner records banned_at but no explicit expiry constant was found in the read files; docs say 'until the ban expires or is manually cleared' without a numeric TTL."
+    - "BASE_MINER_SHARE (0.41) and AUCTION_MECHANISM_SHARE_FRACTION (1.0) are budget inputs, not aggregation constants; no schema home for emission-split fractions, so not placed in aggregation."

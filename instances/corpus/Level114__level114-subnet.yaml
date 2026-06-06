@@ -1,0 +1,331 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Validator computes per-server scores (0-1000) and sets weights directly as
+  score/1000 with no burn allocation. Two mechanisms run concurrently via
+  Bittensor multi-mechanism set_weights (mechid 0 = Minecraft, mechid 1 = TCL).
+  Note: docs/scoring.md documents primary weights of 40/35/25 (infra/part/rely),
+  but the live constants.py uses 20/20/60 — code is authoritative.
+
+subnet:
+  name: "Level114"
+  owner_repo: "Level114__level114-subnet"
+  netuid: 114
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners operate publicly reachable Minecraft servers running the required
+    Level114 plugin set. A collector-center-main service ingests signed server
+    reports (TPS, player counts, plugins, memory, uptime). Validators fetch
+    these reports plus an independent scanner snapshot and score each server on
+    infrastructure (TPS), participation (plugin compliance + player activity),
+    and reliability (player-power + TPS stability + recovery). A second mechanism
+    (TCL) scores community/engagement metrics (online players, playtime, daily
+    logins, monthly new users). Scores map to on-chain weight = score/1000.
+  submission_format: [api_response]
+
+scoring_signals:
+  - name: tps_performance
+    metric_kind: throughput
+    direction: higher_is_better
+    weight: 0.20
+    normalization: min_max
+    notes: >-
+      Infrastructure component (W_INFRA=0.20). tps_score = clamp(tps_actual,0,20)/IDEAL_TPS,
+      capped at 1.0; multiplied by 0.1 if tps_actual < MIN_TPS_THRESHOLD (5.0). W_INFRA_TPS=1.0.
+  - name: plugin_compliance
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Participation sub-component (W_PART_COMPLIANCE=0.857). 0.6 base if has_required_plugins,
+      plus up to 0.4 from bonus plugins (ViaVersion/ViaBackwards/ViaRewind). Combined into
+      participation via W_PART=0.20.
+  - name: player_activity
+    metric_kind: engagement
+    direction: target_band
+    weight: null
+    normalization: min_max
+    notes: >-
+      Participation sub-component (W_PART_PLAYERS=0.143). player_count/MAX_PLAYERS_WEIGHT(200),
+      *1.2 if ratio in [0.2,0.8], *0.8 if ratio>0.95. Requires >=5 players (MIN_PLAYERS_FOR_BONUS).
+  - name: player_power
+    metric_kind: engagement
+    direction: higher_is_better
+    weight: null
+    normalization: min_max
+    notes: >-
+      Reliability sub-component (W_RELY_PLAYER_POWER=0.90). Cross-server normalized player
+      presence: each player's reported power averaged then split per server, then divided by
+      the max server total. Dominant single signal since W_RELY=0.60.
+  - name: tps_stability
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Reliability sub-component (W_RELY_STABILITY=0.05). 1 - (coefficient_of_variation /
+      MAX_TPS_COEFFICIENT_OF_VARIATION(0.3)) over last 20 reports (TPS_STABILITY_WINDOW).
+  - name: recovery_speed
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Reliability sub-component (W_RELY_RECOVERY=0.05). Penalizes time to recover above
+      RECOVERY_TPS_THRESHOLD(18.0) within MAX_RECOVERY_TIME_MINUTES(30).
+  - name: tcl_engagement
+    metric_kind: engagement
+    direction: higher_is_better
+    weight: null
+    normalization: min_max
+    notes: >-
+      Separate TCL mechanism (mechid 1). Weighted sum of normalized online_players(0.20),
+      avg_playtime_minutes(0.30), daily_unique_logins(0.20), monthly_new_users(0.30),
+      each min-max clamped against MAX_VALUES, scaled to 0-1000.
+
+ground_truth_sources:
+  - kind: organic_traffic
+    description: >-
+      Signed server reports (TPS, players, plugins, memory, uptime) streamed to the
+      collector-center-main service by miners' Minecraft servers; validators fetch
+      historical reports via the collector API.
+    source_identifier: "collector.level114.io (collector-center-main API)"
+    trust_model: adversarial
+    notes: >-
+      Reports carry ed25519 signatures and counter/nonce replay protection (per docs).
+      Validators additionally cross-check against an independent scanner snapshot
+      (online status, max_players, player count) and zero the score on mismatch.
+  - kind: hardware_probe
+    description: >-
+      Independent scanner snapshot used to verify server liveness and detect report
+      inflation (max_players mismatch, player_count > scanner_players + 5).
+    source_identifier: "scanner_entry (validator-side)"
+    trust_model: trusted
+    notes: "Server scored 0 if scanner missing, offline, or mismatched with report."
+
+aggregation:
+  method: weighted_average
+  composition: hybrid
+  normalization: none
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: "No burn logic present; weight = clamp(score/1000, 0, 1) per miner."
+  notes: >-
+    raw = W_INFRA*infra + W_PART*part + W_RELY*rely (0.20/0.20/0.60), each component
+    itself a weighted sum / gated sum of sub-signals. Normalized to integer 0-1000 via
+    MIN_SCORE..MAX_SCORE. Hard zero-score gates (scanner mismatch, missing/stale reports,
+    offline) override the weighted sum. Final per-mechanism weights are score/1000, then
+    process_weights_for_netuid applies Bittensor's standard min-stake/max-limit processing.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    Per mechanism (mechid), build raw_weights[uid] = clamp(score/1000, 0, 1) for each
+    scored hotkey, run process_weights_for_netuid, then subtensor.set_weights with the
+    mechid. Skipped if no positive weights. Gated by should_update (update_interval +
+    next_update). Two mechanisms (0=Minecraft, 1=TCL) set independently.
+  on_chain_call: set_weights
+  tempo_or_interval: "weight_update_interval default 1200s (20 min); validation_interval default 1440s (24 min)"
+  smoothing:
+    kind: ema
+    alpha: 0.2
+    window: null
+    notes: >-
+      apply_score_smoothing: smoothed = EMA_ALPHA*new + (1-EMA_ALPHA)*previous with
+      EMA_ALPHA=0.2, then clamped so per-update change is within [MIN_SCORE_CHANGE=1,
+      MAX_SCORE_CHANGE=200]; sub-MIN_SCORE_CHANGE deltas keep the previous score.
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Cross-check report vs independent scanner: if scanner missing/offline, or
+      scanner_max_players != report_max_players, or report_player_count >
+      scanner_players + 5, the server is assigned a zero score.
+  - kind: liveness_check
+    enforcement: penalty
+    description: >-
+      Reports older than 6h (filter_fresh_reports max_age 6*3600*1000 ms) are dropped;
+      if all reports stale or collector returns none, score downgraded to 0.
+  - kind: commit_reveal
+    enforcement: rejection
+    description: >-
+      Reports carry ed25519 signatures, SHA256 payload hash, and nonce/counter replay
+      protection (per docs/scoring.md). Signature failures cap score (docs); validator
+      parses and discards malformed reports.
+  - kind: rate_limit
+    enforcement: barrier
+    description: >-
+      MAX_PLAYERS_WEIGHT=200 caps player-activity contribution (anti-whale); player_power
+      normalized cross-server so concentrating players on one server does not inflate.
+
+sub_competitions:
+  structure: multi_mechanism
+  stages:
+    - name: "Minecraft (mechid 0)"
+      role: main
+      advancement_rule: "infra/participation/reliability server scoring; weight=score/1000"
+    - name: "TCL (mechid 1)"
+      role: other
+      advancement_rule: "community engagement metrics scoring; weight=score/1000"
+  count: 2
+  notes: >-
+    Each mechanism produces its own scores and sets weights independently with its
+    mechid via Bittensor multi-mechanism set_weights.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score]
+  status_values: []
+  reset_policy: >-
+    score_cache holds previous smoothed score per server_id for EMA smoothing;
+    reset to 0 on scanner mismatch, offline, missing or stale (>6h) reports.
+  notes: >-
+    ScoreCacheEntry(score, raw_score, components, updated_at) per server_id; bounded
+    history deque of up to MAX_REPORT_HISTORY=60 reports feeds stability/recovery.
+    Classification thresholds (excellent>=850, good>=650, poor<300) are display-only.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/scoring.md"
+    - "docs/running_validator.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: /subnet/netuid
+      source_path: README.md
+      line_ref: "113"
+      quote: "--netuid 114 \\"
+    - claim_field: /subnet/implementation_lang
+      source_path: level114/validator/mechanisms/minecraft/scorer.py
+      line_ref: "1-2"
+      quote: '"""Scoring logic for Minecraft validator reports."""'
+    - claim_field: /task/submission_format
+      source_path: level114/validator/mechanisms/minecraft/scoring.py
+      line_ref: "176-179"
+      quote: "status, reports = mechanism.collector_api.get_server_reports(server_id, limit=report_fetch_limit,)"
+    - claim_field: /scoring_signals/0/weight
+      source_path: level114/validator/mechanisms/minecraft/constants.py
+      line_ref: "24-26"
+      quote: "W_INFRA = 0.20\nW_PART = 0.20\nW_RELY = 0.60"
+    - claim_field: /scoring_signals/0/notes
+      source_path: level114/validator/mechanisms/minecraft/scorer.py
+      line_ref: "58-63"
+      quote: "tps_clamped = max(0.0, min(tps_actual, MAX_TPS_BONUS)) ... if tps_actual < MIN_TPS_THRESHOLD: tps_score *= 0.1 ; infra_score = W_INFRA_TPS * tps_score"
+    - claim_field: /scoring_signals/1/notes
+      source_path: level114/validator/mechanisms/minecraft/scorer.py
+      line_ref: "76-80"
+      quote: "compliance = 0.6 if payload.has_required_plugins else 0.0 ... compliance += min(0.4, bonus_plugins / max_bonus * 0.4 ...)"
+    - claim_field: /scoring_signals/2/notes
+      source_path: level114/validator/mechanisms/minecraft/scorer.py
+      line_ref: "85-93"
+      quote: "if player_count >= MIN_PLAYERS_FOR_BONUS: raw = min(player_count / MAX_PLAYERS_WEIGHT, 1.0) ... if OPTIMAL_PLAYER_RATIO_MIN <= ratio <= OPTIMAL_PLAYER_RATIO_MAX: raw *= 1.2 elif ratio > 0.95: raw *= 0.8"
+    - claim_field: /scoring_signals/3/notes
+      source_path: level114/validator/mechanisms/minecraft/scorer.py
+      line_ref: "109-118"
+      quote: "reliability = (W_RELY_PLAYER_POWER * power_clamped + W_RELY_STABILITY * stability_score + W_RELY_RECOVERY * recovery_score)"
+    - claim_field: /scoring_signals/3/weight
+      source_path: level114/validator/mechanisms/minecraft/constants.py
+      line_ref: "32-34"
+      quote: "W_RELY_PLAYER_POWER = 0.90\nW_RELY_STABILITY = 0.05\nW_RELY_RECOVERY = 0.05"
+    - claim_field: /scoring_signals/4/notes
+      source_path: level114/validator/mechanisms/minecraft/scorer_components.py
+      line_ref: "33-35"
+      quote: "cv = stdev_tps / mean_tps ; stability = max(0.0, 1.0 - (cv / MAX_TPS_COEFFICIENT_OF_VARIATION))"
+    - claim_field: /scoring_signals/5/notes
+      source_path: level114/validator/mechanisms/minecraft/scorer_components.py
+      line_ref: "50-58"
+      quote: "if report.payload.tps_actual < RECOVERY_TPS_THRESHOLD: recovery_time = measure_recovery_time(recent[idx:]) ... recovery *= 1.0 - (recovery_time / MAX_RECOVERY_TIME_MINUTES) * 0.3"
+    - claim_field: /scoring_signals/6/notes
+      source_path: level114/validator/mechanisms/tcl/types.py
+      line_ref: "13-18"
+      quote: 'COMPONENT_WEIGHTS = {"online_players": 0.20, "avg_playtime_minutes": 0.30, "daily_unique_logins": 0.20, "monthly_new_users": 0.30}'
+    - claim_field: /ground_truth_sources/0/description
+      source_path: docs/scoring.md
+      line_ref: "104-106"
+      quote: "/validators/servers/{id}/reports?limit=N - Historical reports"
+    - claim_field: /ground_truth_sources/1/description
+      source_path: level114/validator/mechanisms/minecraft/scoring.py
+      line_ref: "161-170"
+      quote: 'if not scanner_snapshot.get("online", False): ... return _assign_zero_score(... reason="scanner_offline" ...)'
+    - claim_field: /aggregation/notes
+      source_path: level114/validator/mechanisms/minecraft/scorer.py
+      line_ref: "141-145"
+      quote: "infra = evaluate_infrastructure(ctx) ... raw = W_INFRA * infra + W_PART * part + W_RELY * rely ; final_score = normalize_score(raw)"
+    - claim_field: /aggregation/burn_allocation/enabled
+      source_path: level114/validator/weights.py
+      line_ref: "61-63"
+      quote: "score_value = float(result.get(\"score\", 0)) ; weight = max(min(score_value / 1000.0, 1.0), 0.0)"
+    - claim_field: /aggregation/method
+      source_path: level114/validator/mechanisms/minecraft/scorer.py
+      line_ref: "132-136"
+      quote: "normalized = MIN_SCORE + int(round(score_range * clamped)) ; return max(MIN_SCORE, min(MAX_SCORE, normalized))"
+    - claim_field: /weight_setting/on_chain_call
+      source_path: level114/validator/weights.py
+      line_ref: "82-87"
+      quote: "result = subtensor.set_weights(wallet=wallet, netuid=netuid, mechid=mechanism_id, uids=processed_uids, weights=processed_weights,)"
+    - claim_field: /weight_setting/tempo_or_interval
+      source_path: level114/utils/config.py
+      line_ref: "154-166"
+      quote: '"--validator.weight_update_interval", ... default=1200, ... "--validator.validation_interval", ... default=24 * 60,'
+    - claim_field: /weight_setting/smoothing/alpha
+      source_path: level114/validator/mechanisms/minecraft/constants.py
+      line_ref: "42"
+      quote: "EMA_ALPHA = 0.2"
+    - claim_field: /weight_setting/smoothing/notes
+      source_path: level114/validator/mechanisms/minecraft/scorer.py
+      line_ref: "175-181"
+      quote: "smoothed = alpha * new_score + (1 - alpha) * previous_score ... max_change = min(MAX_SCORE_CHANGE, max(MIN_SCORE_CHANGE, abs(new_score - previous_score) * 0.5))"
+    - claim_field: /anti_gaming/0/description
+      source_path: level114/validator/mechanisms/minecraft/scoring.py
+      line_ref: "236-256"
+      quote: "if (scanner_players is not None ... and report_player_count > scanner_players + 5): ... return _assign_zero_score(... reason=\"player_count_mismatch\" ...)"
+    - claim_field: /anti_gaming/1/description
+      source_path: level114/validator/mechanisms/minecraft/scoring.py
+      line_ref: "334-337"
+      quote: "now_ms = int(time.time() * 1000) ; max_age_ms = int(6 * 3600 * 1000)"
+    - claim_field: /anti_gaming/2/description
+      source_path: docs/scoring.md
+      line_ref: "137-141"
+      quote: "Payload Hash: SHA256 of canonical JSON ... Ed25519 Signature: Cryptographic authenticity ... Replay Protection: Nonce and counter validation"
+    - claim_field: /anti_gaming/3/description
+      source_path: level114/validator/mechanisms/minecraft/constants.py
+      line_ref: "14"
+      quote: "MAX_PLAYERS_WEIGHT = 200"
+    - claim_field: /sub_competitions/structure
+      source_path: neurons/validator.py
+      line_ref: "25"
+      quote: "from level114.validator.mechanisms import MinecraftMechanism, TclMechanism"
+    - claim_field: /sub_competitions/count
+      source_path: level114/validator/mechanisms/tcl/mechanism.py
+      line_ref: "18"
+      quote: "mechanism_id = 1"
+    - claim_field: /per_miner_state/state_kinds
+      source_path: level114/validator/mechanisms/minecraft/scoring.py
+      line_ref: "274-283"
+      quote: "previous_entry = mechanism.score_cache.get(server_id) ... mechanism.score_cache[server_id] = ScoreCacheEntry(score=smoothed_score, raw_score=new_score, ...)"
+    - claim_field: /mechanism_status_notes
+      source_path: docs/scoring.md
+      line_ref: "24-60"
+      quote: "### 1. Infrastructure (40% Weight) ... ### 2. Participation (35% Weight) ... ### 3. Reliability (25% Weight)"
+  unresolved:
+    - "Whether docs/scoring.md (40/35/25) or constants.py (20/20/60) reflect the deployed validator weights; code is treated as authoritative but the discrepancy is unexplained."
+    - "Live netuid emission split / any registry-level burn between mechid 0 and mechid 1 is set on-chain, not in this repo."
+    - "Exact behavior of process_weights_for_netuid (min-stake / max-weight-limit clamping) depends on Bittensor library version, not pinned here."

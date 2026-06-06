@@ -1,0 +1,242 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: unknown
+mechanism_status_notes: >-
+  This repository is the miner-side command-line tool (cartha-cli), NOT the validator. The actual
+  scoring and weight-setting code lives in a separate repo referenced in a code comment as
+  "cartha-validator config.py min_total_assets_usdc". The CLI only documents mechanism facts as
+  surfaced to miners: weekly epochs frozen Friday 00:00 UTC, locked-USDC liquidity is what gets
+  scored, and a 100,000 USDC minimum portfolio threshold below which a miner receives score=0 and
+  no rewards. Whether the live validator burns emission, the exact scoring curve, the aggregation,
+  and the on-chain weight cadence cannot be determined from this repo. Hence mechanism_status:
+  unknown.
+
+subnet:
+  name: "Cartha"
+  owner_repo: "General-Tao-Ventures__cartha-cli"
+  netuid: 35
+  implementation_lang: python
+
+task:
+  summary: >-
+    Cartha is the Liquidity Provider for the 0xMarkets DEX. Miners provide liquidity by locking USDC
+    into Cartha vault contracts on an EVM chain (e.g. Base) for a chosen duration (7-365 days),
+    against a specific trading pair / pool (e.g. BTCUSD). An off-chain "verifier"/validator detects
+    the on-chain LockCreated event and includes the miner's locked position in the upcoming weekly
+    reward epoch. Miners are rewarded for the USDC liquidity they keep locked; a miner whose total
+    locked portfolio is below 100,000 USDC receives score=0 and no rewards. The actual scoring/weight
+    computation is performed by the separate cartha-validator service, not by this CLI.
+  submission_format: [other]
+  submission_format_other: >-
+    On-chain liquidity lock: miner locks USDC into a Cartha vault contract (EIP-712 signed
+    LockRequest from the verifier), and the verifier detects the LockCreated event to enroll the
+    position in the next epoch. No model weights, code, or signals are submitted to validators.
+
+scoring_signals:
+  - name: locked_usdc_liquidity
+    metric_kind: other
+    metric_kind_other: locked_liquidity_amount
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Total USDC locked across the miner's vault positions (the "portfolio"). The CLI displays an
+      "Active Portfolio (Current Epoch)" and "Verified Portfolio (Next Epoch)" and warns that
+      portfolios below 100,000 USDC get score=0. The exact mapping from locked amount to validator
+      weight is NOT in this repo (it is in cartha-validator). Weight left null because the additive
+      contribution/curve is undocumented here.
+
+ground_truth_sources:
+  - kind: market_data
+    description: >-
+      On-chain LockCreated events from Cartha vault contracts on an EVM chain (e.g. Base, chain id
+      8453 mainnet / 84532 Base Sepolia testnet). The verifier reads these events to determine each
+      miner's locked USDC amount and pool membership for an epoch.
+    source_identifier: "Cartha vault contracts (EVM); verifier api.cartha.finance"
+    trust_model: oracle
+    notes: >-
+      Ground-truth lock state is read on-chain by the off-chain verifier; the CLI only queries the
+      verifier's HTTP API to display status. Lock detection is event-driven (LockCreated).
+
+aggregation:
+  method: undocumented
+  composition: gated
+  normalization: none
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: >-
+      No burn logic present in this repo (CLI only). Burn behaviour of the live validator is unknown.
+  notes: >-
+    The only documented gating rule in this repo is a hard minimum-portfolio threshold: miners with
+    less than 100,000 USDC total locked receive score=0 and no rewards (gated/fail-closed). The
+    actual aggregation across pools/miners and the conversion to on-chain weights is performed by
+    cartha-validator and is not present here, hence method: undocumented.
+
+weight_setting:
+  cadence: weekly
+  method: >-
+    Rewards are organised around weekly epochs. The epoch "freezes" each Friday at 00:00 UTC; the
+    CLI computes the current epoch start as the most recent Friday 00:00 UTC and the next freeze as
+    +7 days. Positions verified before the freeze are "Active" (earning rewards in the current
+    frozen epoch); positions locked after are "In Next Epoch". The actual set_weights call is made
+    by the cartha-validator, not by this CLI.
+  on_chain_call: unknown
+  tempo_or_interval: "weekly (epoch freeze every Friday 00:00 UTC)"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No reward smoothing logic in this repo. The CLI only displays per-epoch active vs next-epoch
+      status; any temporal smoothing would live in cartha-validator (not present).
+
+anti_gaming:
+  - kind: collateral
+    enforcement: barrier
+    description: >-
+      Minimum-portfolio barrier: a miner must lock at least 100,000 USDC total across pools to be
+      eligible for any score/rewards; below this threshold score=0. Liquidity is real on-chain USDC
+      locked for a fixed term (7-365 days), making it a capital/collateral requirement rather than a
+      cheap signal.
+  - kind: liveness_check
+    enforcement: rejection
+    description: >-
+      Positions are scoped to weekly epochs frozen Friday 00:00 UTC; only positions verified before
+      the freeze count toward the current epoch ("Active"), others are deferred to the next epoch.
+      Pair states include "revoked" (deregistered or evicted), indicating positions can be evicted.
+
+sub_competitions:
+  structure: multi_asset
+  stages: []
+  count: null
+  notes: >-
+    Miners can hold positions across multiple trading-pair pools (e.g. BTCUSD and others listed by
+    "cartha vault pools"); the portfolio threshold is evaluated on the total across all pools. No
+    explicit tiers/ladder documented.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [status_enum]
+  status_values: [active, verified, pending, revoked, unknown]
+  reset_policy: ""
+  notes: >-
+    The CLI's pair-status command documents a per-miner pair state enum: active (in current frozen
+    epoch, earning rewards), verified (has lock proof, not in current active epoch), pending
+    (registered, no lock proof yet), revoked (deregistered or evicted), unknown (no pair record).
+    These states are maintained by the verifier, not this CLI.
+
+documentation:
+  status: docs_authoritative
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/COMMANDS.md"
+    - "cartha_cli/testnet/README.md"
+  completeness: low
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8"
+  extracted_at: "2026-06-06"
+  confidence_overall: low
+  evidence:
+    - claim_field: "/subnet/name"
+      source_path: "README.md"
+      line_ref: "3"
+      quote: "Cartha is the Liquidity Provider for 0xMarkets DEX."
+      confidence: high
+    - claim_field: "/subnet/netuid"
+      source_path: "cartha_cli/config.py"
+      line_ref: "47-48"
+      quote: 'network: str = Field("finney", alias="CARTHA_NETWORK")  / netuid: int = Field(35, alias="CARTHA_NETUID")'
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "cartha_cli/config.py"
+      line_ref: "1-9"
+      quote: '"""Runtime configuration for the Cartha CLI.""" ... from pydantic import Field'
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "84-93"
+      quote: "cartha vault lock --coldkey your-wallet --hotkey your-hotkey --pool-id BTCUSD --amount 1000.0 --lock-days 30 --owner-evm 0xYourEVMAddress --chain 8453 --vault-address 0xVaultAddress"
+      confidence: high
+    - claim_field: "/task/submission_format_other"
+      source_path: "README.md"
+      line_ref: "102-109"
+      quote: "3. Request a signed LockRequest from the verifier ... 7. The verifier automatically detects your lock and adds you to the upcoming epoch"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "cartha_cli/commands/miner_status.py"
+      line_ref: "39-42"
+      quote: "# Minimum total portfolio required to receive score/rewards (100k USDC) / # Miners below this threshold will receive score=0 and no rewards / # Reference: cartha-validator config.py min_total_assets_usdc / MIN_PORTFOLIO_THRESHOLD_USDC = 100_000.0"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "cartha_cli/commands/miner_status.py"
+      line_ref: "546-548"
+      quote: "Miners with less than 100k USDC total locked will receive [bold]score=0[/] and [bold]no rewards[/] from validators. To receive rewards, you must lock at least [bold]100,000 USDC[/] total across all pools."
+      confidence: high
+    - claim_field: "/aggregation/composition"
+      source_path: "cartha_cli/commands/miner_status.py"
+      line_ref: "540"
+      quote: "if total_portfolio_usdc < MIN_PORTFOLIO_THRESHOLD_USDC:"
+      confidence: medium
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "cartha_cli/testnet/README.md"
+      line_ref: "202"
+      quote: "Auto-Detection: The verifier automatically detects your `LockCreated` event and adds you to the upcoming epoch"
+      confidence: high
+    - claim_field: "/weight_setting/cadence"
+      source_path: "cartha_cli/utils.py"
+      line_ref: "216-228"
+      quote: "def get_next_epoch_freeze_time(...): Calculate the next epoch freeze time (next Friday 00:00 UTC). ... return current_start + timedelta(days=7)"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "cartha_cli/utils.py"
+      line_ref: "191-202"
+      quote: "def get_current_epoch_start(...): Calculate the start of the current epoch (Friday 00:00 UTC). ... weekday = reference.weekday()  # Monday=0, Friday=4 / days_since_friday = (weekday - 4) % 7"
+      confidence: high
+    - claim_field: "/per_miner_state/status_values"
+      source_path: "cartha_cli/commands/pair_status.py"
+      line_ref: "67-75"
+      quote: "1. active - In current frozen epoch, earning rewards / 2. verified - Has lock proof, not in current active epoch / 3. pending - Registered, no lock proof submitted yet / 4. revoked - Revoked (deregistered or evicted) / 5. unknown - No pair record found"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "cartha_cli/commands/miner_status.py"
+      line_ref: "548"
+      quote: "you must lock at least [bold]100,000 USDC[/] total across all pools."
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "cartha_cli/commands/pair_status.py"
+      line_ref: "67-73"
+      quote: "1. active - In current frozen epoch, earning rewards ... 4. revoked - Revoked (deregistered or evicted)"
+      confidence: medium
+    - claim_field: "/sub_competitions/structure"
+      source_path: "README.md"
+      line_ref: "71-78"
+      quote: "See all available pools with their pool IDs and vault addresses ... which pools are available, their full pool IDs, vault contract addresses, and chain IDs."
+      confidence: medium
+    - claim_field: "/mechanism_status"
+      source_path: "cartha_cli/commands/miner_status.py"
+      line_ref: "41"
+      quote: "# Reference: cartha-validator config.py min_total_assets_usdc"
+      confidence: high
+  unresolved:
+    - "Actual scoring curve / function mapping locked USDC to validator weight (lives in cartha-validator, not this repo)."
+    - "Aggregation method across pools and across miners (undocumented here)."
+    - "On-chain weight-setting call (set_weights vs commit_reveal) and exact tempo — not in this CLI."
+    - "Whether the live validator burns any emission (no burn logic visible in CLI)."
+    - "Any reward smoothing / EMA on final weights."
+    - "How lock duration (lock-days) and pool choice affect score, if at all."
+  extractor_notes: >-
+    cartha-cli is strictly the miner-facing CLI; it talks to an off-chain verifier HTTP API
+    (api.cartha.finance for finney netuid 35, a Cloud Run URL for test netuid 78) and opens a
+    browser lock UI. All validator-side scoring/weight logic is in the separately-referenced
+    cartha-validator repo, which is not part of this corpus entry. Documented mechanism facts that
+    ARE in this repo: 100,000 USDC minimum portfolio threshold (score=0 below), weekly epochs frozen
+    Friday 00:00 UTC, multi-pool portfolios, and a per-miner pair status enum.

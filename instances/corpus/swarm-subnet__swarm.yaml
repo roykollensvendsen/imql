@@ -1,0 +1,286 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  Validators burn a fixed 95% of emissions to UID 0 (BURN_EMISSIONS=True,
+  BURN_FRACTION=0.95); the remaining 5% is distributed by backend-supplied
+  weights computed from the documented flight-reward scoring. So scoring is
+  live but most emission is burned.
+
+subnet:
+  name: "Swarm — Autonomous Drone Navigation"
+  owner_repo: "swarm-subnet__swarm"
+  netuid: 124
+  implementation_lang: python
+
+task:
+  summary: >-
+    A miner submits a trained neural-network flight policy. The model receives a
+    128x128 depth image plus a flight state vector at 50 Hz and outputs 5D
+    velocity commands ([dir_x, dir_y, dir_z, speed, yaw]). It has 60 seconds to
+    navigate a drone to a landing platform and land safely across procedurally
+    generated worlds (city, open, mountain, village, warehouse, forest). Each
+    mission is scored on success, time efficiency, and obstacle safety; the
+    model is ranked by average score across 1,000 seeds per epoch.
+  submission_format: [model_weights]
+
+scoring_signals:
+  - name: success
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.45
+    normalization: none
+    notes: >-
+      1 if the mission reaches its goal (lands on platform), 0 otherwise.
+      REWARD_W_SUCCESS = 0.45.
+  - name: time_efficiency
+    metric_kind: latency
+    direction: higher_is_better
+    weight: 0.45
+    normalization: min_max
+    notes: >-
+      Based on minimum theoretical time (distance/SPEED_LIMIT + HOVER_SEC) with a
+      6% buffer; full credit at/under target time, linearly decaying to 0 at the
+      horizon. REWARD_W_TIME = 0.45.
+  - name: safety
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 0.10
+    normalization: min_max
+    notes: >-
+      Based on minimum obstacle clearance during flight; 1.0 at >= safe distance
+      (SAFETY_DISTANCE_SAFE=1.0m, 0.6m for forest type 6), 0.0 at/under danger
+      distance (SAFETY_DISTANCE_DANGER=0.2m), linear in between; collision forces
+      0. REWARD_W_SAFETY = 0.10.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Procedurally generated 3D worlds keyed by seed, evaluated deterministically
+      in a PyBullet physics simulation inside Docker containers. 1,000 seeds per
+      epoch; seeds rotate every 7 days (Monday 16:00 UTC). Each validator
+      generates its own seeds.
+    source_identifier: "swarm/validator/task_gen.py; SCREENING_TEMPLATE / random_task seeds"
+    trust_model: trusted
+    notes: >-
+      No external dataset; tasks are simulation seeds. Backend (swarm124.com)
+      coordinates which models/seeds are evaluated and publishes seeds.
+
+aggregation:
+  method: winner_take_all
+  composition: weighted_sum
+  normalization: l1
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: 0.95
+    dynamic: false
+    notes: >-
+      BURN_EMISSIONS=True, BURN_FRACTION=0.95, UID_ZERO=0. When applying backend
+      weights, distributed weights are rescaled to KEEP_FRACTION (=1-0.95=0.05)
+      and UID 0 is prepended with weight BURN_FRACTION. If no backend weights are
+      present, UID 0 gets full weight 1.0.
+  notes: >-
+    Per-mission score = 0.45*success + 0.45*time + 0.10*safety, clamped to [0,1].
+    Model ranked by average score across 1,000 seeds. WINNER_TAKE_ALL=True
+    (winner gets all available emissions). Validator scores are normalized by L1
+    norm before being emitted as on-chain weights.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Validator applies backend-supplied per-UID weights to its scores vector
+    (with the 95% burn split applied), normalizes by L1 norm, then calls
+    subtensor.set_weights. A separate burn_validator variant sets weight 1.0 on
+    UID 0 only. Eligibility gated by neuron.epoch_length blocks since last update.
+  on_chain_call: set_weights
+  tempo_or_interval: "100 blocks (neuron.epoch_length default)"
+  smoothing:
+    kind: ema
+    alpha: 0.1
+    window: null
+    notes: >-
+      update_scores performs an exponential moving average:
+      scores = alpha*scattered_rewards + (1-alpha)*scores, with
+      neuron.moving_average_alpha default 0.1. Note: when backend weights are
+      applied via _apply_backend_weights_to_scores the scores vector is reset
+      and overwritten rather than EMA-blended.
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      New models must pass a screening gate (must score above the top/champion
+      model by SCREENING_MIN_IMPROVEMENT=0.015) before running the full
+      benchmark; screening can early-fail at checkpoints.
+  - kind: code_inspection
+    enforcement: rejection
+    description: >-
+      Models evaluated inside sandboxed Docker containers with a pip-package
+      whitelist (DOCKER_PIP_WHITELIST), memory/CPU limits, and a legitimacy
+      verification check (legitimate_model flag); illegitimate models that fail
+      receive 0 instead of the 0.01 base reward.
+  - kind: rate_limit
+    enforcement: barrier
+    description: >-
+      Per-step RPC timeouts and hardware-fair calibrated compute budgets
+      (MINER_COMPUTE_BUDGET_SEC, RPC_STEP_TIMEOUT_SEC, strikes per seed) bound
+      miner inference time; model size capped at MAX_MODEL_BYTES.
+
+sub_competitions:
+  structure: per_task_type
+  stages: []
+  count: 6
+  notes: >-
+    Six challenge types (city, open, mountain, village, warehouse, forest), each
+    sampled with probability 1/6 (CHALLENGE_TYPE_DISTRIBUTION). Per-type average
+    scores are tracked, but the final ranking uses a single average across all
+    seeds, so this is one mechanism with task-type variety rather than separate
+    emission pools.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score]
+  status_values: []
+  reset_policy: >-
+    Scores are EMA-tracked per UID and reset to 0 when a hotkey is replaced;
+    seeds rotate and re-evaluation occurs every 7-day epoch.
+  notes: >-
+    Validator keeps a per-UID scores vector (moving average); resync_metagraph
+    zeroes scores for replaced hotkeys.
+
+documentation:
+  status: docs_and_code
+  source_version: "v4.0.0"
+  primary_docs:
+    - "README.md"
+    - "docs/validator.md"
+    - "swarm/validator/reward.py"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "neurons/validator.py"
+      line_ref: "101"
+      quote: '"subnet": 124,'
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "swarm/validator/reward.py"
+      line_ref: "1"
+      quote: "# swarm/validator/reward.py"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "62-66"
+      quote: >-
+        Your model gets a **128×128 depth image** and a **state vector** ... It
+        outputs **velocity commands** to fly the drone ... It has **60 seconds**
+        to navigate to a landing platform
+    - claim_field: "/task/submission_format"
+      source_path: "swarm/constants.py"
+      line_ref: "150"
+      quote: 'MODEL_DIR = Path("miner_models_v2")     # Directory for storing miner model files'
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "swarm/constants.py"
+      line_ref: "226"
+      quote: "REWARD_W_SUCCESS = 0.45                 # Weight for success term in reward calculation"
+    - claim_field: "/scoring_signals/1/weight"
+      source_path: "swarm/constants.py"
+      line_ref: "227"
+      quote: "REWARD_W_TIME = 0.45                    # Weight for time efficiency term in reward calculation"
+    - claim_field: "/scoring_signals/2/weight"
+      source_path: "swarm/constants.py"
+      line_ref: "228"
+      quote: "REWARD_W_SAFETY = 0.10                 # Weight for safety term in reward calculation"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "swarm/validator/reward.py"
+      line_ref: "55-56"
+      quote: "min_time = (distance / SPEED_LIMIT) + HOVER_SEC\n    return min_time * 1.06"
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "swarm/validator/reward.py"
+      line_ref: "66-70"
+      quote: >-
+        if min_clearance >= safe: return 1.0 ; if min_clearance <=
+        SAFETY_DISTANCE_DANGER: return 0.0 ; return (min_clearance -
+        SAFETY_DISTANCE_DANGER) / (safe - SAFETY_DISTANCE_DANGER)
+    - claim_field: "/aggregation/notes"
+      source_path: "swarm/validator/reward.py"
+      line_ref: "148-149"
+      quote: "score = (w_success * success_term) + (w_t * time_term) + (w_safety * safety_term)\n    return _clamp(score)"
+    - claim_field: "/aggregation/method"
+      source_path: "swarm/constants.py"
+      line_ref: "223"
+      quote: "WINNER_TAKE_ALL = True                  # Enable winner-take-all rewards (winner gets all available emissions)"
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "swarm/constants.py"
+      line_ref: "217-220"
+      quote: "BURN_EMISSIONS = True ... BURN_FRACTION = 0.95 ... UID_ZERO = 0"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "swarm/validator/utils_parts/weights.py"
+      line_ref: "51-53"
+      quote: "weights_np *= KEEP_FRACTION / total_weight\n        uids_np = np.concatenate(([UID_ZERO], uids_np))\n        weights_np = np.concatenate(([BURN_FRACTION], weights_np))"
+    - claim_field: "/aggregation/normalization"
+      source_path: "swarm/base/validator.py"
+      line_ref: "404-409"
+      quote: "norm = np.linalg.norm(scores_snapshot, ord=1, axis=0, keepdims=True) ... raw_weights = scores_snapshot / norm"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "swarm/base/validator.py"
+      line_ref: "435-443"
+      quote: "result, msg = self.subtensor.set_weights(wallet=self.wallet, netuid=self.config.netuid, uids=uint_uids, weights=uint_weights, ...)"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "swarm/utils/config.py"
+      line_ref: "82-85"
+      quote: '"--neuron.epoch_length", ... default=100,'
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "swarm/utils/config.py"
+      line_ref: "223-226"
+      quote: '"--neuron.moving_average_alpha", ... default=0.1,'
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "swarm/base/validator.py"
+      line_ref: "545-546"
+      quote: "alpha: float = self.config.neuron.moving_average_alpha\n            self.scores = alpha * scattered_rewards + (1 - alpha) * self.scores"
+    - claim_field: "/weight_setting/method"
+      source_path: "swarm/base/burn_validator.py"
+      line_ref: "28-33"
+      quote: "weights = [1.0 if uid == 0 else 0.0 for uid in miner_uids]\n        self.update_scores(weights, miner_uids)\n        self.set_weights()"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "swarm/constants.py"
+      line_ref: "247"
+      quote: "SCREENING_MIN_IMPROVEMENT = 0.015       # Must score above top model + this margin to pass"
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "swarm/validator/reward.py"
+      line_ref: "105-107"
+      quote: "legitimate_model ``True`` if the model passed verification. Legitimate models that fail missions receive a base reward of 0.01."
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "swarm/constants.py"
+      line_ref: "137"
+      quote: "MINER_COMPUTE_BUDGET_SEC = 0.500        # Guaranteed pure-compute budget per step (seconds)"
+    - claim_field: "/sub_competitions/notes"
+      source_path: "swarm/constants.py"
+      line_ref: "297-304"
+      quote: >-
+        CHALLENGE_TYPE_DISTRIBUTION = { 1: 1/6, 2: 1/6, 3: 1/6, 4: 1/6, 5: 1/6,
+        6: 1/6 }  # city/open/mountain/village/warehouse/forest
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "README.md"
+      line_ref: "88-90"
+      quote: >-
+        Ranking is by **average score across 1,000 seeds**. ... Seeds rotate
+        every **7 days** (Monday 16:00 UTC). Each validator generates its own
+        1,000 seeds per epoch.
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "swarm/base/validator.py"
+      line_ref: "493"
+      quote: "self.scores[uid] = 0  # hotkey has been replaced"
+    - claim_field: "/documentation/source_version"
+      source_path: "README.md"
+      line_ref: "16"
+      quote: 'version-v4.0.0-green'
+  unresolved:
+    - "Exact backend (swarm124.com) algorithm that selects the winner UID and produces per-UID weights is server-side and not in this repo; WINNER_TAKE_ALL constant is defined but its application happens in the backend, not in repo code."
+    - "Whether HOVER_SEC=0 and GOAL_TOL precision-landing details affect scoring beyond the success/time terms shown."

@@ -1,0 +1,186 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: full_burn
+mechanism_status_notes: >-
+  The validator does not score miners at all. It forces 100% of weight onto a single
+  hardcoded treasury hotkey every epoch, directing all miner emissions to the Treasury
+  Wallet. Miner code is explicitly deprecated. There is no per-miner scoring/reward path.
+
+subnet:
+  name: "Enigma"
+  owner_repo: "qbittensor-labs__enigma"
+  netuid: 63
+  implementation_lang: python
+
+task:
+  summary: >-
+    Enigma is a decentralized challenge platform: participants compete to break cryptographic
+    systems, AI safeguards, and post-quantum protocols, submitting verified exploit solutions
+    (code + exploits) for funded prize pools. However, the on-chain incentive code rewards no
+    miners: the validator is a "constant-weight" validator that always assigns 100% weight to a
+    single treasury hotkey, and miner code is deprecated. Challenge prizes and rewards are paid
+    off-chain/via treasury governance (validator proposals and votes), not via subnet scoring.
+  submission_format: [source_code]
+
+scoring_signals: []
+
+ground_truth_sources: []
+
+aggregation:
+  method: winner_take_all
+  composition: other
+  composition_other: >-
+    No per-miner aggregation. Scores vector is zeroed and a single entry (the treasury UID) is
+    set to 1.0, then L1-normalized to weights.
+  normalization: l1
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "5DCLafsAKaLeZwm9hjMHvrQNjtucSwBhKyTLYnYmMvhxF2Uc"
+    fraction: 1.0
+    dynamic: false
+    notes: >-
+      100% of weight is forced onto the treasury hotkey UID. All miner emissions are directed
+      to the Treasury Wallet, which accumulates SN63 Alpha tokens.
+  notes: >-
+    self.scores = np.zeros(metagraph.n); self.scores[uid] = 1.0 where uid is the treasury hotkey
+    index. Base set_weights then L1-normalizes (norm = ||scores||_1) so the single non-zero entry
+    becomes weight 1.0.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Constant-weight validator: every epoch it locates the treasury hotkey in the metagraph,
+    zeros the score vector, sets that single UID to 1.0, and calls the base set_weights. If the
+    treasury hotkey is None (passive mode) or not yet in the metagraph, no weights are set.
+  on_chain_call: set_weights
+  tempo_or_interval: "100 blocks (epoch_length default; 12s blocks)"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      The base update_scores EMA (moving_average_alpha default 0.1) exists in the inherited code
+      but is unused: the constant-weight validator overrides set_weights to overwrite self.scores
+      directly each epoch rather than accumulating an EMA over rewards.
+
+anti_gaming: []
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: >-
+    Documentation describes multiple challenges (Treasury Wallet, Q-Day cryptography, AI security)
+    but these are off-chain prize challenges, not encoded sub-competitions in the incentive code.
+
+per_miner_state:
+  tracked: false
+  state_kinds: []
+  status_values: []
+  reset_policy: ""
+  notes: >-
+    The validator persists step/scores/hotkeys to state.npz, but scores are overwritten to a fixed
+    one-hot treasury vector each epoch, so no meaningful per-miner state is maintained.
+
+documentation:
+  status: docs_and_code
+  source_version: "Enigma-Treasury-v1.1-20260505"
+  primary_docs:
+    - "README.md"
+    - "VALIDATORS.md"
+    - "VOTING.md"
+    - "treasury/README.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "5"
+      quote: "# **Enigma** (SN 63)"
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "neurons/validator.py"
+      line_ref: "20-22"
+      quote: "import time\nimport numpy as np\nimport bittensor as bt"
+      confidence: high
+    - claim_field: "/mechanism_status"
+      source_path: "README.md"
+      line_ref: "101"
+      quote: "**Note**: Miner code is deprecated. Only validators are currently supported. The validator automatically sets weights to the treasury wallet."
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "29-33"
+      quote: "1. **Challenges are posted** with funded prize pools in SN63 Alpha. ... 3. **Validators** score and verify solutions. A dedicated validator sets weights to the treasury wallet to distribute emissions and rewards."
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "30"
+      quote: "**Participants compete** by submitting verified solutions (code + exploits). Unlimited resubmissions allowed."
+      confidence: medium
+    - claim_field: "/aggregation/method"
+      source_path: "neurons/validator.py"
+      line_ref: "100-104"
+      quote: "# Force 100% onto this UID only\n        self.scores = np.zeros(metagraph.n, dtype=np.float32)\n        self.scores[uid] = 1.0"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "neurons/validator.py"
+      line_ref: "31"
+      quote: "TREASURY_HOTKEY = \"5DCLafsAKaLeZwm9hjMHvrQNjtucSwBhKyTLYnYmMvhxF2Uc\""
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "neurons/validator.py"
+      line_ref: "47-48"
+      quote: "bt.logging.info(\"Constant-weight validator initialized\")\n            bt.logging.info(\"   -> Will ALWAYS give 100% weight to treasury hotkey: {}\".format(self.treasury_hotkey))"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "README.md"
+      line_ref: "67"
+      quote: "**Funding**: All miner emissions are directed to the Treasury Wallet, accumulating SN63 Alpha tokens."
+      confidence: high
+    - claim_field: "/aggregation/normalization"
+      source_path: "qbittensor/base/validator.py"
+      line_ref: "229-236"
+      quote: "norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True) ... raw_weights = self.scores / norm"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "neurons/validator.py"
+      line_ref: "90-106"
+      quote: "bt.logging.info(\"Setting 100% weight to treasury hotkey: {}\".format(self.treasury_hotkey)) ... uid = metagraph.hotkeys.index(self.treasury_hotkey) ... self.scores[uid] = 1.0 ... super().set_weights()"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "qbittensor/base/validator.py"
+      line_ref: "265-273"
+      quote: "result, msg = self.subtensor.set_weights(wallet=self.wallet, netuid=self.config.netuid, uids=uint_uids, weights=uint_weights, ..."
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "qbittensor/utils/config.py"
+      line_ref: "85-90"
+      quote: "\"--neuron.epoch_length\", type=int, help=\"The default epoch length (how often we set weights, measured in 12 second blocks).\", default=100,"
+      confidence: high
+    - claim_field: "/weight_setting/cadence"
+      source_path: "qbittensor/base/neuron.py"
+      line_ref: "166-170"
+      quote: "return ((self.block - self.metagraph.last_update[self.uid]) > self.config.neuron.epoch_length and self.neuron_type != \"MinerNeuron\")"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "qbittensor/base/validator.py"
+      line_ref: "353-356"
+      quote: "alpha: float = self.config.neuron.moving_average_alpha\n        self.scores: np.ndarray = (alpha * scattered_rewards + (1 - alpha) * self.scores)"
+      confidence: high
+    - claim_field: "/documentation/source_version"
+      source_path: "README.md"
+      line_ref: "50"
+      quote: "Name:                  Enigma-Treasury-v1.1-20260505"
+      confidence: high
+  unresolved:
+    - "No miner scoring signals exist in code (miner code deprecated); scoring_signals and ground_truth_sources left empty intentionally."
+    - "moving_average_alpha default 0.1 exists in config but is not on the active reward path; recorded only in smoothing.notes, not as an active EMA alpha."
+    - "Prize-payout / challenge-verification logic is off-chain (treasury governance proposals/votes); not encoded as subnet incentive in this repo."

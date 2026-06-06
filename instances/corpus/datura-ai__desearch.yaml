@@ -1,0 +1,297 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  Documented scoring (relevance verification + superlinear quality*volume) is active, but a
+  hardcoded ENABLE_EMISSION_CONTROL=True redirects 80% (EMISSION_CONTROL_PERC=0.8) of total
+  weight to a fixed emission-control hotkey before normalization, so most emission is burned/
+  controlled and only the residual 20% is distributed across miners by score.
+
+subnet:
+  name: "Desearch (SN22)"
+  owner_repo: "datura-ai__desearch"
+  netuid: 22
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners run Bittensor axons that serve live AI, X/Twitter, and web search synapses. Validators
+    send synthetic and organic search queries, then independently re-scrape/verify the miner's
+    returned links and tweets against independent providers and LLM judgment. Miners are rewarded
+    for returning relevant, verifiable search results (and summaries) across the three search
+    types, weighted by both quality and the volume of correctly served responses.
+  submission_format: [content_link, api_response]
+
+scoring_signals:
+  - name: twitter_content_relevance
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Per-tweet binary/partial score (validator independently re-fetches tweets via the Apify
+      Twitter scraper actor and compares; LLM relevance check on summaries). Averaged per response.
+  - name: web_basic_search_content_relevance
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Validator independently fetches web links and scores each returned link 0/1, averaging:
+      "sum(scores) / len(scores) if scores else 0.0".
+  - name: summary_relevance
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      SummaryRelevanceRewardModel uses an LLM (RewardLLM, reward_model_name
+      "VMware/open-llama-7b-open-instruct") to judge summary relevance.
+  - name: quality
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Per-(uid,search_type) mean of per-response rewards (0-1), with organic responses weighted
+      ORGANIC_DEEP_SCORE_WEIGHT=5 in the mean.
+  - name: volume
+    metric_kind: volume
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: "Raw count of responses scored for a UID in a search type; enters superlinear formula."
+
+ground_truth_sources:
+  - kind: real_engagement
+    description: >-
+      Validators independently re-scrape the actual tweets/web pages the miner returned (Apify
+      Twitter scraper actor for X; web fetch for web search) and compare to the miner's claimed
+      results.
+    source_identifier: "neurons/validators/apify/twitter_scraper_actor.py; web fetch in web_basic_search_content_relevance.py"
+    trust_model: adversarial
+    notes: "Miner output is verified against an independent provider re-fetch, not trusted as-is."
+  - kind: llm_judgment
+    description: "LLM (RewardLLM) judges summary/content relevance."
+    source_identifier: "neurons/validators/reward/reward_llm.py; VMware/open-llama-7b-open-instruct"
+    trust_model: oracle
+    notes: ""
+  - kind: organic_traffic
+    description: >-
+      Organic responses collected during the epoch are sampled (capped at
+      ORGANIC_SCORE_CAP_PER_TYPE=100) and deep-scored, carrying 5x weight in the per-UID mean.
+    source_identifier: "neurons/validators/scoring/query_scheduler.py"
+    trust_model: adversarial
+    notes: ""
+
+aggregation:
+  method: weighted_average
+  composition: hybrid
+  normalization: l1
+  normalization_other: ""
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "5CUu1QhvrfyMDBELUPJLt4c7uJFbi7TKqDHkS1Zz41oD4dyP"
+    fraction: 0.8
+    dynamic: false
+    notes: >-
+      ENABLE_EMISSION_CONTROL=True; burn_weights() assigns EMISSION_CONTROL_PERC=0.8 of total
+      score to the fixed EMISSION_CONTROL_HOTKEY and rescales the remaining 0.2 across other UIDs.
+  notes: >-
+    Per search type, per-UID (quality, volume) is folded via combine_superlinear_scores:
+    score = (sum_t w_t*q_t)^1.5 * (sum_t w_t*v_t)^1.5 with SEARCH_TYPE_WEIGHTS
+    {ai_search:0.60, x_search:0.20, web_search:0.20} and QUALITY_EXPONENT_ALPHA=VOLUME_EXPONENT_BETA=1.5.
+    Combined scores feed the EMA, which is then L1-normalized (_l1_normalize) into raw weights.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Hourly (UTC) scoring epoch. After EMA update and 80% emission-control burn, weights are
+    L1-normalized and passed through bittensor process_weights (min/max limits), then set on chain
+    with retry (set_weights_with_retry).
+  on_chain_call: set_weights
+  tempo_or_interval: "1 hour (UTC hour boundary scoring epoch)"
+  smoothing:
+    kind: ema
+    alpha: 0.5
+    window: null
+    notes: >-
+      update_moving_averaged_scores: self.moving_averaged_scores = alpha*scattered_rewards +
+      (1-alpha)*self.moving_averaged_scores with alpha = 0.5.
+
+anti_gaming:
+  - kind: deduplication
+    enforcement: penalty
+    description: >-
+      calculate_adjusted_score applies a duplicate_tweets penalty (0.05 per duplicate) and link-
+      count bonus/penalty shaping (max_bonus 0.2, max_links_threshold 10).
+  - kind: liveness_check
+    enforcement: rejection
+    description: >-
+      Responses with dendrite.status_code != 200 are zeroed; pattern_to_check regex rejects
+      completions containing scoring-template/control tokens (returns None).
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Validator re-fetches the miner's claimed tweets/links from independent providers; results
+      that cannot be verified score 0.
+  - kind: stake_weighting
+    enforcement: other
+    enforcement_other: "superlinear consolidation incentive"
+    description: >-
+      Superlinear score = quality^1.5 * volume^1.5 makes consolidating volume into one UID strictly
+      more profitable than splitting across sybil UIDs (per code comment).
+
+sub_competitions:
+  structure: per_task_type
+  stages:
+    - name: ai_search
+      role: main
+      advancement_rule: ""
+      multipliers: {search_type_weight: 0.60}
+    - name: x_search
+      role: main
+      advancement_rule: ""
+      multipliers: {search_type_weight: 0.20}
+    - name: web_search
+      role: main
+      advancement_rule: ""
+      multipliers: {search_type_weight: 0.20}
+  count: 3
+  notes: >-
+    Three search types scored separately then combined with per-type weights into one superlinear
+    per-UID score.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, performance_ledger]
+  status_values: []
+  reset_policy: ""
+  notes: >-
+    moving_averaged_scores EMA persisted across epochs (save/load_moving_averaged_scores); capacity
+    module tracks per-UID per-type quality / declared concurrency / allocation across scoring
+    windows (capacity.update_after_scoring, miner_db allocation state).
+
+documentation:
+  status: code_authoritative
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/running_a_validator.md"
+  completeness: medium
+
+provenance:
+  confidence_overall: high
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  extractor_notes: >-
+    README describes architecture/operations but not numeric scoring; all constants taken from
+    code. Per-search-type reward models verify miner output against independent providers + LLM.
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "6"
+      quote: "# Subnet 22 (SN22) on Bittensor"
+      confidence: high
+    - claim_field: "/subnet/name"
+      source_path: "README.md"
+      line_ref: "11"
+      quote: "SN22 is the Bittensor subnet behind Desearch's decentralized real-time intelligence layer."
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "20"
+      quote: "Sends synthetic and organic queries to miners, verifies results with independent providers, stores scoring windows, and writes weights on-chain."
+      confidence: high
+    - claim_field: "/mechanism_status"
+      source_path: "neurons/validators/scoring/weights.py"
+      line_ref: "30-32"
+      quote: "ENABLE_EMISSION_CONTROL = True ... EMISSION_CONTROL_PERC = 0.8"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "neurons/validators/scoring/weights.py"
+      line_ref: "143-144"
+      quote: "new_target_score = EMISSION_CONTROL_PERC * total_score ... remaining_weight = (1 - EMISSION_CONTROL_PERC) * total_score"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "neurons/validators/scoring/weights.py"
+      line_ref: "31"
+      quote: 'EMISSION_CONTROL_HOTKEY = "5CUu1QhvrfyMDBELUPJLt4c7uJFbi7TKqDHkS1Zz41oD4dyP"'
+      confidence: high
+    - claim_field: "/aggregation/normalization"
+      source_path: "neurons/validators/scoring/weights.py"
+      line_ref: "209-213"
+      quote: "def _l1_normalize(x): norm = np.abs(x).sum() ... return x / norm"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "neurons/validators/scoring/query_scheduler.py"
+      line_ref: "51-53"
+      quote: "combined[uid] = (q_combined**QUALITY_EXPONENT_ALPHA * v_combined**VOLUME_EXPONENT_BETA)"
+      confidence: high
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "neurons/validators/scoring/query_scheduler.py"
+      line_ref: "27-28"
+      quote: "QUALITY_EXPONENT_ALPHA = 1.5 ... VOLUME_EXPONENT_BETA = 1.5"
+      confidence: high
+    - claim_field: "/sub_competitions/stages/0/multipliers"
+      source_path: "neurons/validators/scoring/query_scheduler.py"
+      line_ref: "15-19"
+      quote: 'SEARCH_TYPE_WEIGHTS = {"ai_search": 0.60, "x_search": 0.20, "web_search": 0.20}'
+      confidence: high
+    - claim_field: "/ground_truth_sources/2/notes"
+      source_path: "neurons/validators/scoring/query_scheduler.py"
+      line_ref: "21-22"
+      quote: "ORGANIC_DEEP_SCORE_WEIGHT = 5 ... ORGANIC_SCORE_CAP_PER_TYPE = 100"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "neurons/validators/validator.py"
+      line_ref: "280-285"
+      quote: "alpha = 0.5 ... self.moving_averaged_scores = (alpha * scattered_rewards + (1 - alpha) * self.moving_averaged_scores)"
+      confidence: high
+    - claim_field: "/weight_setting/cadence"
+      source_path: "neurons/validators/scoring/query_scheduler.py"
+      line_ref: "62-64"
+      quote: "Lifecycle per UTC hour: ... On hour boundary -> score the previous hour's responses and update capacity."
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "neurons/validators/scoring/weights.py"
+      line_ref: "72-79"
+      quote: "success, message = await subtensor.set_weights(wallet=wallet, netuid=netuid, uids=uids, weights=weights, ...)"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "neurons/validators/reward/reward.py"
+      line_ref: "257-259"
+      quote: "if duplicate_tweets_count > 0: penalty_score = duplicate_tweets_count * 0.05; adjusted_score = max(0, adjusted_score - penalty_score)"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "neurons/validators/reward/reward.py"
+      line_ref: "82-87"
+      quote: "if response.dendrite.status_code == 200 and completion: if re.search(pattern_to_check, completion, ...): ... return None"
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "neurons/validators/scoring/query_scheduler.py"
+      line_ref: "24-28"
+      quote: "Both >1 make consolidating a UID strictly more profitable than splitting, so two half-volume sybil UIDs always earn less than one full-volume UID."
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "neurons/validators/reward/web_basic_search_content_relevance.py"
+      line_ref: "195"
+      quote: "return sum(scores) / len(scores) if scores else 0.0"
+      confidence: high
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "neurons/validators/reward/summary_relevance.py"
+      line_ref: "34"
+      quote: 'reward_model_name: str = "VMware/open-llama-7b-open-instruct"'
+      confidence: high
+    - claim_field: "/per_miner_state/notes"
+      source_path: "neurons/validators/validator.py"
+      line_ref: "287"
+      quote: "await save_moving_averaged_scores(self.moving_averaged_scores)"
+      confidence: high
+  unresolved:
+    - "Exact per-tweet relevance scoring rubric in twitter_content_relevance.py (tweet_score 0/1 branches) not fully transcribed into a single weighted signal."
+    - "Capacity allocation algorithm (allocate_synthetic_budget) numeric parameters not extracted."
+    - "min_allowed_weights / max_weight_limit are fetched dynamically from chain, so min_weight_floor left null."

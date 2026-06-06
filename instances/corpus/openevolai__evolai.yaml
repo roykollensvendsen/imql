@@ -1,0 +1,358 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: mixed
+mechanism_status_notes: >-
+  Production weight-setting uses the loss/DPO-margin ProgressTracker score raised to
+  WEIGHT_EXPONENT, split equally per active track. Emissions are burned to UID 0 only
+  dynamically: a per-round emission_scale in [emission_floor, 1.0] decays from the last time
+  a miner was improving/near-frontier, and the burn UID receives (1 - effective_budget).
+  When miners are active, scale is 1.0 (no burn beyond budget cap); when the subnet stagnates,
+  emission decays toward UID 0. A separate interview-style scoring.py module (Validity +
+  Questions + Interview - Loop penalties) exists but is NOT the path used by the validator
+  weight worker.
+
+subnet:
+  name: "EvolAI"
+  owner_repo: "openevolai__evolai"
+  netuid: 47
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners publish open HuggingFace language models (model name must contain "evolai") in the
+    "transformer" or "mamba2" track and register them on-chain via commitment metadata.
+    Validators download each model and measure cross-entropy loss and reasoning quality on a
+    deterministic per-epoch challenge set: a per-token base CE on ground-truth responses, a
+    thinking-augmented CE, DPO-style margins (CE of model-generated vs ground-truth response),
+    and binary side-quest accuracy. Lower loss / better reasoning that genuinely improves over
+    time is rewarded.
+  submission_format: [model_weights]
+
+scoring_signals:
+  - name: absolute_quality
+    metric_kind: loss
+    direction: lower_is_better
+    weight: null
+    normalization: ema
+    notes: >-
+      DPO-base absolute = min(1.0, exp(gamma * ema_dpo_base)) where dpo_base_margin =
+      CE(G_base|q) - CE(T|q) (always <= 0). Falls back to exp(-gamma*ema_base_ce) for miners
+      without DPO history. Combined with think_gain into quality = absolute*(0.60+0.40*think_gain),
+      then weighted by (w_abs + w_think) = 0.75. Weight is non-additive (entangled with think_gain),
+      so left null.
+  - name: think_gain
+    metric_kind: reward
+    direction: higher_is_better
+    weight: null
+    normalization: ema
+    notes: >-
+      think_gain = max(0, tanh(ema_dpo_think - ema_dpo_base)); multiplicative on absolute via
+      quality = absolute*(0.60 + 0.40*think_gain). A memorizer (think_gain~0) reaches only 60%
+      of absolute. Not an additive signal -> weight null.
+  - name: flow
+    metric_kind: risk_adjusted_ratio
+    direction: higher_is_better
+    weight: 0.15
+    normalization: ema
+    notes: >-
+      W_FLOW=0.15. Sharpe ratio of the EMA trend of dpo_think_margin (or CE fallback):
+      sharpe = mu_delta/(sigma_delta + flow_eps), flow = max(0, tanh(sharpe)). Requires
+      >= MIN_FLOW_EPOCHS=10 records.
+  - name: side_quest_accuracy
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.10
+    normalization: ema
+    notes: >-
+      W_SQ=0.10. EMA of side-quest accuracy (fraction of deterministic math side-quest answers
+      correct, binary per quest, 2 quests per sample).
+  - name: per_miner_scale
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: ema
+    notes: >-
+      Multiplicative final scale in [0,1]: miner_scale = W_IMPROVEMENT*improvement +
+      W_PROXIMITY*proximity (0.3/0.7). improvement = max(0, tanh(long_ema - short_ema));
+      proximity = min(1, global_best_long_ema/long_ema). raw_score is multiplied by miner_scale.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Per-epoch challenge rows drawn deterministically (epoch seed committed on-chain) from the
+      ACTIVE_DATASETS HuggingFace dataset(s); ground-truth instruction/response pairs used as the
+      teacher-forced target for CE and as the reference T in DPO margins.
+    source_identifier: "evolai/universal_qa"
+    trust_model: trusted
+    notes: "ACTIVE_DATASETS default 'evolai/universal_qa'; N_EVAL=10 rows per dataset."
+  - kind: deterministic_dataset
+    description: >-
+      Side-quest turns: deterministic math questions generated from block_hash + sample index;
+      answer-matching is binary (0 if correct answer appears in output, else counted via
+      check_side_quest_answer).
+    source_identifier: "evolai.validator.side_quests.generate_side_quests"
+    trust_model: trusted
+    notes: "SIDE_QUEST_N=2 per sample; turn order shuffled deterministically by block_hash+index."
+
+aggregation:
+  method: proportional
+  composition: hybrid
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: null
+    dynamic: true
+    notes: >-
+      STAGNATION_BURN_UID=0. Burn UID weight = max(0, 1 - effective_budget), where
+      effective_budget = miner_budget * emission_scale. emission_scale is 1.0 when any miner is
+      improving or near-frontier, else decays exp(-EMISSION_LAMBDA*staleness_days) floored at
+      EMISSION_FLOOR=0.2. miner_budget = min(1, DAILY_TAO_EMISSION/(alpha_price*DAILY_ALPHA_EMISSION)),
+      defaulting to 1.0 when price unavailable.
+  notes: >-
+    Per-track: per-miner final score is raised to WEIGHT_EXPONENT=2.0, normalized within the
+    track (sum to 1), then scaled by an equal _share = 1/num_active_tracks across tracks, then
+    multiplied by effective_budget. Final weight vector normalized to sum to 1 on-chain.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    Background weight-updater thread runs every _WEIGHT_INTERVAL_S=600s. For each active track,
+    score**WEIGHT_EXPONENT normalized to sum 1, multiplied by equal track share and effective
+    budget; burn UID gets the residual. set_weights called with wait_for_inclusion=True.
+  on_chain_call: set_weights
+  tempo_or_interval: "600 seconds (weight worker); EPOCH_BLOCKS=360 for eval epochs"
+  smoothing:
+    kind: ema
+    alpha: 0.10
+    window: null
+    notes: >-
+      PROGRESS_EMA_ALPHA=0.10 used as the per-signal EMA over epoch history (_ema). Short/long
+      EMAs for improvement/proximity use alpha = 2/(N+1) with EMA_SHORT_ROUNDS=140,
+      EMA_LONG_ROUNDS=1800. Loss/score history capped at HISTORY_EPOCHS=1800 records.
+
+anti_gaming:
+  - kind: code_inspection
+    enforcement: barrier
+    description: >-
+      Model name must contain 'evolai' and be a public HuggingFace model; supported tracks
+      transformer/mamba2. VALID_PARAM_RANGES_B gates allowed parameter counts to three bands
+      (~0.45-0.48B, 1.5-1.8B, 3.5-3.8B).
+  - kind: plagiarism_detection
+    enforcement: elimination
+    description: >-
+      copy_gaming: model_fingerprint.py flags a UID whose model fingerprint matches another UID's
+      (exact weight hash, structural clone, or near-copy); EMA score forced to 0 and evaluation
+      skipped (score_zero_copy_gaming). Note: enforcement lives in the interview/scoring.py path.
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      Anti-memorization: absolute quality uses DPO-base margin only (not think margin), so a
+      miner degrading base quality while faking thinking traces gets absolute=0. Special-token
+      literals (<|...|>) are stripped from miner decodes to block injected fake turn boundaries.
+  - kind: commit_reveal
+    enforcement: barrier
+    description: >-
+      Epoch seed is committed on-chain one epoch ahead (generate_seed/commit_epoch_seed) and used
+      to derive eval rows the NEXT epoch, so miners cannot precompute on the live eval set.
+  - kind: rate_limit
+    enforcement: penalty
+    description: >-
+      Answer-loop detection: LOOP_WARNING_PENALTY=0.1 per warning; identical response repeated
+      >= LOOP_CIRCUIT_BREAKER=5 forces score 0 (answer_loop_circuit_break). (scoring.py path.)
+
+sub_competitions:
+  structure: multi_mechanism
+  stages:
+    - name: transformer
+      role: main
+      advancement_rule: ""
+    - name: mamba2
+      role: main
+      advancement_rule: ""
+  count: 2
+  notes: >-
+    Two parallel tracks (transformer, mamba2) evaluated and weighted independently; each active
+    track receives an equal emission share (1/num_active_tracks).
+
+per_miner_state:
+  tracked: true
+  state_kinds: [performance_ledger, cumulative_score, registration_age]
+  status_values: []
+  reset_policy: >-
+    Per-UID epoch history (deque maxlen=HISTORY_EPOCHS=1800) wiped on hotkey/coldkey change;
+    coldkey:hotkey history archived and restorable within COLDKEY_ARCHIVE_TTL_DAYS=7. Loss
+    history reset when a miner's model_name changes.
+  notes: >-
+    ProgressTracker persists EpochRecord history (loss, thinking_loss, base_loss, sq_accuracy,
+    dpo_think_margin, dpo_base_margin, model_revision) per UID to progress_tracker.json.
+
+documentation:
+  status: code_authoritative
+  source_version: null
+  primary_docs: ["README.md", "VALIDATOR_INTERVIEW_EVALUATION.md (referenced by scoring.py docstring)"]
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "evolai/cli/commands/validator.py"
+      line_ref: "643-647"
+      quote: "netuid: Optional[int] = typer.Option(\n        47,\n        \"--netuid\",\n        help=\"Subnet UID (default: 47)\""
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "evolai/validator/loss_evaluator.py"
+      line_ref: "16-17"
+      quote: "import numpy as np\nimport torch"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "26-39"
+      quote: "Model name must contain `evolai`\n- Model must be public on HuggingFace\n- Supported tracks: `transformer`, `mamba2`"
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "evolai/cli/commands/validator.py"
+      line_ref: "288-291"
+      quote: "has_transformer = bool(transformer_info.get('model_name'))\n                has_mamba2 = bool(mamba2_info.get('model_name'))"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "evolai/validator/progress_tracker.py"
+      line_ref: "482-492"
+      quote: "absolute = min(1.0, math.exp(self.gamma * ema_dpo_base))\n            else:\n                absolute = 0.0\n        else:\n            # Fallback: CE-based absolute for miners without DPO history."
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "evolai/validator/progress_tracker.py"
+      line_ref: "547"
+      quote: "quality = absolute * (0.60 + 0.40 * think_gain)"
+      confidence: high
+    - claim_field: "/scoring_signals/2/weight"
+      source_path: "evolai/validator/config.py"
+      line_ref: "174"
+      quote: "W_FLOW: float = _env(\"W_FLOW\", 0.15, cast=float)"
+      confidence: high
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "evolai/validator/progress_tracker.py"
+      line_ref: "526-527"
+      quote: "sharpe = mu_delta / (sigma_delta + self.flow_eps)\n                flow = max(0.0, math.tanh(sharpe))"
+      confidence: high
+    - claim_field: "/scoring_signals/3/weight"
+      source_path: "evolai/validator/config.py"
+      line_ref: "177"
+      quote: "W_SQ: float = _env(\"W_SQ\", 0.10, cast=float)"
+      confidence: high
+    - claim_field: "/scoring_signals/4/notes"
+      source_path: "evolai/validator/progress_tracker.py"
+      line_ref: "437"
+      quote: "return self.w_improvement * improvement + self.w_proximity * proximity"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes/raw_score"
+      source_path: "evolai/validator/progress_tracker.py"
+      line_ref: "548-554"
+      quote: "raw_score = (\n            (self.w_abs + self.w_think) * quality\n            + self.w_flow * flow\n            + self.w_sq * sq_acc_ema\n        )\n        miner_scale = self._compute_miner_scale(losses, global_best_long_ema)\n        return raw_score * miner_scale"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "evolai/validator/config.py"
+      line_ref: "226-232"
+      quote: "_active_datasets_raw: str = _env(\n        \"ACTIVE_DATASETS\",\n        \"evolai/universal_qa\",\n    )"
+      confidence: high
+    - claim_field: "/ground_truth_sources/1/description"
+      source_path: "evolai/validator/loss_evaluator.py"
+      line_ref: "982-983"
+      quote: "quests = generate_side_quests(block_hash, sample_idx, n=2)\n        turn_order = shuffle_turn_order(block_hash, sample_idx, n_turns=3)"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "evolai/cli/commands/validator.py"
+      line_ref: "1162-1178"
+      quote: "_exp = {\n                            u: sc ** WEIGHT_EXPONENT\n                            for u, sc in _ts.items()\n                        }\n                        _tot = sum(_exp.values())"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "evolai/validator/config.py"
+      line_ref: "134"
+      quote: "STAGNATION_BURN_UID: int = 0"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/dynamic"
+      source_path: "evolai/cli/commands/validator.py"
+      line_ref: "1174-1178"
+      quote: "_effective_budget = _miner_budget * _emission_scale\n                    for _i in range(256):\n                        if _i != _burn_uid:\n                            _wts[_i] *= _effective_budget\n                    _wts[_burn_uid] = max(0.0, 1.0 - _effective_budget)"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "evolai/validator/progress_tracker.py"
+      line_ref: "718-720"
+      quote: "staleness_days = (time.time() - self._last_good_miner_ts) / 86400.0\n        scale = math.exp(-self.emission_lambda * staleness_days)\n        return max(self.emission_floor, min(1.0, scale))"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "evolai/cli/commands/validator.py"
+      line_ref: "1181-1188"
+      quote: "_sw_result = subtensor.set_weights(\n                            netuid=netuid,\n                            wallet=wallet,\n                            uids=_all_uids,\n                            weights=_wts,"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "evolai/cli/commands/validator.py"
+      line_ref: "1075"
+      quote: "_WEIGHT_INTERVAL_S = 600"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "evolai/validator/config.py"
+      line_ref: "186"
+      quote: "PROGRESS_EMA_ALPHA: float = _env(\"PROGRESS_EMA_ALPHA\", 0.10, cast=float)"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "evolai/validator/config.py"
+      line_ref: "204-205"
+      quote: "EMA_SHORT_ROUNDS: int = _env(\"EMA_SHORT_ROUNDS\", 140, cast=int)\nEMA_LONG_ROUNDS: int = _env(\"EMA_LONG_ROUNDS\", 1800, cast=int)"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "evolai/validator/config.py"
+      line_ref: "65-69"
+      quote: "VALID_PARAM_RANGES_B: list[tuple[float, float]] = [\n    (0.45, 0.48),\n    (1.5,  1.8),\n    (3.5,  3.8),\n]"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "evolai/validator/scoring.py"
+      line_ref: "12-14"
+      quote: "\"copy_gaming\"                — model fingerprint matches another UID's model;\n                               detected by model_fingerprint.py during validation"
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "evolai/validator/progress_tracker.py"
+      line_ref: "475-481"
+      quote: "We deliberately do NOT use dpo_think here.  A miner that degrades\n        # base performance while faking good thinking traces would otherwise\n        # keep absolute high"
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "evolai/cli/commands/validator.py"
+      line_ref: "1418-1425"
+      quote: "# Generate and commit a new seed for this epoch.\n                    # Miners will see it on-chain and prepare during this epoch;\n                    # it will be used for evaluation in the NEXT epoch."
+      confidence: high
+    - claim_field: "/anti_gaming/4/description"
+      source_path: "evolai/validator/config.py"
+      line_ref: "338-339"
+      quote: "LOOP_WARNING_PENALTY: float = _env(\"LOOP_WARNING_PENALTY\", 0.1, cast=float)\nLOOP_CIRCUIT_BREAKER: int = _env(\"LOOP_CIRCUIT_BREAKER\", 5, cast=int)"
+      confidence: high
+    - claim_field: "/sub_competitions/notes"
+      source_path: "evolai/cli/commands/validator.py"
+      line_ref: "1156-1160"
+      quote: "_share = (\n                        1.0 / len(_active_tracks_w)\n                        if _active_tracks_w\n                        else 0.0\n                    )"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "evolai/validator/progress_tracker.py"
+      line_ref: "254-265"
+      quote: "if hotkey_changed or coldkey_changed:\n            ...\n            if state.coldkey and state.history:\n                self._archive_miner(state)"
+      confidence: high
+    - claim_field: "/per_miner_state/notes"
+      source_path: "evolai/validator/progress_tracker.py"
+      line_ref: "16-27"
+      quote: "class EpochRecord:\n    epoch: int\n    loss: float\n    thinking_loss: float\n    model_revision: str\n    validator_uid: int"
+      confidence: high
+    - claim_field: "/mechanism_status"
+      source_path: "evolai/cli/commands/validator.py"
+      line_ref: "1097-1106"
+      quote: "_emission_scale = progress_tracker.compute_emission_scale(\n                        uids=_all_eval_uids\n                    )"
+      confidence: medium
+  unresolved:
+    - "EVAL_SALT / exact dataset row derivation (derive_indices) not read in detail."
+    - "Whether scoring.py interview path (Validity+Questions+Interview-Loop) is ever wired into weights or is legacy/dead — the run worker uses ProgressTracker only; copy_gaming/loop penalties are documented there but enforcement call sites not confirmed in the active loop."
+    - "PROGRESS_GAMMA=1.0 / gamma used inside exp() is a config default but its effect on absolute is entangled; treated as code-default not a documented constant."
+    - "DAILY_ALPHA_EMISSION=2952 / DAILY_TAO_EMISSION=0.5 budget cap interacts with emission_scale; exact live alpha price behavior not observable from source."

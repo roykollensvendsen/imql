@@ -1,0 +1,227 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Validators score miner responses via an external BitQuant Agent API and set weights
+  from L1-normalized EMA scores. No burn allocation is present in the code. The reward
+  is fully delegated to a remote evaluation endpoint; the actual scoring logic lives
+  off-repo behind the API.
+
+subnet:
+  name: "BitQuant Subnet"
+  owner_repo: "OpenGradient__BitQuant-Subnet"
+  netuid: 15
+  implementation_lang: python
+
+task:
+  summary: >-
+    A miner runs the BitQuant agent for AI-powered quantitative DeFi analysis. The validator
+    sends a natural-language QuantQuery; the miner forwards it to BitQuant and returns a
+    QuantResponse (response text, signature, proofs, metadata). The response is rewarded by a
+    quality score in [0.0, 1.0] obtained from the BitQuant Agent evaluation API.
+  submission_format: [api_response]
+
+scoring_signals:
+  - name: bitquant_agent_evaluation_score
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      Single score in [0.0, 1.0] returned by the BitQuant Agent API endpoint
+      (quant-api.opengradient.ai/api/subnet/evaluate). Code clamps the value to
+      max(0.0, min(1.0, score)) and defaults to 0.0 on any failure, None response,
+      or empty response content. The exact evaluation logic runs off-repo behind the API.
+
+ground_truth_sources:
+  - kind: llm_judgment
+    description: >-
+      The production BitQuant Agent deployment evaluates the miner's response via an HTTP API.
+      Validators are explicitly invited to design their own evaluation mechanism.
+    source_identifier: "https://quant-api.opengradient.ai/api/subnet/evaluate"
+    trust_model: oracle
+    notes: >-
+      Off-chain remote API; the actual scoring model is not in this repository
+      (see https://github.com/OpenGradient/BitQuant).
+
+aggregation:
+  method: weighted_average
+  composition: weighted_sum
+  normalization: l1
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: "No burn allocation present in the weight-setting code."
+  notes: >-
+    There is a single scoring signal. EMA-smoothed scores are L1-normalized
+    (raw_weights = self.scores / norm, norm = L1 norm) before being processed for
+    on-chain emission.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Per-step EMA of API reward scores; on sync, scores are L1-normalized, passed through
+    process_weights_for_netuid and convert_weights_and_uids_for_emit, then committed via
+    subtensor.set_weights with version_key=spec_version.
+  on_chain_call: set_weights
+  tempo_or_interval: "100 blocks (neuron.epoch_length, 12s blocks)"
+  smoothing:
+    kind: ema
+    alpha: 0.1
+    window: null
+    notes: >-
+      update_scores applies scores = alpha * scattered_rewards + (1 - alpha) * scores,
+      with neuron.moving_average_alpha default 0.1.
+
+anti_gaming:
+  - kind: hardware_validation
+    enforcement: penalty
+    description: >-
+      A TEE GPU remote-attestation framework exists (retrieve_remote_attestation /
+      validate_attestation against golden_measurements.json, plus a periodic check), but the
+      hard attestation gate in reward() is commented out: "no hard TEE attestation check
+      requirement for now". So it is implemented but not currently enforced in scoring.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      Validator queries require a validator permit / vpermit; neuron.vpermit_tao_limit default
+      4096 caps TAO allowed to query a validator with a vpermit (see add_validator_args).
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score]
+  status_values: []
+  reset_policy: >-
+    On metagraph resync, scores for replaced hotkeys are zeroed; state (step, scores, hotkeys)
+    is persisted to state.npz.
+  notes: >-
+    self.scores is a per-UID EMA moving average over float32, updated each step via update_scores.
+
+documentation:
+  status: docs_and_code
+  source_version: "quant __version__ 0.1.0; __spec_version__ 100000"
+  primary_docs:
+    - "README.md"
+    - "quant/validator/reward.py"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/name"
+      source_path: "README.md"
+      line_ref: "5"
+      quote: "# **Subnet 15: BitQuant Subnet**"
+      confidence: high
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "55"
+      quote: "python neurons/validator.py --netuid 15 --subtensor.network finney"
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "quant/validator/reward.py"
+      line_ref: "17-21"
+      quote: "import numpy as np\nimport requests\nimport json\n... import bittensor as bt"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "quant/validator/reward.py"
+      line_ref: "109-119"
+      quote: "Evaluate a miner's response using the BitQuant Agent API and return a reward score."
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "quant/validator/reward.py"
+      line_ref: "60-65"
+      quote: "\"quant_response\": { \"response\": response.response, \"signature\": ..., \"proofs\": [...], \"metadata\": response.metadata }"
+      confidence: high
+    - claim_field: "/scoring_signals/0/metric_kind"
+      source_path: "quant/validator/reward.py"
+      line_ref: "31-36"
+      quote: "Helper function to evaluate a miner's response using the BitQuant Agent API."
+      confidence: medium
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "quant/validator/reward.py"
+      line_ref: "146-150"
+      quote: "score = max(0.0, min(1.0, score))"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "quant/validator/reward.py"
+      line_ref: "34"
+      quote: "api_url: str = \"https://quant-api.opengradient.ai/api/subnet/evaluate\""
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "quant/validator/reward.py"
+      line_ref: "39-41"
+      quote: "but we welcome validators to design their own subnet query evaluation mechanism."
+      confidence: high
+    - claim_field: "/aggregation/normalization"
+      source_path: "quant/base/validator.py"
+      line_ref: "234-241"
+      quote: "norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True) ... raw_weights = self.scores / norm"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/enabled"
+      source_path: "quant/base/validator.py"
+      line_ref: "272-280"
+      quote: "result, msg = self.subtensor.set_weights(wallet=self.wallet, netuid=self.config.netuid, uids=uint_uids_converted, weights=uint_weights_converted, ...)"
+      confidence: medium
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "quant/base/validator.py"
+      line_ref: "272-280"
+      quote: "result, msg = self.subtensor.set_weights(... version_key=self.spec_version,)"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "quant/utils/config.py"
+      line_ref: "83-88"
+      quote: "--neuron.epoch_length ... \"The default epoch length (how often we set weights, measured in 12 second blocks).\", default=100,"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "quant/utils/config.py"
+      line_ref: "210-215"
+      quote: "--neuron.moving_average_alpha ... default=0.1,"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/kind"
+      source_path: "quant/base/validator.py"
+      line_ref: "361-364"
+      quote: "alpha: float = self.config.neuron.moving_average_alpha\n self.scores = (alpha * scattered_rewards + (1 - alpha) * self.scores)"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "quant/validator/reward.py"
+      line_ref: "172-182"
+      quote: "TEE remote attestation check -> no hard TEE attestation check requirement for now"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "quant/utils/config.py"
+      line_ref: "227-232"
+      quote: "--neuron.vpermit_tao_limit ... \"The maximum number of TAO allowed to query a validator with a vpermit.\", default=4096,"
+      confidence: high
+    - claim_field: "/per_miner_state/state_kinds"
+      source_path: "quant/base/validator.py"
+      line_ref: "362-364"
+      quote: "self.scores: np.ndarray = (alpha * scattered_rewards + (1 - alpha) * self.scores)"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "quant/base/validator.py"
+      line_ref: "304-306"
+      quote: "if hotkey != self.metagraph.hotkeys[uid]: self.scores[uid] = 0  # hotkey has been replaced"
+      confidence: high
+    - claim_field: "/documentation/source_version"
+      source_path: "quant/__init__.py"
+      line_ref: "30-34"
+      quote: "__version__ = '0.1.0' ... __spec_version__ = 100000  # Match network requirement"
+      confidence: high
+  unresolved:
+    - "Exact evaluation/scoring algorithm: it runs off-repo behind the BitQuant Agent API; the score's internal computation is not visible in this repository."
+    - "mechanism_status burn vs active on the live chain cannot be confirmed from source; code contains no burn logic, so status set to active based on code."
+    - "sample_size default 256 vs actual registered miner count; per-step miner selection uses get_random_uids (quant/utils/uids.py) not fully inspected."

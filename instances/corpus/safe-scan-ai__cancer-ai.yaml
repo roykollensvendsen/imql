@@ -1,0 +1,243 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  The UID-0 burn override in set_weights() is commented out (lines 303-309 of
+  base_validator.py), so weights are emitted from real competition scores. Rewards
+  are distributed to the top-10 miners per competition via SCORE_DISTRIBUTION with
+  minimal participation rewards beyond rank 10.
+
+subnet:
+  name: "SAFE SCAN (cancer-ai)"
+  owner_repo: "safe-scan-ai__cancer-ai"
+  netuid: 76
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners submit ONNX cancer-detection (skin lesion classification) models referenced
+    on-chain; validators download each model and evaluate it on a held-out dataset
+    pushed to HuggingFace. Models are scored by classification quality (accuracy +
+    risk-category-weighted F1) plus a model-size efficiency term. Per competition,
+    the top-10 miners (ranked by moving-average score) receive a fixed reward split,
+    and the winner is the highest moving-average model.
+  submission_format: [model_weights]
+
+scoring_signals:
+  - name: prediction_quality
+    metric_kind: composite
+    direction: higher_is_better
+    weight: 0.9
+    normalization: none
+    notes: >-
+      prediction_score = ACCURACY_WEIGHT*accuracy + WEIGHTED_F1_WEIGHT*weighted_f1
+      with ACCURACY_WEIGHT=0.5 and WEIGHTED_F1_WEIGHT=0.5; contributes to final score
+      with PREDICTION_WEIGHT=0.9. weighted_f1 is computed over risk categories with
+      CATEGORY_WEIGHTS HIGH_RISK=3.0, MEDIUM_RISK=2.0, BENIGN=1.0.
+  - name: efficiency
+    metric_kind: composite
+    direction: higher_is_better
+    weight: 0.1
+    normalization: min_max
+    notes: >-
+      efficiency_score linearly interpolated from model size in MB: 1.0 at
+      MIN_MODEL_SIZE_MB=50, 0.0 at MAX_MODEL_SIZE_MB=150; contributes with
+      EFFICIENCY_WEIGHT=0.1. final_score = 0.9*prediction_score + 0.1*efficiency_score.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Held-out labeled skin-lesion image dataset (with age/gender/location metadata)
+      released by organizations to HuggingFace and detected by the validator's
+      monitor_datasets loop; evaluation is deterministic (rounded metrics, fixed
+      preprocessing).
+    source_identifier: "HuggingFace dataset repos (data_package.dataset_hf_repo / dataset_hf_filename)"
+    trust_model: trusted
+    notes: "competition_id e.g. tricorder-3; datasets pushed for evaluation."
+
+aggregation:
+  method: rank_based
+  composition: weighted_sum
+  normalization: none
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: >-
+      A UID-0 burn block exists in set_weights() but is fully commented out
+      (raw_weights[0]=1.0; raw_weights[1:]=0.0), so no burn is applied.
+  notes: >-
+    Per competition, hotkeys are ranked by average score (descending); top-10 get
+    fixed fractions from SCORE_DISTRIBUTION (1st 0.50, 2nd 0.17, 3rd 0.10, 4th 0.07,
+    5th 0.05, 6th 0.04, 7th 0.03, 8th 0.02, 9th 0.01, 10th 0.005) scaled by the
+    per-competition weight; miners beyond top-10 share BEYOND_TOP_10_TOTAL_SCORE=0.005
+    via a linear-rank formula. Competition weights come from a competition_weights.yml
+    file on HuggingFace.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    self.scores accumulated across competitions in update_scores(); set_weights()
+    L1-normalizes scores (raw_weights = scores/norm), processes via
+    process_weights_for_netuid, then calls subtensor.set_weights.
+  on_chain_call: set_weights
+  tempo_or_interval: "180 blocks"
+  smoothing:
+    kind: sma
+    alpha: null
+    window: 5
+    notes: >-
+      Per-competition per-hotkey score is a moving average over the last
+      MOVING_AVERAGE_LENGTH=5 scores (update_average_score); score history capped at
+      HISTORY_LENGTH=10. epoch length default 180 blocks (config neuron.epoch_length).
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Dataset/metadata validation in BaseTricorderCompetitionHandler: if more than
+      MAX_INVALID_ENTRIES=2 entries are invalid the competition is cancelled
+      (raise ValueError). Metrics rounded to 6 decimals and preprocessing fixed for
+      deterministic scoring across hardware.
+  - kind: deduplication
+    enforcement: penalty
+    description: >-
+      get_comparable_result builds a sha256 signature over sampled top-class/prob
+      predictions to group duplicate model submissions (anti-copy of predictions).
+
+sub_competitions:
+  structure: multi_mechanism
+  stages: []
+  count: null
+  notes: >-
+    Multiple independent competitions run concurrently, each keyed by competition_id
+    (e.g. tricorder-3); per-competition weights are read from competition_weights.yml.
+    Reward pool per competition = total miner emission divided by number of
+    competitions (per README).
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, performance_ledger]
+  status_values: []
+  reset_policy: >-
+    Per-hotkey score history kept to last HISTORY_LENGTH=10 entries; dead hotkeys
+    (not in metagraph) removed via delete_dead_hotkeys; replaced hotkeys zeroed in
+    resync_metagraph.
+  notes: >-
+    CompetitionResultsStore holds score_map {competition_id:{hotkey:[ModelScore]}},
+    average_scores, and current_top_hotkeys; persisted to state.json.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs: ["README.md", "DOCS/COMPETITIONS.md"]
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "cancer_ai/utils/config.py"
+      line_ref: "75"
+      quote: 'parser.add_argument("--netuid", type=int, help="Subnet netuid", default=76)'
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "neurons/validator.py"
+      line_ref: "34-35"
+      quote: "import bittensor as bt\nimport numpy as np"
+    - claim_field: "/task/summary"
+      source_path: "neurons/validator.py"
+      line_ref: "257-281"
+      quote: "async def run_competition_for_data_package(self, data_package: NewDatasetFile, local_mode: bool = False):\n        competition_id = data_package.competition_id ... winning_hotkey, _ = await competition_manager.evaluate()"
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "112-116"
+      quote: "Safe Scan organizes ongoing competitions focused on cancer detection using machine learning ... Rewards are distributed among the top 10 performing miners in each competition"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "cancer_ai/validator/competition_handlers/tricorder_common.py"
+      line_ref: "51-55,647-660"
+      quote: "PREDICTION_WEIGHT = 0.9\nEFFICIENCY_WEIGHT = 0.1\nACCURACY_WEIGHT = 0.5\nWEIGHTED_F1_WEIGHT = 0.5 ... prediction_score = (ACCURACY_WEIGHT * metrics[\"accuracy\"] + WEIGHTED_F1_WEIGHT * metrics[\"weighted_f1\"])"
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "cancer_ai/validator/competition_handlers/tricorder_common.py"
+      line_ref: "52,657-659"
+      quote: "PREDICTION_WEIGHT = 0.9 ... final_score = (PREDICTION_WEIGHT * prediction_score + EFFICIENCY_WEIGHT * efficiency_score)"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "cancer_ai/validator/competition_handlers/tricorder_common.py"
+      line_ref: "47-49,729-739"
+      quote: "MIN_MODEL_SIZE_MB = 50\nMAX_MODEL_SIZE_MB = 150 ... efficiency_score = 1.0 - ((model_size_mb - MIN_MODEL_SIZE_MB) / (MAX_MODEL_SIZE_MB - MIN_MODEL_SIZE_MB))"
+    - claim_field: "/scoring_signals/0/notes/category_weights"
+      source_path: "cancer_ai/validator/competition_handlers/tricorder_common.py"
+      line_ref: "44"
+      quote: 'CATEGORY_WEIGHTS = {"HIGH_RISK": 3.0, "MEDIUM_RISK": 2.0, "BENIGN": 1.0}'
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "neurons/validator.py"
+      line_ref: "189-220"
+      quote: "Main validation logic, triggered by new datasets being pushed to huggingface repositories for evaluation ... data_packages, updated_org_latest = await check_for_new_dataset_files(self.hf_api, self.org_latest_updates)"
+    - claim_field: "/aggregation/method"
+      source_path: "neurons/validator.py"
+      line_ref: "459-468"
+      quote: "# Sort hotkeys by average score (descending)\n            sorted_hotkeys = all_hotkeys ... reward_fraction = SCORE_DISTRIBUTION.get(rank, 0.0)\n                    reward_amount = weight * reward_fraction"
+    - claim_field: "/aggregation/notes/score_distribution"
+      source_path: "cancer_ai/validator/rewarder.py"
+      line_ref: "20-31"
+      quote: "SCORE_DISTRIBUTION = {\n    1: 0.50,   # 50%\n    2: 0.17,   # 17% \n    3: 0.10,   # 10% ... 10: 0.005   # 0.5%\n}"
+    - claim_field: "/aggregation/notes/beyond_top10"
+      source_path: "cancer_ai/validator/rewarder.py"
+      line_ref: "17-18"
+      quote: "# Total score allocation for miners ranked +11\nBEYOND_TOP_10_TOTAL_SCORE = 0.005"
+    - claim_field: "/aggregation/notes/competition_weights"
+      source_path: "cancer_ai/validator/utils.py"
+      line_ref: "388-404"
+      quote: "Get competition weights from the competition_weights.yml file. ... weights_dict[item['competition_id']] = item['weight']"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "cancer_ai/base/base_validator.py"
+      line_ref: "299-309"
+      quote: "# Ensure UID 0 gets 100% of weights for burning ... # # Set UID 0 to 100%\n        # raw_weights[0] = 1.0\n        \n        # # Set all other UIDs to 0\n        # raw_weights[1:] = 0.0"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "cancer_ai/base/base_validator.py"
+      line_ref: "346-354"
+      quote: "result, msg = self.subtensor.set_weights(\n            wallet=self.wallet,\n            netuid=self.config.netuid,\n            uids=uint_uids,\n            weights=uint_weights,"
+    - claim_field: "/weight_setting/method"
+      source_path: "cancer_ai/base/base_validator.py"
+      line_ref: "290-297"
+      quote: "norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True) ... raw_weights = self.scores / norm"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "cancer_ai/utils/config.py"
+      line_ref: "87-88"
+      quote: 'help="The default epoch length (how often we set weights, measured in 12 second blocks).",\n        default=180,'
+    - claim_field: "/weight_setting/smoothing/window"
+      source_path: "cancer_ai/validator/rewarder.py"
+      line_ref: "14-15,93-95"
+      quote: "# how many results should we use for calculating average score\nMOVING_AVERAGE_LENGTH = 5 ... result = sum(score for score in scores) / MOVING_AVERAGE_LENGTH"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "cancer_ai/validator/competition_handlers/tricorder_common.py"
+      line_ref: "34,360-367"
+      quote: "MAX_INVALID_ENTRIES = 2  # Maximum number of invalid entries allowed in the dataset ... if len(validation_errors) > MAX_INVALID_ENTRIES: ... raise ValueError(f\"Not enough valid data to evaluate.\")"
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "cancer_ai/validator/competition_handlers/tricorder_common.py"
+      line_ref: "815-847"
+      quote: "def get_comparable_result(self, result: TricorderEvaluationResult) -> tuple:\n        ... pred_hash = hashlib.sha256(encoded.encode(\"utf-8\")).hexdigest()"
+    - claim_field: "/sub_competitions/notes"
+      source_path: "README.md"
+      line_ref: "129"
+      quote: "The reward pool is determined by the total emission allocated for miners, divided by the number of competitions being held. Miners beyond the top 10 receive minimal participation rewards."
+    - claim_field: "/per_miner_state/state_kinds"
+      source_path: "cancer_ai/validator/rewarder.py"
+      line_ref: "53-58"
+      quote: "# Structure: {competition_id: {hotkey: [ModelScore, ...]}}\n    score_map: dict[str, dict[Hotkey, list[ModelScore]]] = {}\n    # Structure: {competition_id: {hotkey: average_score}}\n    average_scores: dict[str, dict[Hotkey, float]] = {}"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "cancer_ai/validator/rewarder.py"
+      line_ref: "12,79-81,101-111"
+      quote: "HISTORY_LENGTH = 10 ... if len(self.score_map[competition_id][hotkey]) > HISTORY_LENGTH: ... def delete_dead_hotkeys(self, competition_id: str, active_hotkeys: list[Hotkey]):"
+    - claim_field: "/documentation/primary_docs"
+      source_path: "README.md"
+      line_ref: "114"
+      quote: "You can find comprehensive details about competition scheduling, dataset release, model submission, evaluation, configuration, and development tools here: [COMPETITION README](DOCS/COMPETITIONS.md)"
+  unresolved:
+    - "Exact total miner emission and per-competition reward-pool absolute value (README says total emission / number of competitions, but no literal constant)."
+    - "Whether competition_weights.yml weights sum to one or are arbitrary (file is remote on HuggingFace, not in repo)."

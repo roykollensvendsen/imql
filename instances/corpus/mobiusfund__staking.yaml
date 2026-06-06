@@ -1,0 +1,355 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  The documented scoring algorithm is live and drives weights (validator.score() overwrites
+  self.scores with etc.score(...), which the base set_weights() L1-normalizes onto chain). A
+  Dynamic Emission Control (DEC) burn routes a computed residual to DEC_UID=0: when dec > DEC_CUTOFF
+  (0.03), score[0] = sum(score) * dec / (1 - dec), and if no miner scores anything, score[0] = 1
+  (full burn fallback). The template EMA update_scores() and the toy reward() (1.0 if response ==
+  query*2) are dead code: the live validator overrides the loop (validator.concurrent_forward =
+  lambda: ...) and writes self.scores directly, bypassing the moving average.
+
+subnet:
+  name: "Investing - Decentralized AUM"
+  owner_repo: "mobiusfund__staking"
+  netuid: 88
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners submit investment strategies (asset-allocation tables / portfolios) for an asset class of
+    their choice — Tao/Alpha staking (asset 0) or US stocks (asset 1) — in a high-fidelity simulated
+    trading environment. Each strategy is a dict mapping assets to allocation weights (negative for
+    shorts), filed as a file under Investing/strat/ and resubmitted on file-timestamp change
+    ("active rebalancing"). Validators replay strategies against market data, compute daily PnL, and
+    score on a composite of return, risk, volatility, drawdown, and timeframe.
+  submission_format: [signals]
+
+scoring_signals:
+  - name: mar
+    metric_kind: risk_adjusted_ratio
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      return% / max(risk%, risk_init/sqrt(days)); risk% is max drawdown. risk_init = 5 for both
+      Tao/Alpha and US stocks (RISK_INIT_DTAO/RISK_INIT_STK). Multiplicative factor in score.
+  - name: lsr
+    metric_kind: risk_adjusted_ratio
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Loss/Sum Ratio = sum(pnl) / sum(|pnl|); README states >0.99 correlated to Sharpe (lsr ~=
+      sharpe/11). Multiplicative factor in score.
+  - name: odds
+    metric_kind: probabilistic_forecast
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      odds% = 50 + kelly(prob, pavg/lavg)/2*100, Kelly-normalized winning odds; clipped to 0 if <=0.
+      Multiplicative factor in score.
+  - name: daily
+    metric_kind: pnl
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      daily% = ((1 + gain/100)^(1/days) - 1) * 100, compounded daily return. Multiplicative factor
+      in score. score = mar * lsr * odds * daily; clipped to 0 if <=0.
+  - name: close_binary
+    metric_kind: other
+    metric_kind_other: binary_close_above_open
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      'c' = int(swap_close[-1] >= swap_open[0]); score is multiplied by this 0/1 gate (a strategy
+      ending below its starting value is zeroed). etc.score: sc['score'] *= sc['c'].
+  - name: cash_alloc_factor
+    metric_kind: other
+    metric_kind_other: cash_allocation_penalty
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      score *= ((1 - cash)^CASH_DECAY).clip(CASH_RESIDUE, 1) with CASH_DECAY=1, CASH_RESIDUE=0.01;
+      penalizes idle-cash allocations, floor 0.01.
+
+ground_truth_sources:
+  - kind: market_data
+    description: >-
+      Simulated trading against historical market data: hourly precision for dtao (Tao/Alpha
+      staking dividends from validator delegation at default 18% take), 30-minute precision for US
+      stocks (benchmark SPY). Daily OCHL/PnL DBs fetched from api.investing88.ai.
+    source_identifier: "api.investing88.ai"
+    trust_model: trusted
+    notes: >-
+      VALI_TAKE = 0.18, TAO_WEIGHT = 0.18. Stock benchmark STK_BENCH='SPY', tz America/New_York.
+      Validator computes daily score at 00:00 UTC (Tao/Alpha) and 06:00 UTC (US stocks).
+
+aggregation:
+  method: proportional
+  composition: multiplicative
+  normalization: l1
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: null
+    dynamic: true
+    notes: >-
+      DEC (Dynamic Emission Control). DEC_UID=0. dec = (sum(last)/sum(days+1))^DEC_DECAY with
+      DEC_DECAY=3; if dec > DEC_CUTOFF (0.03): score[0] = sum(score)*dec/(1-dec), routing a computed
+      residual to UID 0 to penalize stale (non-rebalanced) miners collectively. If no miner scores,
+      score[0] = 1 (full burn fallback). Residual fraction is dynamic, not a fixed literal.
+  notes: >-
+    Composite score = mar * lsr * odds% * daily%, then sequentially multiplied by gates: c (binary
+    close>=open), dedupe (similarity/anti-dup factor in [0,1]), DEC1 stale-decay (1 - clip((last/
+    DEC1_CLIFF)^DEC1_DECAY, 0,1) when days>DEC1_START), cash factor, and a new-miner ramp
+    ((days/DAYS_FINAL)^DAYS_DELAY when days<DAYS_FINAL=30). Per-asset emission partition: within each
+    asset a, scores rescaled so each asset's share equals ra[a] (asset ratio), i.e. score *= ra[a]*
+    scz/sca. Final weights = L1 norm of self.scores in base set_weights() (raw_weights = scores/norm).
+
+weight_setting:
+  cadence: daily
+  method: >-
+    Validator overrides the template loop: score() waits until minute 25 or 55, calls etc.score(pl,
+    ab, da, ra, n) to compute self.scores directly (NOT the template EMA), and the base
+    set_weights() L1-normalizes self.scores into raw_weights = scores / ||scores||_1 then emits via
+    subtensor.set_weights. Daily score calculation at 00:00 UTC (Tao/Alpha) / 06:00 UTC (stocks).
+  on_chain_call: set_weights
+  tempo_or_interval: "daily score calc 00:00 UTC (Tao/Alpha), 06:00 UTC (US stocks)"
+  smoothing:
+    kind: none
+    alpha: null
+    window: 50
+    notes: >-
+      No EMA in the live path: the template base update_scores() applies an EMA
+      (alpha*reward + (1-alpha)*scores) but is bypassed — score() overwrites self.scores wholesale.
+      A 50-day rolling window (WIN_SIZE_DTAO/WIN_SIZE_STK=50) is applied to PnL inside pl2sc()
+      (dd[-win_size:]) before scoring; recorded here as window=50. Outlier clip CLIP_OUTLIERS=2 days.
+
+anti_gaming:
+  - kind: deduplication
+    enforcement: penalty
+    description: >-
+      dedupe() in etc.py: strategies with allocation distance below DD_TRIGGER (0.01) to another
+      miner's strategy get a dedupe factor in [0,1] = min((block-gap / bb / DAYS_FINAL)^DD_POWER, 1),
+      DD_POWER=1; score *= dedupe. README: "a new or revised strategy that is overly similar to a
+      pre-existing one will receive a reduced score." Black/whitelist override dedupe to 0/1.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      README: "To curb UID spam, each miner requires a certain amount of alpha token stake. The
+      total required stake is reflected on the coldkey." Required stake enforced off the scored path.
+  - kind: liveness_check
+    enforcement: penalty
+    description: >-
+      DEC / DEC1 stale-strategy decay: miners that stop rebalancing (large 'last active' value) are
+      penalized. DEC1: score *= 1 - clip((last/DEC1_CLIFF)^DEC1_DECAY, 0, 1) for days>DEC1_START=5
+      (DEC1_CLIFF=20, DEC1_DECAY=2). DEC routes collective residual emission to UID 0.
+
+sub_competitions:
+  structure: multi_asset
+  stages: []
+  count: 2
+  notes: >-
+    UID space and emissions partitioned by asset class via asset ratio ra (api.investing88.ai/ratio):
+    asset 0 = Tao/Alpha staking, asset 1 = US stocks (an=2). Each asset's emission share is forced to
+    ra[a] by rescaling scores within the asset (score *= ra[a]*scz/sca). Per-asset constants:
+    RISK_INIT, WIN_SIZE differ by class (both 5 / 50 here).
+
+per_miner_state:
+  tracked: true
+  state_kinds: [performance_ledger, cumulative_score, registration_age]
+  status_values: []
+  reset_policy: >-
+    50-day rolling PnL window per strategy. New miners: 3-day immunity, go live on dashboard after
+    day 1; score ramped by (days/30)^DAYS_DELAY while days<DAYS_FINAL=30. Base validator zeroes
+    self.scores for replaced hotkeys on metagraph resync.
+  notes: >-
+    Persistent PnL/score history per uid maintained via daily DB (pnl.col, score.col). Registration
+    age (days) gates the new-miner score ramp and DEC1 onset (days>5).
+
+documentation:
+  status: docs_and_code
+  source_version: "simst 1.4.0"
+  primary_docs:
+    - "README.md"
+    - "Investing/doc/Subnet88.md"
+    - "Investing/core/etc.py"
+    - "Investing/core/simst.py"
+    - "Investing/core/const.py"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8"
+  extracted_at: "2026-06-06"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "69"
+      quote: "--netuid 88 #339 --subtensor.network test"
+      confidence: high
+    - claim_field: "/subnet/name"
+      source_path: "README.md"
+      line_ref: "3"
+      quote: "# Investing - Decentralized AUM"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "87"
+      quote: "When a strategy is filed under the `Investing/strat/` directory, it will be automatically submitted by the miner."
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "Investing/doc/Subnet88.md"
+      line_ref: "13"
+      quote: "provides a continuously updated asset allocation table within the asset class. This is called a strategy or portfolio."
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "Investing/core/simst.py"
+      line_ref: "497"
+      quote: "mar = gain / max(risk, risk_init / days ** 0.5)"
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "Investing/core/simst.py"
+      line_ref: "498"
+      quote: "lsr = dd['pnl'].sum() / (dd['pnl'].abs().sum() or 1e18)"
+      confidence: high
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "Investing/core/simst.py"
+      line_ref: "499-501"
+      quote: "odds = 50 + kelly(prob, pavg / lavg) / 2 * 100"
+      confidence: high
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "Investing/core/simst.py"
+      line_ref: "495-502"
+      quote: "daily = ((1 + gain / 100) ** (1 / days) - 1) * 100 ... score = mar * lsr * odds * daily"
+      confidence: high
+    - claim_field: "/scoring_signals/4/notes"
+      source_path: "Investing/core/etc.py"
+      line_ref: "78-80"
+      quote: "oc.loc[len(oc)] = uid, int(dd['swap_close'].iat[-1] >= dd['swap_open'].iat[0]) ... sc['score'] *= sc['c']"
+      confidence: high
+    - claim_field: "/scoring_signals/5/notes"
+      source_path: "Investing/core/etc.py"
+      line_ref: "93"
+      quote: "sc['score'] *= ((1 - sc['cash']) ** CASH_DECAY).clip(CASH_RESIDUE, 1)"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "Investing/core/const.py"
+      line_ref: "2"
+      quote: "API_ROOT = 'http://api.investing88.ai'"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/notes"
+      source_path: "Investing/core/const.py"
+      line_ref: "7-8"
+      quote: "VALI_TAKE = 0.18\nTAO_WEIGHT = 0.18"
+      confidence: high
+    - claim_field: "/aggregation/composition"
+      source_path: "Investing/core/simst.py"
+      line_ref: "502"
+      quote: "score = mar * lsr * odds * daily"
+      confidence: high
+    - claim_field: "/aggregation/normalization"
+      source_path: "neurons/template/base/validator.py"
+      line_ref: "234-241"
+      quote: "norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True) ... raw_weights = self.scores / norm"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "Investing/core/const.py"
+      line_ref: "13"
+      quote: "DEC_UID = 0"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "Investing/core/etc.py"
+      line_ref: "102-104"
+      quote: "dec = (sc['last'].sum() / (sc['days'] + 1).sum()) ** DEC_DECAY\n    if dec > DEC_CUTOFF: score[DEC_UID] = sum(score) * dec / (1 - dec)\n    if not any(score): score[DEC_UID] = 1"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "Investing/core/etc.py"
+      line_ref: "96-99"
+      quote: "scz = sc['score'].sum() ... if sca: sc.loc[sc['a'] == a, 'score'] *= ra[a] * scz / sca"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "neurons/validator.py"
+      line_ref: "74-75"
+      quote: "self.scores, uid, dec = etc.score(pl, ab, da, ra, self.metagraph.n)"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "neurons/template/base/validator.py"
+      line_ref: "270-271"
+      quote: "result, msg = self.subtensor.set_weights("
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "README.md"
+      line_ref: "95"
+      quote: "Daily score calculation takes place at 00:00 UTC for Tao/Alpha, and 06:00 UTC for US stocks."
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/window"
+      source_path: "Investing/core/const.py"
+      line_ref: "33-34"
+      quote: "WIN_SIZE_DTAO = 50\nWIN_SIZE_STK = 50"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "82-84"
+      quote: "validator.loop.run_until_complete = validator.score\n        validator.concurrent_forward = lambda: ..."
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "Investing/core/etc.py"
+      line_ref: "59-61"
+      quote: "du = db.loc[uid, di[(di.index != uid) & (di < dd_trigger)].index]\n            dd.loc[uid] = min((du[du >= 0].min() / bb[i] / DAYS_FINAL) ** DD_POWER, 1)"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "README.md"
+      line_ref: "99"
+      quote: "To curb UID spam, each miner requires a certain amount of alpha token stake."
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "Investing/core/etc.py"
+      line_ref: "88-89"
+      quote: "dec1 = (sc['last'] / DEC1_CLIFF) ** DEC1_DECAY\n    sc.loc[~sc['last'].isna() & (sc['days'] > DEC1_START), 'score'] *= 1 - dec1.clip(0, 1)"
+      confidence: high
+    - claim_field: "/sub_competitions/structure"
+      source_path: "Investing/doc/Subnet88.md"
+      line_ref: "23"
+      quote: "The subnet's UID space and emissions are partitioned to accommodate different asset classes, using a ratio"
+      confidence: high
+    - claim_field: "/sub_competitions/count"
+      source_path: "Investing/core/simst.py"
+      line_ref: "66"
+      quote: "an = 2"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "Investing/core/simst.py"
+      line_ref: "448"
+      quote: "sc.loc[sc['days'] < DAYS_FINAL, 'score'] *= (sc['days'] / DAYS_FINAL) ** DAYS_DELAY"
+      confidence: high
+    - claim_field: "/per_miner_state/notes"
+      source_path: "README.md"
+      line_ref: "101"
+      quote: "A newly registered miner goes live on the dashboard after day 1, with an immunity period of 3 days."
+      confidence: high
+    - claim_field: "/mechanism_status_notes"
+      source_path: "neurons/template/validator/reward.py"
+      line_ref: "34"
+      quote: "return 1.0 if response == query * 2 else 0"
+      confidence: high
+  unresolved:
+    - "/aggregation/burn_allocation/fraction — burn fraction is a dynamic residual (dec/(1-dec)); no fixed literal exists."
+    - "Exact asset-ratio ra values are fetched live from api.investing88.ai/ratio; not in source."
+    - "weight_setting cadence enum: chose 'daily' (00:00/06:00 UTC daily calc); on-chain set_weights frequency vs chain rate limit not specified in source."
+  extractor_notes: >-
+    Live mechanism lives entirely in Investing/core/ (etc.score + simst.SimSt). The neurons/template
+    tree is boilerplate Yuma-Rao subnet template; its toy reward() and EMA update_scores() are dead
+    code (validator.py monkey-patches the loop and writes self.scores directly). All numeric
+    constants taken verbatim from Investing/core/const.py; no constant invented. Multiplicative gate
+    chain reconstructed from etc.score() L75-104 and simst.pl2sc()/score() L425-504.

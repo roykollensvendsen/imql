@@ -1,0 +1,249 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  Validators score miners on ERA5 forecast accuracy, but set_weights applies a
+  configurable burn: burn_percent defaults to 0.5 (50%) and is assigned to BURN_UID
+  56 on mainnet, with the remainder distributed proportionally among miners. On
+  testnet BURN_UID is None so burning is skipped.
+
+subnet:
+  name: "Zeus — Environmental Forecasting Subnet"
+  owner_repo: "Orpheus-AI__Zeus"
+  netuid: 18
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners produce forecasts of future ERA5 environmental variables (2m temperature,
+    100m u/v wind components, surface solar radiation downwards) over sampled geographic
+    grids at short (through +48h) and long (through +360h / 15 days) horizons. Validators
+    score predictions against held-out ERA5 reanalysis ground truth using latitude- and
+    Europe-weighted RMSE and MAE; the average of RMSE and MAE is the per-challenge score,
+    converted into competition ranks.
+  submission_format: [signals]
+
+scoring_signals:
+  - name: europe_weighted_rmse
+    metric_kind: regression_error
+    direction: lower_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Latitude- and Europe/Germany-region-weighted RMSE between miner prediction and ERA5
+      output_data (zeus/validator/metrics.py custom_rmse). NaN or shape-mismatched predictions
+      are set to inf. Used both in the average score and as the rank tie-breaker.
+  - name: europe_weighted_mae
+    metric_kind: regression_error
+    direction: lower_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Latitude- and region-weighted MAE (custom_mae). NaN set to inf.
+  - name: average_error_score
+    metric_kind: composite
+    direction: lower_is_better
+    weight: null
+    normalization: rank
+    notes: >-
+      score = (rmse + mae)/2 in calculate_scores; miners are sorted by this and converted to
+      competition ranks (miner.score = float(rank)). The rank, not the raw error, drives weights.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      ERA5 reanalysis data from the Climate Data Store (CDS) of Copernicus, streamed in
+      real-time; validators evaluate miners on held-out future environmental data.
+    source_identifier: "https://cds.climate.copernicus.eu/api"
+    trust_model: trusted
+    notes: ERA5 variables and per-variable scoring weights defined in ERA5_DATA_VARS.
+
+aggregation:
+  method: rank_based
+  composition: weighted_sum
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "56"
+    fraction: 0.5
+    dynamic: false
+    notes: >-
+      burn_percent default 0.5 assigned to BURN_UID 56 on mainnet; remaining (1 - burn_percent)
+      scaled proportionally across other miners. BURN_UID is None on testnet (burning skipped).
+  notes: >-
+    Per challenge (variable × time-window), compute_min_rank_weights averages each hotkey's last
+    window_size ranks; the best miner gets PERCENTAGE_GOING_TO_WINNER (0.95) and the rest receive
+    logarithmically decreasing weights summing to 0.05. Per-challenge weight vectors are combined
+    via np.average weighted by effective per-challenge weights (TIME_WINDOW_WEIGHTS × ERA5_DATA_VARS),
+    then normalized to sum to one before burn is applied.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    For each available challenge (variable × time-window), average each miner's last window_size
+    ranks (window_size = min(score_time_window_short=4 or _long=8, max_len)); winner gets 0.95,
+    others logarithmically. Combine challenges via weighted average, normalize to sum-to-one, apply
+    burn, then process_weights_for_netuid and set_weights on chain.
+  on_chain_call: set_weights
+  tempo_or_interval: null
+  smoothing:
+    kind: sma
+    alpha: null
+    window: null
+    notes: >-
+      Weights are computed from a rolling window of the last window_size ranks per hotkey
+      (score_time_window_short default 4, score_time_window_long default 8); miners with fewer
+      than window_size samples are treated as rank infinity (weight 0).
+
+anti_gaming:
+  - kind: deduplication
+    enforcement: penalty
+    description: >-
+      Collusion detection (apply_collusion_penalty): if two miners' RMSEs are within a threshold
+      (metric_similarity < COLLUSION_PENALTY_THRESHOLD: 0.0004 short, 0.00002 long), the newer
+      registration (higher block) is penalized (rmse/mae/score set None, shape_penalty True),
+      keeping the oldest. Not applied to surface_solar_radiation_downwards.
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      should_apply_shape_penalty: predictions that are None, have wrong element count, or are
+      non-finite get inf error (sorted last / excluded from scoring).
+  - kind: commit_reveal
+    enforcement: rejection
+    description: >-
+      Validation uses a commit–reveal flow (hash phase then prediction reveal phase) so miners
+      commit hashed predictions before revealing.
+
+sub_competitions:
+  structure: per_task_type
+  stages: []
+  count: 8
+  notes: >-
+    8 challenges = 4 ERA5 variables × 2 time windows (SHORT_CHALLENGE (0,48), LONG_CHALLENGE
+    (0,360)). Each has its own state_key and rank_history; combined via per-variable weights
+    (2m_temperature 0.2, 100m_u 0.3, 100m_v 0.3, solar 0.2) and time-window weights (short 0.2,
+    long 0.8).
+
+per_miner_state:
+  tracked: true
+  state_kinds: [performance_ledger, registration_age]
+  status_values: []
+  reset_policy: >-
+    rank_history per hotkey per challenge is pruned to RANK_HISTORY_PRUNE_LEN (1000) most recent
+    ranks; weights use only the last window_size ranks.
+  notes: >-
+    Per-challenge rank_history of recent ranks per hotkey drives weighting; registration block
+    (block_at_registration) is used to decide which colluding miner to penalize.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/Validating.md"
+    - "docs/Mining.md"
+    - "docs/ScoringChallengesCalculatingWeights.ipynb"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "zeus/validator/constants.py"
+      line_ref: "10"
+      quote: "MAINNET_UID = 18"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "zeus/validator/reward.py"
+      line_ref: "19-24"
+      quote: "import math ... import bittensor as bt ... import numpy as np ... import torch"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "30"
+      quote: >-
+        Validators issue both short-range challenges (hourly steps from the current hour through
+        +48 hours, 49 timesteps) and long-range challenges (the same grid through +360 hours,
+        i.e. 15 days, 361 timesteps).
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "zeus/validator/reward.py"
+      line_ref: "126-128"
+      quote: "cosine_rmse, europe_weighted_rmse = custom_rmse(output_data, temp_tensor, latitude_weights, europe_weight)"
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "zeus/validator/reward.py"
+      line_ref: "148"
+      quote: "score = (miner.rmse + miner.mae)/2"
+    - claim_field: "/aggregation/method"
+      source_path: "zeus/validator/reward.py"
+      line_ref: "192-195"
+      quote: "ranks = calculate_competition_ranks(rmses) ... miner.score = float(rank)"
+    - claim_field: "/aggregation/notes"
+      source_path: "zeus/validator/reward.py"
+      line_ref: "263-266"
+      quote: "weights[best_uid] = PERCENTAGE_GOING_TO_WINNER ... remaining_weight = 1.0 - PERCENTAGE_GOING_TO_WINNER"
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "zeus/utils/config.py"
+      line_ref: "206-210"
+      quote: "\"--neuron.burn_percent\", type=float, help=\"The percentage of the reward to burn.\", default=0.5,"
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "zeus/base/validator.py"
+      line_ref: "91"
+      quote: "self.BURN_UID = 56"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "zeus/base/validator.py"
+      line_ref: "427-429"
+      quote: "if 0 < burn_percent < 1.0 and self.BURN_UID and self.BURN_UID < len(raw_weights): ... raw_weights[self.BURN_UID] = burn_percent"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "zeus/base/validator.py"
+      line_ref: "469-477"
+      quote: "result, msg = self.subtensor.set_weights(wallet=self.wallet, netuid=self.config.netuid, uids=uint_uids, weights=uint_weights, ...)"
+    - claim_field: "/weight_setting/smoothing/window"
+      source_path: "zeus/utils/config.py"
+      line_ref: "182-194"
+      quote: "\"--neuron.score_time_window_short\" ... default=4, ... \"--neuron.score_time_window_long\" ... default=8,"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "zeus/validator/collusion.py"
+      line_ref: "28-31"
+      quote: "Identifies collusion. If two miners are too similar, the NEWER registration (higher UID) is penalized, keeping the OLDEST (lower UID)."
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "zeus/validator/constants.py"
+      line_ref: "62"
+      quote: "COLLUSION_PENALTY_THRESHOLD = {SHORT_CHALLENGE: 0.0004, LONG_CHALLENGE: 0.00002}"
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "zeus/validator/reward.py"
+      line_ref: "46-51"
+      quote: "if prediction.numel() != np.prod(correct_shape): ... shape_penalty = True elif not torch.isfinite(prediction).all(): ... shape_penalty = True"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "README.md"
+      line_ref: "37"
+      quote: "Validation uses a commit–reveal flow; see the Validator Guide for phases and timing."
+    - claim_field: "/sub_competitions/notes"
+      source_path: "zeus/validator/constants.py"
+      line_ref: "64-69"
+      quote: >-
+        ERA5_DATA_VARS: Dict[str, float] = {"2m_temperature": 0.2, "100m_u_component_of_wind": 0.3,
+        "100m_v_component_of_wind": 0.3, "surface_solar_radiation_downwards": 0.2}
+    - claim_field: "/sub_competitions/notes"
+      source_path: "zeus/validator/constants.py"
+      line_ref: "106-109"
+      quote: "TIME_WINDOW_WEIGHTS: Dict[Tuple[int, int], float] = {SHORT_CHALLENGE: 0.2, LONG_CHALLENGE: 0.8,}"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "zeus/validator/constants.py"
+      line_ref: "61"
+      quote: "RANK_HISTORY_PRUNE_LEN = 1000"
+    - claim_field: "/aggregation/notes"
+      source_path: "zeus/validator/constants.py"
+      line_ref: "111"
+      quote: "PERCENTAGE_GOING_TO_WINNER = 0.95"
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "README.md"
+      line_ref: "23"
+      quote: >-
+        The datasource for this subnet consists of ERA5 reanalysis data from the Climate Data Store
+        (CDS) of the European Union's Earth observation programme (Copernicus).
+  unresolved:
+    - "Weight-setting cadence/tempo: set_weights is gated by should_set_weights() and database scoring readiness in forward.py; no explicit block tempo constant found."
+    - "Europe/Germany region weight magnitudes (EUROPE_WEIGHT=1.5, GERMANY_WEIGHT=2.5) feed custom RMSE/MAE but their exact effect on final scores is not separately modeled here."

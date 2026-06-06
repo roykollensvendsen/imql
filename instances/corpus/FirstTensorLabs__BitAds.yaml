@@ -1,0 +1,287 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: mixed
+mechanism_status_notes: >-
+  Validator computes per-miner scores from verified sales/revenue/refunds and aggregates
+  them across campaigns by emission_split, but a dynamic creator-burn (sent to subnet owner
+  UID, "burned" by the chain) is applied on top. Burn percentage is computed from the
+  sales-to-emissions ratio and can range 0-100%. With zero active campaigns or all-zero
+  aggregated scores, the validator sets all weight to the subnet owner (full burn fallback).
+
+subnet:
+  name: "BitAds"
+  owner_repo: "FirstTensorLabs__BitAds"
+  netuid: 16
+  implementation_lang: python
+
+task:
+  summary: >-
+    A proof-of-sale marketing subnet. Miners promote BitAds campaigns across platforms of
+    their choosing and are rewarded for verified (post-webhook) sales: number of verified
+    orders, total revenue in USD, and a low refund ratio. Validators collect per-miner sales
+    statistics over a rolling window (default 30 days) and convert them to weights.
+  submission_format: [content_link]
+  submission_format_other: ""
+
+scoring_signals:
+  - name: sales_volume
+    metric_kind: volume
+    direction: higher_is_better
+    weight: 0.15
+    normalization: other
+    normalization_other: "sqrt(sales)/sqrt(P95_sales), capped at 1"
+    notes: >-
+      Number of verified orders in the window. Default weight w_sales=0.15 (DEFAULT_W_SALES).
+      Square-root normalized against the 95th-percentile of sales across active miners.
+  - name: revenue_usd
+    metric_kind: volume
+    direction: higher_is_better
+    weight: 0.85
+    normalization: other
+    normalization_other: "ln(1+rev)/ln(1+P95_rev), capped at 1"
+    notes: >-
+      Sum of verified revenue in USD. Default weight w_rev=0.85 (DEFAULT_W_REV).
+      Logarithmically normalized against the 95th-percentile of revenue.
+  - name: refund_rate_penalty
+    metric_kind: other
+    metric_kind_other: "refund-rate multiplicative penalty"
+    direction: lower_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      ref_i = min(1, refund_orders_i / max(1, sales_i)); refund_multiplier = 1 - ref_i,
+      applied multiplicatively to the base score. Gated/multiplicative, no additive weight.
+
+ground_truth_sources:
+  - kind: real_engagement
+    description: >-
+      Verified (post-webhook) sales, revenue and refund data per miner, fetched by the
+      validator from the BitAds storage/stats API (storage.bitads.ai) over the configured
+      window (default 30 days).
+    source_identifier: "https://storage.bitads.ai (NETWORK_BASE_URLS)"
+    trust_model: trusted
+    notes: >-
+      Only webhook-verified sales/revenue and confirmed refunds/chargebacks are counted.
+      Statistics come from an off-chain API operated by the subnet, not on-chain data.
+
+aggregation:
+  method: weighted_average
+  composition: hybrid
+  normalization: sum_to_one
+  normalization_other: ""
+  temperature: null
+  decay_rate: null
+  min_weight_floor: 0.0001
+  burn_allocation:
+    enabled: true
+    address_or_uid: "subnet owner hotkey (get_subnet_owner_hotkey); README says UID 0"
+    fraction: null
+    dynamic: true
+    notes: >-
+      Dynamic creator burn. burn_percentage = max(0, (emission_usd - sales_usd*ratio) /
+      emission_usd * 100), clamped to [0,100]; emission_usd = emission_in_tao * tao_price_usd;
+      target sales_emission_ratio default 1.0. The burned fraction of weight is sent to the
+      subnet owner via apply_creator_burn. Can be overridden by a fixed CLI/per-scope value.
+      When no campaigns are active or all aggregated scores are zero, all weight goes to the
+      owner (full burn).
+  notes: >-
+    base_i = w_sales*sales_norm + w_rev*rev_norm; score_i = base_i * (1 - ref_i), bounded
+    [0,1]. Per-campaign weight vectors are normalized, optionally burn-adjusted, then combined
+    across campaigns using each campaign's emission_split (normalized to fractions; uniform if
+    none provided), and the aggregated vector is normalized to sum 1. min_weight_floor is the
+    pending-miner minimum score (PENDING_MINER_MIN_SCORE=0.0001) preserved for miners that
+    only have pending orders. Optional soft-cap (sales<threshold -> *factor) is disabled by
+    default (DEFAULT_USE_SOFT_CAP=False, threshold 3, factor 0.30).
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    On each loop, if blocks_since_last_update >= tempo, _process_weights() computes and
+    aggregates per-campaign scores, applies burn, and publishes a single weight extrinsic
+    via ValidatorScoreSink. When subtensor.commit_reveal_enabled(netuid) is true it uses
+    commit_timelocked_weights_extrinsic (commit-reveal); otherwise set_weights_extrinsic
+    (set_mechanism_weights). mechid=0. Burn percentage is recalculated periodically (docs: daily).
+  on_chain_call: commit_reveal
+  tempo_or_interval: "subnet tempo (subtensor.tempo(netuid))"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA of the final reward in this repo. The docs mention optional P95 smoothing
+      (alpha in [0.3,0.5]) of the normalization reference values, but no smoothing constant
+      is present in the readable source; left unresolved.
+
+anti_gaming:
+  - kind: other
+    kind_other: "verified-sales / webhook truth requirement"
+    enforcement: rejection
+    description: >-
+      Only webhook-verified sales/revenue and confirmed refunds count toward score; unverified
+      activity is excluded (README "Data integrity"; ground-truth from trusted off-chain API).
+  - kind: other
+    kind_other: "refund-rate multiplicative penalty"
+    enforcement: penalty
+    description: >-
+      High refund ratios multiplicatively reduce score (refund_multiplier = 1 - ref_i),
+      discouraging fake or reversed sales.
+  - kind: other
+    kind_other: "P95-percentile outlier resistance"
+    enforcement: barrier
+    description: >-
+      Sales/revenue are normalized against the 95th percentile and compressed via sqrt/ln,
+      limiting the dominance of whales and reducing the value of inflating a single metric.
+
+sub_competitions:
+  structure: multi_brief
+  stages: []
+  count: null
+  notes: >-
+    Multiple advertising campaigns ("briefs") run concurrently; each has a scope (campaign_id),
+    a mech_id, and an emission_split. Per-campaign scores are aggregated into one weight vector
+    by emission_split share. Configuration is keyed per mechanism (mech_scope = "mech{id}").
+
+per_miner_state:
+  tracked: true
+  state_kinds: [status_enum]
+  status_values: ["pending (only pending orders -> minimum score)", "scored (in miner-stats)"]
+  reset_policy: >-
+    State derives from a rolling window (default DEFAULT_WINDOW_DAYS=30) of fetched miner
+    stats; pending-only miners receive PENDING_MINER_MIN_SCORE=0.0001 to avoid deregistration.
+  notes: >-
+    No persistent on-disk ledger in this repo; per-miner sales/revenue/refund stats are fetched
+    each cycle from the external stats API over the window.
+
+documentation:
+  status: docs_and_code
+  source_version: "0.0.1 (validator_version example; core via bitads-v3-core PyPI)"
+  primary_docs: ["README.md", "docs/validating.md", "docs/mining.md", "core/burn_calculator.py"]
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract"
+  confidence_overall: medium
+  extractor_notes: >-
+    The core scoring function (ScoreCalculator) and apply_creator_burn live in the external
+    PyPI package bitads_v3_core, not vendored in this repo, so their exact implementation lines
+    are not readable here. The scoring algorithm is, however, fully specified in README.md and
+    its default constants are duplicated in core/constants.py, which the validator passes into
+    ScoreCalculator. Burn logic is fully readable in core/burn_calculator.py and core/resolvers.py.
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "core/constants.py"
+      line_ref: "9-12"
+      quote: "NETUIDS = {\n    NETWORKS[0]: 16,\n    NETWORKS[1]: 368,\n}"
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "neurons/validator.py"
+      line_ref: "1-14"
+      quote: "import argparse ... from bittensor.core.subtensor import Subtensor"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "7"
+      quote: "BitAds is a decentralized, proof of sale marketing network where merchandisers stake or rent ALPHA to own marketing bandwidth, and miners earn on verified sales."
+      confidence: high
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "core/constants.py"
+      line_ref: "31-32"
+      quote: "DEFAULT_W_SALES = 0.15\nDEFAULT_W_REV = 0.85"
+      confidence: high
+    - claim_field: "/scoring_signals/0/normalization_other"
+      source_path: "README.md"
+      line_ref: "80"
+      quote: "sales_norm_i = min(1, sqrt(sales_i) / max(sqrt(P95_sales), epsilon))"
+      confidence: high
+    - claim_field: "/scoring_signals/1/normalization_other"
+      source_path: "README.md"
+      line_ref: "82"
+      quote: "rev_norm_i = min(1, ln(1 + rev_i) / max(ln(1 + P95_rev), epsilon))"
+      confidence: high
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "README.md"
+      line_ref: "105-111"
+      quote: "refund_multiplier_i = 1 - ref_i ... score_i = base_i * refund_multiplier_i"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "core/constants.py"
+      line_ref: "15-18"
+      quote: "NETWORK_BASE_URLS = {\n    NETWORKS[0]: \"https://storage.bitads.ai\","
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/notes"
+      source_path: "README.md"
+      line_ref: "176"
+      quote: "Data integrity: Only include webhook-verified sales/revenue and confirmed refunds/chargebacks in the 30-day window."
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "README.md"
+      line_ref: "95"
+      quote: "base_i = w_sales * sales_norm_i + w_rev * rev_norm_i"
+      confidence: high
+    - claim_field: "/aggregation/min_weight_floor"
+      source_path: "core/constants.py"
+      line_ref: "48"
+      quote: "PENDING_MINER_MIN_SCORE = 0.0001"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/dynamic"
+      source_path: "core/burn_calculator.py"
+      line_ref: "128-133"
+      quote: "burn_percentage = (excess_emission / emission_in_usd) * 100.0 ... return max(0.0, min(100.0, burn_percentage))"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "README.md"
+      line_ref: "212"
+      quote: "burn_percentage = max(0, (emission_usd - sales_usd * target_ratio) / emission_usd * 100)"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "core/adapters/score_sink.py"
+      line_ref: "100-115"
+      quote: "Set weights to subnet owner only (burn behaviour). ... weights[owner_index] = 1.0"
+      confidence: high
+    - claim_field: "/aggregation/composition"
+      source_path: "neurons/validator.py"
+      line_ref: "690-692"
+      quote: "for idx, w in enumerate(campaign_weights_vec):\n    aggregated_scores[idx] += emission_weight * w"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/enabled"
+      source_path: "neurons/validator.py"
+      line_ref: "642-649"
+      quote: "if burn_percentage is not None and burn_percentage > 0.0:\n    final_uids, final_weights = apply_creator_burn(...)"
+      confidence: high
+    - claim_field: "/weight_setting/cadence"
+      source_path: "neurons/validator.py"
+      line_ref: "520-523"
+      quote: "if self.last_update >= self.tempo:\n    self._process_weights()"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call_other"
+      source_path: "core/adapters/score_sink.py"
+      line_ref: "291-323"
+      quote: "if self.subtensor.commit_reveal_enabled(netuid=netuid): ... commit_timelocked_weights_extrinsic(...) else: ... set_weights_extrinsic(...)"
+      confidence: high
+    - claim_field: "/mechanism_status"
+      source_path: "neurons/validator.py"
+      line_ref: "543-549"
+      quote: "if not campaigns: ... success, message = self.score_sink.set_weights_to_owner_only()"
+      confidence: high
+    - claim_field: "/sub_competitions/structure"
+      source_path: "neurons/validator.py"
+      line_ref: "552-561"
+      quote: "raw_splits = [c.emission_split for c in campaigns ...] ... campaign_weights[c.scope] = float(c.emission_split) / total_split"
+      confidence: high
+    - claim_field: "/per_miner_state/status_values"
+      source_path: "neurons/validator.py"
+      line_ref: "422-436"
+      quote: "Miners with only pending orders (not in miner-stats) get minimum reward ... base=PENDING_MINER_MIN_SCORE"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "core/constants.py"
+      line_ref: "27-34"
+      quote: "DEFAULT_USE_SOFT_CAP = False ... DEFAULT_SOFT_CAP_THRESHOLD = 3\nDEFAULT_SOFT_CAP_FACTOR = 0.30"
+      confidence: high
+  unresolved:
+    - "Exact ScoreCalculator implementation (clamping, soft_cap/flooring application order) is in external bitads_v3_core PyPI package, not vendored here."
+    - "apply_creator_burn exact weight redistribution math is in external bitads_v3_core, not readable in this repo."
+    - "P95 smoothing alpha (README mentions alpha in [0.3,0.5] as optional) — no literal smoothing constant in readable source."
+    - "Subnet tempo / exact weight-setting interval value not a literal in source (read from chain via subtensor.tempo)."
+    - "Burn recalculation cadence stated as 'daily' in docs but no literal interval constant in code."

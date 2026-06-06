@@ -1,0 +1,282 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: mixed
+mechanism_status_notes: >-
+  Live weight-setting is revenue-gated burn: if vault revenue <= 0 (or fetch fails)
+  100% of emissions go to UID 0 (burn). When revenue > 0 the miner share grows with
+  revenue up to profit_ratio (default 1.0) and is distributed proportionally to the
+  per-job top miners' combined_score. The documented PnL-vs-HODL scoring is active but
+  only feeds the miner-distribution branch, which is fully burned whenever revenue is
+  non-positive.
+
+subnet:
+  name: "SN98 ForeverMoney"
+  owner_repo: "SN98-ForeverMoney__forever-money"
+  netuid: 98
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners optimize Uniswap V3 / Aerodrome liquidity provision by responding to
+    RebalanceQuery requests from validators with desired positions (rebalance or keep
+    current). Validators evaluate each miner's strategy through forward simulations
+    (backtests) and score by net PnL vs HODL (relative return) with an exponential
+    impermanent-loss penalty. The single top miner per job earns emissions weight,
+    gated by a revenue-driven burn split.
+  submission_format: [signals]
+
+scoring_signals:
+  - name: net_return_vs_hodl
+    metric_kind: pnl
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      return_pct = (final_value - initial_value) / initial_value, clamped to [-10, 10].
+      This raw relative return is the primary signal; no scaling beyond the clamp.
+  - name: impermanent_loss_penalty
+    metric_kind: risk_adjusted_ratio
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Multiplicative penalty = exp(-loss_penalty_multiplier * loss_ratio) with
+      loss_penalty_multiplier default 10.0; loss_ratio prefers impermanent_loss else
+      token-delta. Applied multiplicatively to return when gaining, dividing when losing.
+  - name: in_range_ratio_bonus
+    metric_kind: engagement
+    direction: higher_is_better
+    weight: null
+    normalization: min_max
+    notes: >-
+      Optional time-in-range bonus when in_range_ratio present; multiplies score by
+      (1 - 0.08) + 0.08 * r with r clamped to [0,1]. DEFAULT_IN_RANGE_WEIGHT = 0.08.
+
+ground_truth_sources:
+  - kind: market_data
+    description: >-
+      Forward simulation / backtest of the proposed liquidity positions against
+      current blockchain state, yielding initial_value/final_value, impermanent_loss
+      and in_range_ratio metrics. Live revenue measured from on-chain vault fees.
+    source_identifier: "Backtester metrics; on-chain CollectEvent vault fees (Base L2)"
+    trust_model: oracle
+    notes: >-
+      Vault revenue in USD computed from fee0/fee1 priced via CoinGecko/PriceService;
+      lookback_days=1 for the emissions split.
+
+aggregation:
+  method: proportional
+  composition: hybrid
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: null
+    dynamic: true
+    notes: >-
+      burn_ratio = 1 - miner_ratio, where miner_ratio = min(profit_ratio,
+      revenue_alpha / total_emission_alpha). 100% burn when revenue_usd <= 0,
+      total emissions == 0, no miner scores, or emissions calc fails. profit_ratio
+      default 1.0 (PROFIT_RATIO env), clamped to [0,1].
+  notes: >-
+    Per-job top miner (by combined_score) is selected; a miner's aggregate score is
+    the sum of combined_scores over jobs it tops. Miner_ratio is distributed
+    proportionally to normalized_score = score/total_score. Final weights normalized
+    to sum to 1.0.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    monitor_and_set_weights loop calls EmissionsService.set_weights_on_chain every
+    1200s (20 min). Aggregates per-job top-miner combined_scores, computes
+    revenue-gated burn split, distributes miner_ratio proportional to score, assigns
+    burn_ratio to UID 0, then calls subtensor.set_weights.
+  on_chain_call: set_weights
+  tempo_or_interval: "1200 seconds"
+  smoothing:
+    kind: ema
+    alpha: null
+    window: null
+    notes: >-
+      EMA applied to the stored per-job reputation scores (not the final on-chain
+      weight): evaluation_score new = old*0.9 + latest*0.1; live_score new =
+      old*0.7 + latest*0.3; combined_score = eval*0.6 + live*0.4.
+
+anti_gaming:
+  - kind: liveness_check
+    enforcement: barrier
+    description: >-
+      Live-execution eligibility requires participation on >= MINER_ELIGIBILITY_DAYS
+      distinct days (default 7) where rounds_participated > rounds_refused, OR the
+      hotkey being whitelisted. Only eligible miners with combined_score > 0 are
+      ranked for weight.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      Only the single top miner per job (by combined_score) receives non-zero weight;
+      validator excludes its own UID and reserves UID 0 for burn.
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      Hotkey replacement detection: on metagraph resync, any uid whose hotkey changed
+      is zeroed out (zero_out_miner), removing its accumulated DB scores.
+
+sub_competitions:
+  structure: multi_asset
+  stages:
+    - name: "Evaluation rounds"
+      role: qualifier
+      advancement_rule: "participate >= MINER_ELIGIBILITY_DAYS (default 7) distinct days, combined_score > 0"
+    - name: "Live rounds"
+      role: main
+      advancement_rule: "is_eligible_for_live and per-job top combined_score"
+  count: null
+  notes: >-
+    Jobs-based architecture: multiple liquidity pools/pairs managed concurrently, each
+    a separate per-pair competition with its own MinerScore reputation. Dual-mode
+    evaluation + live rounds per job.
+
+per_miner_state:
+  tracked: true
+  state_kinds:
+    - reputation
+    - cumulative_score
+    - status_enum
+    - registration_age
+  status_values:
+    - "is_eligible_for_live (bool)"
+  reset_policy: >-
+    Per-job MinerScore zeroed (zero_out_miner) when the uid's hotkey is replaced on the
+    metagraph. Otherwise EMA-decayed continuously.
+  notes: >-
+    Per (job, miner_uid) MinerScore tracks evaluation_score, live_score, combined_score
+    (EMA), total_evaluations, successful_evaluations, refusals, total_live_rounds,
+    successful_live_rounds, participation_days, is_eligible_for_live. MinerParticipation
+    tracks daily rounds_participated/rounds_refused.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "MINER_GUIDE.md"
+    - "ARCHITECTURE.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "validator/utils/env.py"
+      line_ref: "58-62"
+      quote: 'NETUID = get_env_variable(\n    name="NETUID",\n    type_=int,\n    default=98,\n)'
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "validator/validator.py"
+      line_ref: "1-2"
+      quote: '"""\nMain entry point for SN98 Validator (Jobs-Based Architecture).'
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "7"
+      quote: >-
+        SN98 ForeverMoney is a Bittensor subnet that optimizes Uniswap V3 / Aerodrome
+        liquidity provision through competitive AI strategies. Miners propose dynamic
+        rebalancing decisions, validators evaluate performance through forward simulations
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "84"
+      quote: >-
+        Implement a `rebalance_query_handler` that responds to `RebalanceQuery` requests
+        ... return desired positions (rebalance or keep current).
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "validator/services/scorer.py"
+      line_ref: "80-81"
+      quote: 'return_pct = (final_value - initial_value) / initial_value\n        return_pct = max(-10.0, min(10.0, return_pct))'
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "validator/services/scorer.py"
+      line_ref: "18,84,87-89"
+      quote: 'DEFAULT_LOSS_PENALTY = 10.0 ... penalty = math.exp(-loss_penalty_multiplier * loss_ratio) ... if return_pct >= 0: score = return_pct * penalty else: score = return_pct / penalty'
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "validator/services/scorer.py"
+      line_ref: "19,91-95"
+      quote: 'DEFAULT_IN_RANGE_WEIGHT = 0.08 ... score *= (1.0 - DEFAULT_IN_RANGE_WEIGHT) + DEFAULT_IN_RANGE_WEIGHT * r'
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "validator/services/revenue.py"
+      line_ref: "175"
+      quote: 'revenue_usd = fee0_tokens * p0 + fee1_tokens * p1'
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "validator/services/emissions.py"
+      line_ref: "112-117"
+      quote: 'miner_ratio = min(\n                self.profit_ratio,\n                revenue_alpha / total_emission_alpha,\n            ) ... burn_ratio = 1.0 - miner_ratio'
+    - claim_field: "/aggregation/burn_allocation/enabled"
+      source_path: "validator/services/emissions.py"
+      line_ref: "96-100,170"
+      quote: 'if revenue_usd <= 0: ... return 1.0, 0.0 ... weights[i] = burn_ratio'
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "validator/services/emissions.py"
+      line_ref: "164-171"
+      quote: '# UID 0 receives burn_ratio proportion of total emissions ... if uid == 0: ... weights[i] = burn_ratio'
+    - claim_field: "/aggregation/notes"
+      source_path: "validator/services/emissions.py"
+      line_ref: "201-203"
+      quote: 'normalized_score = score / total_score\n                        weights[uid_index] = normalized_score * miner_ratio'
+    - claim_field: "/aggregation/method"
+      source_path: "validator/services/emissions.py"
+      line_ref: "187-188"
+      quote: '# Distribute miner_ratio proportionally to top miners\n                for uid, score in sorted_miners:'
+    - claim_field: "/aggregation/normalization"
+      source_path: "validator/services/emissions.py"
+      line_ref: "216-218"
+      quote: 'total_weight = sum(weights)\n        if total_weight > 0:\n            weights = [w / total_weight for w in weights]'
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "validator/validator.py"
+      line_ref: "326,359-360"
+      quote: 'weight_set_interval = 1200  # 20 mins ... await emissions_service.set_weights_on_chain(wallet, config["netuid"])'
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "validator/services/emissions.py"
+      line_ref: "320-326"
+      quote: 'success = self.subtensor.set_weights(\n                netuid=netuid,\n                wallet=wallet,\n                uids=uids,\n                weights=weights,'
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "validator/repositories/job.py"
+      line_ref: "229-231,260,265,269-271"
+      quote: 'Evaluation Score EMA: new = old * 0.9 + latest * 0.1\n        Live Score EMA: new = old * 0.7 + latest * 0.3\n        Combined: eval * 0.6 + live * 0.4'
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "validator/repositories/job.py"
+      line_ref: "334-343"
+      quote: 'cutoff_date = today - timedelta(days=MINER_ELIGIBILITY_DAYS) ... score.is_eligible_for_live = participation_count >= MINER_ELIGIBILITY_DAYS'
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "validator/services/emissions.py"
+      line_ref: "242-243,265-267"
+      quote: 'using only the single top miner per job ... # Select only the single top miner for this job\n                top = miner_scores[0]'
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "validator/validator.py"
+      line_ref: "344-349"
+      quote: 'await job_repository.zero_out_miner(uid)\n                        logger.info(\n                            f"Hotkey replaced at uid={uid}: zeroed out DB data'
+    - claim_field: "/sub_competitions/structure"
+      source_path: "README.md"
+      line_ref: "11-12"
+      quote: '**Jobs-Based Architecture** - Multiple liquidity pools managed concurrently'
+    - claim_field: "/per_miner_state/notes"
+      source_path: "validator/repositories/job.py"
+      line_ref: "246-285"
+      quote: 'score, created = await MinerScore.get_or_create(... "evaluation_score": Decimal("0.0"), "live_score": Decimal("0.0"), "combined_score": Decimal("0.0"),'
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "validator/validator.py"
+      line_ref: "345-346"
+      quote: 'await job_repository.zero_out_miner(uid)'
+    - claim_field: "/mechanism_status_notes"
+      source_path: "validator/services/emissions.py"
+      line_ref: "60-73"
+      quote: 'Incentive-aligned logic: higher revenue → more to miners, less burn. - Unprofitable (revenue <= 0): 100% burn (all to UID 0)'
+    - claim_field: "/aggregation/burn_allocation/dynamic"
+      source_path: "validator/utils/env.py"
+      line_ref: "83-87"
+      quote: 'PROFIT_RATIO = get_env_variable(\n    name="PROFIT_RATIO",\n    type_=float,\n    default=1.0,\n)'
+  unresolved:
+    - "Exact production PROFIT_RATIO value (env-configurable; code default 1.0)."
+    - "Whether revenue is consistently positive on mainnet (determines partial vs full burn in practice)."
+    - "smooth_beta parameter is accepted but explicitly ignored in score_pol_strategy; no additive scoring_signals weight from it."

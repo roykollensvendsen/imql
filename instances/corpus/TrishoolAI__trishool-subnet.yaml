@@ -1,0 +1,278 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: mixed
+mechanism_status_notes: >-
+  On-chain weights are not computed locally from miner scores. The validator fetches a precomputed
+  weight vector from a centralized platform API (GET /api/v1/validator/weights), overwrites
+  self.scores with it, and calls set_weights() (L1-normalized). Local Petri scoring exists and runs in
+  sandboxes, but its output is submitted back to the platform (submit_petri_output); the actual
+  ranking/weighting logic lives off-chain on the platform and is not in this repository. The base
+  EMA (moving_average_alpha=0.1) and update_scores() are present but never invoked in the validator
+  flow.
+
+subnet:
+  name: "Trishool Subnet"
+  owner_repo: "TrishoolAI__trishool-subnet"
+  netuid: null
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners submit seed instructions (prompts, max 2500 characters / 200 words) via the platform REST
+    API to probe target LLMs for problematic behavioral traits (deception, sycophancy, manipulation,
+    overconfidence, power-seeking). Validators fetch a PetriConfig built from each submission, run the
+    Petri alignment-auditing agent in a Docker sandbox against target/auditor/judge models, extract a
+    score from the Petri output JSON, and submit the result back to the platform. The platform then
+    computes weights that validators fetch and set on chain.
+  submission_format: [signals, api_response]
+
+scoring_signals:
+  - name: petri_mean_score
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: 1.0
+    normalization: min_max
+    notes: >-
+      Extracted from Petri output summary.overall_metrics: prefers mean_score, then final_score, then
+      score; else averages per-result scores. Clamped to [0.0, 1.0]. README also describes a binary
+      variant ('Returns 1.0 if correct model selected, 0.0 otherwise'). This local score is submitted
+      to the platform, not used directly to set on-chain weights by this validator.
+
+ground_truth_sources:
+  - kind: llm_judgment
+    description: >-
+      Petri alignment-auditing agent (astro-petri, branch 'alignet') runs auditor and judge models
+      against target models inside a Docker sandbox; the judge produces behavioral-trait scores in the
+      Petri output JSON.
+    source_identifier: "github.com/AstrowareAI/astro-petri (branch alignet)"
+    trust_model: oracle
+    notes: >-
+      Auditor and judge models are LLMs (e.g. Qwen via chutes/openai-api). Final on-chain weights are
+      determined by the off-chain platform, not reproduced here.
+
+aggregation:
+  method: undocumented
+  composition: other
+  composition_other: >-
+    Weights are not aggregated locally. The validator fetches a precomputed per-UID weight dict from the
+    platform API and applies it directly; the aggregation logic is off-chain and not in this repo.
+  normalization: l1
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: >-
+      No burn logic in this repository. Whether the platform allocates emissions to a burn UID is not
+      observable from the source.
+  notes: >-
+    set_weights() computes raw_weights = self.scores / L1-norm(self.scores), then
+    process_weights_for_netuid + convert_weights_and_uids_for_emit before subtensor.set_weights. But
+    self.scores is set entirely from platform_weights via _apply_platform_weights_to_scores (fill 0.0,
+    then scores[uid]=weight), so the L1 normalization is the only local transform applied to
+    platform-supplied weights.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    Background loop (_weight_update_loop) runs every update_weights_interval seconds (default 120 / 2
+    min): resync_metagraph(), fetch platform weights via get_weights(), map by UID into self.scores,
+    then set_weights() (L1-normalize + emit on chain).
+  on_chain_call: set_weights
+  tempo_or_interval: "120 seconds (update_weights_interval)"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      The base class exposes update_scores() with an EMA (moving_average_alpha default 0.1), but the
+      Trishool validator never calls it; weights are overwritten wholesale from the platform each cycle.
+
+anti_gaming:
+  - kind: deduplication
+    enforcement: rejection
+    description: >-
+      Platform checks seed instructions for similarity against existing submissions (duplicate
+      detection); README states an LLM judge checks for similar prompts (<50% variation). Enforced on
+      the platform side.
+  - kind: rate_limit
+    enforcement: rejection
+    description: >-
+      README 'Submission Limits: 1 submission per miner per day'. Enforced on the platform side.
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Validator-side jailbreak/fraud check on submissions (has_fraud / _validate_submission); empty
+      seed instructions are rejected. Note: in this repo has_fraud() is stubbed to always return False
+      (jailbreak pattern checks are commented out), so the active enforcement is the empty-string check.
+  - kind: code_inspection
+    enforcement: barrier
+    description: >-
+      Petri evaluation runs in an isolated Docker sandbox with a timeout (600s default) and resource
+      constraints; MAX_CONCURRENT_SANDBOXES limits concurrency.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: false
+  state_kinds: []
+  status_values: []
+  reset_policy: ""
+  notes: >-
+    Per-submission status enum (SubmissionStatus) is tracked transiently during evaluation, but no
+    persistent per-miner ledger/reputation is maintained in this repo; authoritative miner state lives
+    on the platform.
+
+documentation:
+  status: docs_and_code
+  source_version: "1.0.0"
+  primary_docs:
+    - "README.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: medium
+  extractor_notes: >-
+    Core scoring/weighting authority is off-chain (centralized platform at api.trishool.ai). This repo
+    implements only the validator client: it runs Petri, submits scores, and applies platform-supplied
+    weights to chain. Numeric constants (alpha 0.1, interval 120s, timeout 600s) are taken verbatim
+    from source. No burn fraction or aggregation temperature/decay constants exist in the source.
+  evidence:
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "neurons/validator.py"
+      line_ref: "42-47"
+      quote: "import bittensor as bt ... from alignet.base.validator import BaseValidatorNeuron"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "3"
+      quote: >-
+        A Bittensor subnet for evaluating and detecting behavioral traits in Large Language Models
+        (LLMs). ... miners submit seed instructions (prompts) that are tested using the Petri alignment
+        auditing agent to identify potentially problematic behaviors such as deception, sycophancy,
+        manipulation, overconfidence, and power-seeking tendencies.
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "120-130"
+      quote: "Miners submit **seed instructions** (prompts) via the platform API. ... Maximum 2500 characters"
+      confidence: high
+    - claim_field: "/scoring_signals/0/metric_kind"
+      source_path: "neurons/validator.py"
+      line_ref: "588-615"
+      quote: >-
+        overall_metrics = summary.get("overall_metrics", {}) ... if "mean_score" in overall_metrics:
+        final_score = overall_metrics["mean_score"] ... final_score = max(0.0, min(1.0,
+        float(final_score)))
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "README.md"
+      line_ref: "157-158"
+      quote: "- **Binary Scoring**: Returns 1.0 if correct model selected, 0.0 otherwise"
+      confidence: medium
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "alignet/validator/constants.py"
+      line_ref: "14-16"
+      quote: 'PETRI_REPO_OWNER = "AstrowareAI"  PETRI_REPO_NAME = "astro-petri"  PETRI_REPO_BRANCH = "alignet"'
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "neurons/validator.py"
+      line_ref: "711-718"
+      quote: >-
+        platform_weights = await self.api_client.get_weights() ... if platform_weights:
+        self._apply_platform_weights_to_scores(platform_weights) ... self.set_weights()
+      confidence: high
+    - claim_field: "/aggregation/composition_other"
+      source_path: "neurons/validator.py"
+      line_ref: "738-745"
+      quote: >-
+        self.scores.fill(0.0) ... for key, weight in platform_weights.items(): uid = int(key) if 0 <=
+        uid < len(self.scores): self.scores[uid] = float(weight)
+      confidence: high
+    - claim_field: "/aggregation/normalization"
+      source_path: "alignet/base/validator.py"
+      line_ref: "298-305"
+      quote: >-
+        norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True) ... raw_weights = self.scores
+        / norm
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "alignet/base/validator.py"
+      line_ref: "334-342"
+      quote: >-
+        result, msg = self.subtensor.set_weights(wallet=self.wallet, netuid=self.config.netuid,
+        uids=uint_uids, weights=uint_weights, ... version_key=self.spec_version)
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "neurons/validator.py"
+      line_ref: "119"
+      quote: "self.update_weights_interval = 120  # 2 minutes default"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "neurons/validator.py"
+      line_ref: "667-682"
+      quote: >-
+        Background loop that periodically updates weights from platform API. Runs every
+        update_weights_interval seconds (default: 2 minutes). ... await self._update_weights()
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "alignet/utils/config.py"
+      line_ref: "195-200"
+      quote: >-
+        parser.add_argument("--neuron.moving_average_alpha", type=float, ... default=0.1,)
+      confidence: high
+    - claim_field: "/mechanism_status_notes"
+      source_path: "alignet/base/validator.py"
+      line_ref: "423-426"
+      quote: >-
+        alpha: float = self.config.neuron.moving_average_alpha  self.scores: np.ndarray = (alpha *
+        scattered_rewards + (1 - alpha) * self.scores)
+      confidence: medium
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "README.md"
+      line_ref: "161"
+      quote: "- **Duplicate Verification**: LLM judge checks for similar prompts (<50% variation)"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "README.md"
+      line_ref: "162"
+      quote: "- **Submission Limits**: 1 submission per miner per day"
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "neurons/validator.py"
+      line_ref: "406-411"
+      quote: >-
+        if submission.has_fraud(): submission.add_security_violation("Jailbreak or fraud indicators
+        detected") return False ... if not submission.seed_instruction or not
+        submission.seed_instruction.strip():
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "neurons/validator.py"
+      line_ref: "464-466"
+      quote: "on_finish=on_finish, timeout=600  # 10 minutes default"
+      confidence: high
+    - claim_field: "/per_miner_state/notes"
+      source_path: "alignet/models/submission.py"
+      line_ref: "14-24"
+      quote: >-
+        class SubmissionStatus(str, Enum): ... SUBMITTED = "submitted" ... SCORING_COMPLETED =
+        "scoring_completed" FAILED = "failed"
+      confidence: high
+    - claim_field: "/documentation/source_version"
+      source_path: "neurons/validator.py"
+      line_ref: "264"
+      quote: 'version="1.0.0"  # Default version'
+      confidence: medium
+  unresolved:
+    - "netuid is not hardcoded in the source (default 1 in config; PlatformAPIClient default 23); the production netuid is unknown."
+    - "The platform's weight-computation algorithm (how submitted Petri scores map to per-UID weights) is off-chain and not present in this repository."
+    - "Whether any emission is burned, and any burn fraction, is not observable from this repo."

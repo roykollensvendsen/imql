@@ -1,0 +1,321 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  The documented scoring path is the one the validator invokes: set_weights() computes
+  scores via contest_state.get_scores() and weights via calculate_score_weights(). No burn /
+  null-UID routing is present in the source; when scoring cannot proceed (no contest state,
+  no baseline, all-equal scores) the validator falls back to equal weights ([1.0]*N), not a burn.
+
+subnet:
+  name: "WOMBO EdgeMaxxing"
+  owner_repo: "womboai__edge-maxxing"
+  netuid: 39
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners submit optimized AI image-generation model repositories (e.g. Flux Schnell, SDXL
+    NewDream) targeting fixed consumer hardware (NVIDIA RTX 4090). A daily contest benchmarks
+    each submission's inference performance (generation time, VRAM/RAM use, power, size, load
+    time) and output similarity to a reference baseline. Miners are rewarded by how much their
+    submission improves on the baseline relative to other miners.
+  submission_format: [source_code]
+
+scoring_signals:
+  - name: average_similarity
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: null
+    normalization: other
+    normalization_other: >-
+      transformed: ((average_similarity - 0.75) / (1 - 0.75)) ** (1 - 0.75); enters the score
+      product as a multiplicative factor.
+    notes: >-
+      Image output similarity vs the baseline model output. Gated: if min_similarity < 0.75 the
+      score is forced to -1.
+  - name: generation_time_improvement
+    metric_kind: latency
+    direction: lower_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      pow(baseline_generation_time / benchmark_generation_time, metric_weight/metric_gcd);
+      enters the score as a multiplicative factor. metric_weight is fetched from the remote
+      inputs API (not a code literal). README states generation time = 14% of final score for
+      the Flux contest.
+  - name: vram_used_improvement
+    metric_kind: hardware_spec
+    direction: lower_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      pow(baseline_vram / benchmark_vram, metric_weight/metric_gcd). README: VRAM = 43% of
+      final score for the Flux contest.
+  - name: size_improvement
+    metric_kind: hardware_spec
+    direction: lower_is_better
+    weight: null
+    normalization: none
+    notes: pow(baseline_size / benchmark_size, metric_weight/metric_gcd).
+  - name: watts_used_improvement
+    metric_kind: hardware_spec
+    direction: lower_is_better
+    weight: null
+    normalization: none
+    notes: pow(baseline_watts / benchmark_watts, metric_weight/metric_gcd).
+  - name: load_time_improvement
+    metric_kind: latency
+    direction: lower_is_better
+    weight: null
+    normalization: none
+    notes: pow(baseline_load_time / benchmark_load_time, metric_weight/metric_gcd).
+  - name: ram_used_improvement
+    metric_kind: hardware_spec
+    direction: lower_is_better
+    weight: null
+    normalization: none
+    notes: pow(baseline_ram / benchmark_ram, metric_weight/metric_gcd).
+
+ground_truth_sources:
+  - kind: reference_model
+    description: >-
+      Each contest has a fixed baseline repository (e.g. flux-schnell-edge-inference at a pinned
+      revision). Submissions are benchmarked against the baseline's metrics and its image output
+      (for similarity).
+    source_identifier: "womboai/flux-schnell-edge-inference, womboai/sdxl-newdream-20-inference"
+    trust_model: trusted
+    notes: >-
+      Baseline RepositoryInfo with pinned url+revision is hardcoded per Contest in CONTESTS.
+  - kind: hardware_probe
+    description: >-
+      Benchmark metrics (generation_time, size, vram_used, watts_used, load_time, ram_used) are
+      measured by running the submitted model on the target device (NVIDIA RTX 4090).
+    source_identifier: "NVIDIA GeForce RTX 4090"
+    trust_model: trusted
+
+aggregation:
+  method: proportional
+  composition: multiplicative
+  normalization: none
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: >-
+      No burn / null-UID routing in source. Fallback when scoring is impossible is equal
+      weights ([1.0]*N), not a burn.
+  notes: >-
+    Per-miner score = product over the 7 metric-improvement factors and the transformed
+    similarity, minus 1. Final weight per hotkey = score - min(score over all miners) (a min
+    subtraction / floor-shift, NOT softmax or sum-to-one). Min-similarity gate forces score to
+    -1. method=proportional captures that on-chain weight is proportional to the shifted score.
+
+weight_setting:
+  cadence: daily
+  method: >-
+    WeightSetter thread loops: get scores from benchmarks, calculate_score_weights (score - min
+    score), map to node_ids, call set_node_weights. Sleeps epoch_length*12 seconds between
+    successful sets. Contest runs daily at 12 PM PST per README; delayed_weight_setting flag
+    (from inputs API) can defer to previous day's benchmarks.
+  on_chain_call: set_weights
+  tempo_or_interval: "epoch_length blocks (sleep epoch_length*12 s after a successful set)"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA / moving-average smoothing of the reward in source. delayed_weight_setting reuses
+      the previous day's benchmarks but is a substitution, not a temporal average.
+
+anti_gaming:
+  - kind: deduplication
+    enforcement: rejection
+    description: >-
+      Copy/duplicate submissions are identified server-side via the inputs API
+      (get_duplicate_submissions returns safe_submissions vs duplicate_submissions with copy_of).
+      calculate_score_weights notes 'Assumes that copies are removed from the scores'. on_safe_list
+      checks a hotkey+revision against the safe list.
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      Output similarity gate: if min_similarity < SIMILARITY_SCORE_THRESHOLD (0.75) the score is
+      forced to -1, penalizing submissions that diverge too far from baseline image output.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      Blacklist (hotkeys/coldkeys) from the inputs API removes blacklisted miners' benchmarks and
+      submissions before scoring.
+
+sub_competitions:
+  structure: multi_mechanism
+  stages:
+    - name: FLUX_NVIDIA_4090
+      role: main
+      advancement_rule: "score relative to baseline and other miners"
+    - name: SDXL_NEWDREAM_NVIDIA_4090
+      role: main
+      advancement_rule: "score relative to baseline and other miners"
+  count: 2
+  notes: >-
+    Two contests defined in CONTESTS, each tied to a baseline model + RTX 4090 device. The set of
+    active contests and per-metric weights are supplied by the remote inputs API at runtime.
+
+per_miner_state:
+  tracked: false
+  state_kinds: []
+  status_values: []
+  reset_policy: ""
+  notes: >-
+    Scoring is recomputed each contest from current benchmarks; no persistent per-miner ledger
+    or status enum carried across rounds in the validator source.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "validator/README.md"
+    - "miner/README.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8"
+  extracted_at: "2026-06-06"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "12"
+      quote: "![netuid](https://img.shields.io/badge/netuid-39-blue)"
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "base/base/contest.py"
+      line_ref: "1-11"
+      quote: "from dataclasses import dataclass ... from pydantic import BaseModel"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "48-50"
+      quote: "The EdgeMaxxing subnet defines specific models, pipelines, and target hardware for optimization. Miners and validators collaborate in a daily competition to improve AI model performance on consumer devices."
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "base/base/contest.py"
+      line_ref: "35-47"
+      quote: "class RepositoryInfo(BaseModel): url: str; revision: str ... class Submission(BaseModel): repository_info: RepositoryInfo"
+      confidence: high
+    - claim_field: "/scoring_signals/0"
+      source_path: "base/base/contest.py"
+      line_ref: "96-98"
+      quote: "offset_similarity = benchmark.average_similarity - SIMILARITY_SCORE_THRESHOLD; passable_similarity_range = 1 - SIMILARITY_SCORE_THRESHOLD; similarity = pow(offset_similarity / passable_similarity_range, passable_similarity_range)"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "base/base/contest.py"
+      line_ref: "90-91"
+      quote: "if benchmark.min_similarity < SIMILARITY_SCORE_THRESHOLD: return -1"
+      confidence: high
+    - claim_field: "/scoring_signals/1"
+      source_path: "base/base/contest.py"
+      line_ref: "100-114"
+      quote: "return pow(baseline_value / benchmark_value, metric_weight / metric_gcd) ... calculate_improvement(baseline.generation_time, benchmark.metrics.generation_time, MetricType.GENERATION_TIME)"
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "README.md"
+      line_ref: "67-70"
+      quote: "Generation time: `14%` of final score / Similarity to baseline: `43%` of final score / VRAM Usage: `43%` of final score"
+      confidence: medium
+    - claim_field: "/ground_truth_sources/0"
+      source_path: "base/base/contest.py"
+      line_ref: "125-137"
+      quote: "baseline_repository=RepositoryInfo(url=\"https://github.com/womboai/flux-schnell-edge-inference\", revision=\"2cff82c\")"
+      confidence: high
+    - claim_field: "/ground_truth_sources/1"
+      source_path: "base/base/contest.py"
+      line_ref: "49-56"
+      quote: "class Metrics(BaseModel): generation_time: float; size: int; vram_used: float; watts_used: float; load_time: float; ram_used: float"
+      confidence: high
+    - claim_field: "/aggregation/composition"
+      source_path: "base/base/contest.py"
+      line_ref: "108-118"
+      quote: "score = prod([ calculate_improvement(...), ..., similarity, ]); score -= 1"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "validator/weight_setting/winner_selection.py"
+      line_ref: "22-27"
+      quote: "min_score = min(scores.values()); return { hotkey: score - min_score for hotkey, score in scores.items() }"
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "validator/weight_setting/winner_selection.py"
+      line_ref: "17-27"
+      quote: "def calculate_score_weights(_winner_percentage: float, scores: dict[Key, float]) -> dict[Key, float]:"
+      confidence: medium
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "validator/weight_setting/weight_setter.py"
+      line_ref: "146-147"
+      quote: "def _set_equal_weights(self) -> bool: return self._set_weights([1.0] * len(self._metagraph.nodes))"
+      confidence: high
+    - claim_field: "/weight_setting/cadence"
+      source_path: "README.md"
+      line_ref: "50"
+      quote: "Every day at 12 PM PST a contest is run."
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "validator/weight_setting/weight_setter.py"
+      line_ref: "149-158"
+      quote: "def _set_weights(self, weights: list[float]) -> bool: return set_node_weights(... node_weights=weights, netuid=self._metagraph.netuid, ...)"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "validator/weight_setting/weight_setter.py"
+      line_ref: "75-77"
+      quote: "logger.info(f\"Successfully set weights, sleeping for {self._epoch_length} blocks\"); self._stop_flag.wait(self._epoch_length * 12)"
+      confidence: high
+    - claim_field: "/anti_gaming/0"
+      source_path: "validator/weight_setting/winner_selection.py"
+      line_ref: "18-20"
+      quote: "\"\"\"Assumes that copies are removed from the scores\"\"\""
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "base/base/inputs_api.py"
+      line_ref: "39-54"
+      quote: "class DuplicateSubmission(BaseModel): hotkey: Key; url: str; revision: str; copy_of: str ... class DuplicateSelection(BaseModel): safe_submissions: list[SafeSubmissions]; duplicate_submissions: list[DuplicateSubmission]"
+      confidence: high
+    - claim_field: "/anti_gaming/1"
+      source_path: "base/base/contest.py"
+      line_ref: "12"
+      quote: "SIMILARITY_SCORE_THRESHOLD = 0.75"
+      confidence: high
+    - claim_field: "/anti_gaming/2"
+      source_path: "validator/weight_setting/weight_setter.py"
+      line_ref: "117-120"
+      quote: "if get_blacklist().is_blacklisted(hotkey, node.coldkey): contest_state.last_benchmarks.pop(hotkey, None); contest_state.submissions.pop(hotkey, None)"
+      confidence: high
+    - claim_field: "/sub_competitions/stages"
+      source_path: "base/base/contest.py"
+      line_ref: "30-33"
+      quote: "class ContestId(IntEnum): FLUX_NVIDIA_4090 = 0; SDXL_NEWDREAM_NVIDIA_4090 = 1"
+      confidence: high
+    - claim_field: "/sub_competitions/notes"
+      source_path: "base/base/inputs_api.py"
+      line_ref: "18-24"
+      quote: "active_contests: dict[ContestId, dict[MetricType, int]] ... return self.active_contests[contest_id]"
+      confidence: high
+    - claim_field: "/mechanism_status"
+      source_path: "validator/weight_setting/weight_setter.py"
+      line_ref: "125-144"
+      quote: "scores = contest_state.get_scores(benchmarks); weights_by_key = contest_state.calculate_weights(scores) ... return self._set_weights(weights)"
+      confidence: medium
+  unresolved:
+    - "Per-metric weights (MetricType -> int) and winner_percentage are fetched at runtime from the remote inputs API (https://edge-inputs.api.wombo.ai); not present as code literals. The README 14/43/43 percentages for Flux are documentation, not source constants."
+    - "epoch_length (weight-setting interval in blocks) is injected at WeightSetter construction; default value not found in the read config.py."
+    - "winner_percentage is passed to calculate_score_weights but unused in the read version (_winner_percentage); its intended effect is undocumented in source."
+  extractor_notes: >-
+    Score is a product of per-metric improvement ratios (baseline/benchmark raised to a
+    remote-supplied weight) times a transformed similarity factor, minus 1, gated by a 0.75
+    min-similarity floor. On-chain weights are the per-miner score minus the global minimum
+    score. Only SIMILARITY_SCORE_THRESHOLD=0.75 is a literal numeric constant in the scoring
+    code; all metric weights are dynamic from the inputs API. No burn mechanism in source.

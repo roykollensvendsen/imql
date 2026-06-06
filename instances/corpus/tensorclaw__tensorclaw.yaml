@@ -1,0 +1,243 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Validator computes per-miner scores (base + business), normalizes to sum-to-one,
+  and calls subtensor.set_weights every WEIGHT_SUBMIT_INTERVAL (20) blocks. No burn
+  allocation is present in the code. The business component depends on an external
+  Business API (api.tensorclaw.ai) whose scoring is not in this repo.
+
+subnet:
+  name: "Tensorclaw"
+  owner_repo: "tensorclaw__tensorclaw"
+  netuid: 92
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners run an LLM inference backend and connect as pure WebSocket clients to a
+    centralized router (AICenter). They are rewarded for serving real, high-quality
+    LLM API traffic: availability and a passing active inference probe yield a base
+    score, and processing real user requests/tokens via the Business API yields the
+    dominant business score.
+  submission_format: [api_response, compute_service]
+
+scoring_signals:
+  - name: model_availability
+    metric_kind: other
+    metric_kind_other: model_whitelist_membership
+    direction: higher_is_better
+    weight: 0.3
+    normalization: none
+    notes: >-
+      Part of base score. model_score is a flat 100.0 when the declared model is in
+      the whitelist (otherwise the miner gets 0 total). Weighted 30% within base score.
+  - name: availability
+    metric_kind: uptime
+    direction: higher_is_better
+    weight: 0.4
+    normalization: none
+    notes: >-
+      avail_score = 100.0 when the miner passes the active inference probe. Weighted
+      40% within base score.
+  - name: response_time
+    metric_kind: latency
+    direction: lower_is_better
+    weight: 0.2
+    normalization: none
+    notes: >-
+      Tiered rt_score: 100 if <100ms, 80 if <500ms, 60 if <1000ms, 40 if <2000ms,
+      else 20. Weighted 20% within base score.
+  - name: historical_uptime
+    metric_kind: uptime
+    direction: higher_is_better
+    weight: 0.1
+    normalization: none
+    notes: >-
+      uptime = success rate over last 100 probes (rolling window capped at 100),
+      expressed as a percentage. Weighted 10% within base score.
+  - name: business_score
+    metric_kind: other
+    metric_kind_other: commercial_request_contribution
+    direction: higher_is_better
+    weight: 0.9
+    normalization: none
+    notes: >-
+      contribution_score returned by an external Business API per miner hotkey;
+      reflects real user requests/tokens processed. Weighted 90% of the final score.
+      The actual computation lives in the off-repo Business API, not this codebase.
+
+ground_truth_sources:
+  - kind: hardware_probe
+    description: >-
+      Active inference probe via AICenter: a 5-token micro-prompt ("ping" -> expects
+      "pong") with 8s timeout to confirm the miner backend is live and serving the
+      declared model.
+    source_identifier: "{aicenter_url}/api/route/{hotkey}"
+    trust_model: trusted
+    notes: "model_info and availability are derived from this probe."
+  - kind: organic_traffic
+    description: >-
+      Real user requests forwarded through the HA load balancer; the Business API
+      logs requests/tokens and returns a contribution_score per miner.
+    source_identifier: "{business_api_url}/scoring"
+    trust_model: trusted
+    notes: >-
+      External, off-repo service (api.tensorclaw.ai). Scoring internals not present
+      in this repo.
+
+aggregation:
+  method: weighted_average
+  composition: hybrid
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: "No burn logic in the code."
+  notes: >-
+    base_score = model*0.3 + avail*0.4 + rt*0.2 + uptime*0.1; final_score =
+    base*0.1 + business*0.9. Invalid/unavailable model => final 0.0 (gated). Across
+    miners, weights = score / sum(scores) before set_weights.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    Per-miner final_score is collected into miner_scores, filtered to metagraph
+    hotkeys, normalized to sum 1, and submitted via subtensor.set_weights with
+    version_key=1.
+  on_chain_call: set_weights
+  tempo_or_interval: "20 blocks (WEIGHT_SUBMIT_INTERVAL)"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      Final score has no temporal smoothing. Historical uptime uses a rolling
+      window of the last 100 probes, but that feeds only the 10%-weighted base
+      uptime component, not the final reward EMA.
+
+anti_gaming:
+  - kind: liveness_check
+    enforcement: elimination
+    description: >-
+      Active inference probe: a real 5-token micro-prompt must return within 8s.
+      Failures mark the miner unavailable; an invalid/dead/fake backend yields 0
+      base score and is banned from the routing pool ("Ghost Script").
+  - kind: code_inspection
+    enforcement: rejection
+    description: >-
+      Declared model name must match a dynamically updated whitelist
+      (VALID_MODEL_SERIES); non-whitelisted models score 0.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: true
+  state_kinds: [performance_ledger]
+  status_values: []
+  reset_policy: >-
+    uptime_tracker keeps a rolling list of the last 100 probe outcomes per hotkey
+    (oldest entries dropped). In-memory only; not persisted across restarts.
+  notes: >-
+    Only last_weight_submit_block is persisted (.validator_state.json). The
+    uptime_tracker performance history is in-memory.
+
+documentation:
+  status: docs_and_code
+  source_version: "V2 (Subnet 92)"
+  primary_docs: ["README.md"]
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "configs/validator.env"
+      line_ref: "5"
+      quote: "BITTENSOR_NETUID=92"
+    - claim_field: "/subnet/name"
+      source_path: "README.md"
+      line_ref: "1"
+      quote: "# Bittensor Tensorclaw Subnet 92"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "validator.py"
+      line_ref: "13"
+      quote: "import bittensor as bt"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "13"
+      quote: "Miners now act as pure clients. ... They securely connect to the AICenter via WebSockets (WSS)"
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "validator.py"
+      line_ref: "276"
+      quote: "base_score = (model_score * 0.3) + (avail_score * 0.4) + (rt_score * 0.2) + (uptime * 0.1)"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "validator.py"
+      line_ref: "272-273"
+      quote: "model_score = 100.0\n        avail_score = 100.0"
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "validator.py"
+      line_ref: "274"
+      quote: "rt_score = 100.0 if rt_ms < 100 else 80.0 if rt_ms < 500 else 60.0 if rt_ms < 1000 else 40.0 if rt_ms < 2000 else 20.0"
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "validator.py"
+      line_ref: "261"
+      quote: "uptime = sum(self.uptime_tracker[hotkey]) / len(self.uptime_tracker[hotkey]) * 100.0"
+    - claim_field: "/scoring_signals/4/weight"
+      source_path: "validator.py"
+      line_ref: "277"
+      quote: "final_score = (base_score * 0.1) + (business_score * 0.9)"
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "validator.py"
+      line_ref: "215"
+      quote: '"content": "You are a healthcheck bot. Reply strictly with the word pong."'
+    - claim_field: "/ground_truth_sources/1/source_identifier"
+      source_path: "validator.py"
+      line_ref: "230-231"
+      quote: 'resp = await client.post(\n                f"{self.business_api_url}/scoring",'
+    - claim_field: "/aggregation/notes"
+      source_path: "validator.py"
+      line_ref: "276-277"
+      quote: "base_score = (model_score * 0.3) + (avail_score * 0.4) + (rt_score * 0.2) + (uptime * 0.1)\n        final_score = (base_score * 0.1) + (business_score * 0.9)"
+    - claim_field: "/aggregation/normalization"
+      source_path: "validator.py"
+      line_ref: "317-319"
+      quote: "total = sum(weights)\n        if total > 0:\n            weights = [w / total for w in weights]"
+    - claim_field: "/aggregation/composition"
+      source_path: "validator.py"
+      line_ref: "263-264"
+      quote: "if not has_valid_model:\n            return 0.0, {"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "validator.py"
+      line_ref: "328-331"
+      quote: "success = self.subtensor.set_weights(\n                wallet=self.wallet, netuid=self.config.netuid, uids=uids, weights=weights,\n                version_key=1"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "validator.py"
+      line_ref: "299-300"
+      quote: "weight_interval = int(os.getenv('WEIGHT_SUBMIT_INTERVAL', '20'))\n        if blocks_since_submit < weight_interval:"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "README.md"
+      line_ref: "16"
+      quote: "they fire a real 5-token micro-prompt. If the backend fails to respond within 8 seconds, the miner is marked as a \"Ghost Script\" and banned from routing."
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "validator.py"
+      line_ref: "190-192"
+      quote: "def validate_model(self, model_name: str) -> bool:\n        if not model_name: return False\n        return any(series in model_name.lower() for series in self.valid_model_series)"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "validator.py"
+      line_ref: "258-259"
+      quote: "if len(self.uptime_tracker[hotkey]) > 100:\n            self.uptime_tracker[hotkey] = self.uptime_tracker[hotkey][-100:]"
+  unresolved:
+    - "Business API contribution_score formula (README mentions Max 20 model-tier pts + Max 70 token pts at 1pt/10k tokens over a 24h window, but the computation is off-repo)."
+    - "Exact mainnet burn/emission behavior on-chain is not observable from source; code itself contains no burn allocation."

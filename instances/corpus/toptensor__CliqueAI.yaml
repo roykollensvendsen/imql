@@ -1,0 +1,217 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Fully implemented scoring + EMA + sigmoid/power weight-setting pipeline. set_weights
+  combines sigmoid weights with LAMBDA_WEIGHTS=1.0, so weights[0] = (1.0 - 1.0)*sum = 0;
+  no burn allocation to UID 0. No partial/full burn observed in source.
+
+subnet:
+  name: "CliqueAI"
+  owner_repo: "toptensor__CliqueAI"
+  netuid: 83
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners receive a graph (LambdaGraph) and must return a set of vertices forming a maximum
+    clique. A response is validated as a maximal clique, then scored on optimality (relative
+    clique size with a penalty for being beaten by larger cliques) and on diversity (uniqueness
+    of the solution among miners). The final per-problem reward combines optimality scaled by
+    (1 + difficulty) plus diversity.
+  submission_format: [signals]
+
+scoring_signals:
+  - name: optimality
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: null
+    normalization: min_max
+    notes: >-
+      omega = val * exp(-pr/rel) where val=valid maximal clique (0/1),
+      rel = size/max_size, pr = fraction of miners with strictly larger valid size.
+      Normalized by dividing by max omega. In aggregation it is scaled by (1 + difficulty),
+      so it has no plain additive weight.
+  - name: diversity
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 1.0
+    normalization: min_max
+    notes: >-
+      delta = val * unq, where unq = 1 / (number of miners whose solution is exactly identical).
+      Normalized by dividing by max delta. Added directly to the scaled optimality term.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Graphs retrieved from CliqueAI's distributed problem database via get_graph; validity
+      and maximality of returned cliques are checked deterministically against the graph's
+      adjacency list (is_valid_maximum_clique).
+    source_identifier: "CliqueAI/graph/client.py:get_graph; CliqueAI/scoring/clique_scoring.py:is_valid_maximum_clique"
+    trust_model: trusted
+    notes: >-
+      Difficulty levels documented as Medium (0.2), Hard (0.4), Very Hard (1) in docs/mechanism.md.
+
+aggregation:
+  method: weighted_average
+  composition: hybrid
+  normalization: min_max
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: >-
+      weights[0] = (1.0 - LAMBDA_WEIGHTS) * sum(sigmoid_weights) with LAMBDA_WEIGHTS=1.0,
+      i.e. zero; no burn to UID 0.
+  notes: >-
+    Per-problem score f(m,p) = optimality_normalized * (1 + difficulty) + diversity_normalized
+    (rewards = optimality * (1 + difficulty) + diversity in clique_scoring.py). Optimality and
+    diversity are each min-max normalized by their own max before combination.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Per-miner debiased EMA scores are min-max normalized to [0,1], then passed through a sigmoid
+    (midpoint=median of nonzero, steepness=IQR clamped to >=0.1), then power-scaled: gamma is found
+    by bisection (up to POWER_MAX_GAMMA=32.0) so the top half of miners by rank receive
+    POWER_TARGET_TOP_HALF_SHARE=0.80 of total weight. Final weights = LAMBDA_WEIGHTS(=1.0) * sigmoid_weights.
+  on_chain_call: set_weights
+  tempo_or_interval: "361 blocks"
+  smoothing:
+    kind: ema
+    alpha: 0.01
+    window: null
+    notes: >-
+      Debiased EMA on per-problem scores: ema = alpha*reward + (1-alpha)*ema; debiased by
+      dividing by (1 - (1-alpha)^step_count). ema_alpha default 0.01 (config), half-life ~69 samples
+      per docs/mechanism.md.
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      is_valid_maximum_clique rejects empty sets, duplicates, out-of-range nodes, non-cliques,
+      and non-maximal cliques (val=0 => zero optimality and diversity contribution).
+  - kind: deduplication
+    enforcement: penalty
+    description: >-
+      Diversity uses unq = 1/(count of identical solutions), penalizing miners who submit the
+      same clique as others.
+  - kind: deterministic_check
+    enforcement: barrier
+    description: >-
+      Validator shuffles the graph vertices (random permutation of node ids) before sending the
+      synapse, preventing miners from memorizing problems by graph identity.
+
+sub_competitions:
+  structure: per_task_type
+  stages: []
+  count: 3
+  notes: >-
+    Three documented problem difficulty types: Medium (difficulty=0.2, 290<=|V|<=300),
+    Hard (0.4, 490<=|V|<=500), Very Hard (1, 690<=|V|<=700), selected with equal probability.
+    Not separate weighting tracks; difficulty modulates scoring and miner-selection probability.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [performance_ledger, cumulative_score]
+  status_values: []
+  reset_policy: >-
+    ema_scores, scores, and ema_step_count for a UID are reset to 0 when its hotkey is replaced
+    in the metagraph (resync_metagraph).
+  notes: >-
+    Per-UID arrays: ema_scores (raw EMA), scores (debiased EMA), ema_step_count (sample count for
+    debiasing). Persisted via save_validator_state / load_state.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "docs/mechanism.md"
+    - "README.md"
+    - "docs/wandb_logging.md"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "27"
+      quote: "--subtensor.network finney --netuid 83"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "CliqueAI/validator.py"
+      line_ref: "1-19"
+      quote: "import asyncio ... from CliqueAI.scoring.clique_scoring import CliqueScoreCalculator"
+    - claim_field: "/task/summary"
+      source_path: "docs/mechanism.md"
+      line_ref: "98-99"
+      quote: "A `solution` is a set of vertices $G = \\{v_1, …, v_N\\}$, where $N$ is the size of the clique."
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "CliqueAI/scoring/clique_scoring.py"
+      line_ref: "77-86"
+      quote: "omega[i] = np.exp(-pr[i] / rel[i]) ... omega_normalized = omega / max_omega"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "CliqueAI/scoring/clique_scoring.py"
+      line_ref: "99-111"
+      quote: "unq = np.array([1 / counts[sol] for sol in canonical_responses]) ... delta = val * unq ... delta_normalized = delta / max_delta"
+    - claim_field: "/aggregation/notes"
+      source_path: "CliqueAI/scoring/clique_scoring.py"
+      line_ref: "122"
+      quote: "rewards = optimality * (1 + self.difficulty) + diversity"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "common/base/validator.py"
+      line_ref: "303,343-344"
+      quote: "LAMBDA_WEIGHTS = 1.0 ... weights = LAMBDA_WEIGHTS * sigmoid_weights ; weights[0] = (1.0 - LAMBDA_WEIGHTS) * sum(sigmoid_weights)"
+    - claim_field: "/weight_setting/method"
+      source_path: "common/base/validator.py"
+      line_ref: "324-335"
+      quote: "midpoint = np.median(nonzero_normalized) ... sigmoid_weights, power_gamma = self._power_weight(sigmoid_scores, normalized, self.POWER_TARGET_TOP_HALF_SHARE)"
+    - claim_field: "/weight_setting/method"
+      source_path: "common/base/validator.py"
+      line_ref: "32-33"
+      quote: "POWER_TARGET_TOP_HALF_SHARE: float = 0.80 ; POWER_MAX_GAMMA: float = 32.0"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "common/base/validator.py"
+      line_ref: "350-358"
+      quote: "result, msg = self.subtensor.set_weights(wallet=self.wallet, netuid=self.config.netuid, uids=uids, weights=weights, ... version_key=validator_int_version,)"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "common/utils/config.py"
+      line_ref: "66-71"
+      quote: "--neuron.epoch_length ... how often we set weights, measured in 12 second blocks ... default=361,"
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "common/utils/config.py"
+      line_ref: "165-170"
+      quote: "--neuron.ema_alpha ... Exponential moving average alpha parameter ... default=0.01,"
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "common/base/validator.py"
+      line_ref: "442-451"
+      quote: "self.ema_scores[uids_array] = (alpha * rewards + (1 - alpha) * self.ema_scores[uids_array]) ; correction = 1 - np.power(1 - alpha, self.ema_step_count) ; self.scores = np.divide(self.ema_scores, correction, ...)"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "CliqueAI/scoring/clique_scoring.py"
+      line_ref: "29-53"
+      quote: "if len(node_set) == 0: return False ... if node_set.issubset(self.graph.adjacency_list[candidate]): return False  # Clique can be extended, so it's not maximum"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "CliqueAI/validator.py"
+      line_ref: "119-129"
+      quote: "random.shuffle(new_vertices) ; vertex_map = dict(zip(old_vertices, new_vertices)) ... graph.adjacency_list = new_adjacency_list"
+    - claim_field: "/sub_competitions/notes"
+      source_path: "docs/mechanism.md"
+      line_ref: "47-49"
+      quote: "Medium (difficulty=0.2): general graph with $290≤|V|≤300$ ... Very Hard (difficulty=1): general graph with $690≤|V|≤700$"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "common/base/validator.py"
+      line_ref: "374-379"
+      quote: "if hotkey != self.metagraph.hotkeys[uid]: ... self.ema_scores[uid] = 0 ; self.scores[uid] = 0 ; self.ema_step_count[uid] = 0"
+    - claim_field: "/documentation/primary_docs"
+      source_path: "README.md"
+      line_ref: "20-22"
+      quote: "- [Mechanism](docs/mechanism.md) – Detailed explanation of our mechanism."
+  unresolved:
+    - "Exact miner-selection probability constants are documented (r_ref=1.5) only in docs/mechanism.md; MinerSelector source not read to confirm literal values."

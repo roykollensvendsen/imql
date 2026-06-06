@@ -1,0 +1,287 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: full_burn
+mechanism_status_notes: >-
+  The documented incentive (per-zipcode competitive scoring with 55/30/10/5 reward
+  distribution) is implemented in rewards/zipcode_competitive_scorer.py, but the live
+  weight-setting call site in neurons/validator.py hardcodes 100% of emission to a single
+  burn UID (238) and zeros all miner weights. The competitive scorer path is therefore
+  dormant in production: scores are computed but never drive on-chain weights.
+
+subnet:
+  name: "RESI - Real Estate Super Intelligence"
+  owner_repo: "resi-labs-ai__resi"
+  netuid: 46
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners build custom scrapers to collect US real estate listing data (e.g. sold
+    properties for assigned zipcodes from sources like Zillow, Redfin, county records),
+    conform it to a required property schema, and upload it to S3. Validators assign
+    miners zipcodes per epoch and score submissions on quantity, quality/schema
+    compliance, and spot-check accuracy against the source. The documented mechanism
+    runs a per-zipcode competition rewarding the earliest valid submissions.
+  submission_format: [content_link]
+  submission_format_other: ""
+
+scoring_signals:
+  - name: tier1_quantity
+    metric_kind: volume
+    direction: target_band
+    weight: null
+    normalization: none
+    notes: >-
+      Tier 1 gate: actual listing count must fall within +/-15% of the expected count
+      from the zipcode server (expected_min = expected_count*0.85, expected_max =
+      expected_count*1.15). Pass/fail gate, not an additive weight.
+  - name: tier2_quality_epoch_compliance
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Tier 2 gate: quality and epoch-compliance validation of entities (schema
+      completeness, etc.). Pass/fail; failing here drops the miner to participant status.
+  - name: tier3_spot_check
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Tier 3 gate: randomly selected entities are re-scraped from the source and
+      verified for accuracy. Passing all three tiers makes a miner eligible to be a
+      top-3 winner for that zipcode.
+  - name: submission_earliness
+    metric_kind: latency
+    direction: lower_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Submissions are sorted by submission_timestamp earliest-first; the first three
+      miners to pass all tiers take 1st/2nd/3rd place for the zipcode.
+  - name: zipcode_reward_rank
+    metric_kind: reward
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Per-zipcode reward by rank: 1st=0.55, 2nd=0.30, 3rd=0.10; remaining 0.05 split
+      equally among non-winner participants. Each zipcode's contribution is weighted by
+      that zipcode's share of total listings found across the epoch.
+
+ground_truth_sources:
+  - kind: organic_traffic
+    kind_other: ""
+    description: >-
+      Real estate listing source websites (e.g. Zillow) are re-scraped by validators in
+      Tier 3 spot-check validation to verify miner-submitted listing accuracy.
+    source_identifier: "zillow / real estate websites"
+    trust_model: trusted
+    notes: >-
+      Expected listing counts and zipcode assignments come from the RESI API server
+      (api.resilabs.ai); accuracy verification scrapes the original listing source.
+  - kind: deterministic_dataset
+    kind_other: ""
+    description: >-
+      Per-epoch zipcode assignments and expected listing counts served by the RESI API
+      define the ground-truth target quantity for Tier 1.
+    source_identifier: "RESI API (get_current_zipcode_assignments)"
+    trust_model: trusted
+    notes: ""
+
+aggregation:
+  method: winner_take_all
+  method_other: ""
+  composition: gated
+  composition_other: ""
+  normalization: sum_to_one
+  normalization_other: ""
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "238"
+    fraction: 1.0
+    dynamic: false
+    notes: >-
+      Live set_weights() hardcodes final_weights[0] = 1 for burn UID 238 (100% to burn)
+      and sets remaining_weight = 0, so every miner weight is zeroed. The competitive
+      scorer's normalized per-miner scores never reach the chain.
+  notes: >-
+    Documented aggregation: each zipcode is a winner-take-(top-3) competition gated by a
+    3-tier pass/fail check; per-zipcode rewards are weighted by zipcode listing share and
+    normalized to sum to 1.0 (calculate_epoch_proportional_weights). This documented path
+    is bypassed by the burn in the live call site.
+
+weight_setting:
+  cadence: rate_limited
+  cadence_other: ""
+  method: >-
+    should_set_weights() triggers when the validator enters a new 1200-block (4-hour)
+    cycle; set_weights() then routes 100% weight to burn UID 238 and calls
+    subtensor.set_weights().
+  on_chain_call: set_weights
+  tempo_or_interval: "1200 blocks (4 hours) per cycle"
+  smoothing:
+    kind: none
+    kind_other: ""
+    alpha: null
+    window: null
+    notes: ""
+
+anti_gaming:
+  - kind: deduplication
+    enforcement: rejection
+    enforcement_other: ""
+    description: >-
+      are_entities_unique() runs a 4-layer duplicate check (zpid, URI-zpid consistency);
+      a submission with duplicates fails pre-tier (failed_at_tier 0) and is rejected.
+  - kind: deterministic_check
+    enforcement: rejection
+    enforcement_other: ""
+    description: >-
+      Tier 1 quantity gate: listing count must be within +/-15% of the API-provided
+      expected count, preventing under/over-reporting.
+  - kind: hardware_validation
+    enforcement: rejection
+    enforcement_other: ""
+    description: >-
+      Tier 3 spot-check re-scrapes randomly selected entities from the original source
+      to detect synthetic or fabricated listing data.
+  - kind: commit_reveal
+    enforcement: barrier
+    enforcement_other: ""
+    description: >-
+      DeterministicConsensus computes a consensus hash over final scores and an epoch
+      nonce so all validators reach identical results for the epoch.
+
+sub_competitions:
+  structure: per_task_type
+  structure_other: ""
+  stages: []
+  count: null
+  notes: >-
+    Each assigned zipcode is an independent competition (per-zipcode ranking and 55/30/10/5
+    reward split), aggregated across all zipcodes in the epoch weighted by listing share.
+
+per_miner_state:
+  tracked: false
+  state_kinds: []
+  status_values: []
+  reset_policy: ""
+  notes: >-
+    Per-zipcode validation produces transient WINNER/PARTICIPANT status within an epoch
+    result dict, but no persistent cross-epoch per-miner ledger was found in the scoring code.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/validator.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8"
+  extracted_at: "2026-06-06"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "31"
+      quote: "Subnet 46 (RESI) is a specialized real estate data collection network built by ResiLabs.ai."
+      confidence: high
+    - claim_field: "/subnet/name"
+      source_path: "README.md"
+      line_ref: "10"
+      quote: "RESI - Real Estate Super Intelligence"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "80-86"
+      quote: "Data Completeness ... Data Quality: Accuracy verified when validators cross-check against Zillow ... Zipcode Coverage: Miners will be requested to collect ALL sold listings for specific zipcodes"
+      confidence: high
+    - claim_field: "/mechanism_status"
+      source_path: "neurons/validator.py"
+      line_ref: "826-841"
+      quote: "burn_weight_portion = 1 * total_weight  # 100% goes to burn ... final_weights[0] = 1 ... remaining_weight = 0"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "neurons/validator.py"
+      line_ref: "849-850"
+      quote: "final_uids = np.concatenate([[238], uids_np])"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "neurons/validator.py"
+      line_ref: "831-834"
+      quote: "# Set burn weight (100% of total) ... final_weights[0] = 1"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "neurons/validator.py"
+      line_ref: "931-938"
+      quote: "success, message = self.subtensor.set_weights(wallet=self.wallet, netuid=self.config.netuid, uids=processed_weight_uids, weights=processed_weights, ... version_key=spec_version)"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "neurons/validator.py"
+      line_ref: "687"
+      quote: "blocks_per_cycle = 1200  # Each cycle is 1200 blocks (4 hours)"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "neurons/validator.py"
+      line_ref: "714-720"
+      quote: "# Set weights whenever we enter a new cycle\n            if current_cycle != last_cycle:"
+      confidence: high
+    - claim_field: "/scoring_signals/4/notes"
+      source_path: "rewards/zipcode_competitive_scorer.py"
+      line_ref: "24-29"
+      quote: "'first_place': 0.55, ... 'second_place': 0.30, ... 'third_place': 0.10, ... 'participation': 0.05"
+      confidence: high
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "rewards/zipcode_competitive_scorer.py"
+      line_ref: "77-78"
+      quote: "# Step 1: Sort by submission time (earliest first for competitive advantage)\n        sorted_submissions = sorted(submissions, key=lambda x: x['submission_timestamp'])"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "vali_utils/miner_evaluator.py"
+      line_ref: "996-999"
+      quote: "# If we have expected count from API, use +/-15% range ... expected_min = int(expected_count * 0.85)  # -15% ... expected_max = int(expected_count * 1.15)  # +15%"
+      confidence: high
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "rewards/zipcode_competitive_scorer.py"
+      line_ref: "259-263"
+      quote: "# Tier 3: Spot-check validation (same as real-time) ... entities_to_validate = vali_utils.choose_entities_to_verify(entities)"
+      confidence: high
+    - claim_field: "/aggregation/normalization"
+      source_path: "rewards/zipcode_competitive_scorer.py"
+      line_ref: "416-421"
+      quote: "# Step 4: Normalize scores to sum to 1.0 ... normalized_scores = {hotkey: score / total_score for hotkey, score in miner_scores.items()}"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "rewards/zipcode_competitive_scorer.py"
+      line_ref: "221-231"
+      quote: "unique = vali_utils.are_entities_unique(entities) ... 'failed_at_tier': 0,  # Pre-tier failure ... 'reason': 'Duplicate entities found'"
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "neurons/validator.py"
+      line_ref: "1431-1432"
+      quote: "consensus_hash = self.consensus_manager.calculate_consensus_hash(final_scores, epoch_nonce)"
+      confidence: high
+    - claim_field: "/sub_competitions/structure"
+      source_path: "rewards/zipcode_competitive_scorer.py"
+      line_ref: "13-21"
+      quote: "Per-zipcode competitive scoring system with multi-tier validation ... 1st place per zipcode: 55% ... 2nd place per zipcode: 30%"
+      confidence: high
+  unresolved:
+    - "/scoring_signals weights — all signals are pass/fail gates or rank-based, no additive numeric weights exist."
+    - "Persistent cross-epoch per-miner state — none found; WINNER/PARTICIPANT status is transient within an epoch result."
+    - "Exact zipcode count per epoch / number of concurrent competitions (count) — not a literal constant in the read sources."
+  extractor_notes: >-
+    Key finding: documented competitive scorer is dormant in production. The live
+    set_weights() in neurons/validator.py unconditionally assigns 100% weight to burn UID
+    238 and zeros all miners (commented-out lines show a prior 90/10 burn/distribute split
+    was disabled). Structured fields capture the documented mechanism; mechanism_status and
+    burn_allocation capture the operative full-burn reality. Repo README marks it archived /
+    no longer maintained.

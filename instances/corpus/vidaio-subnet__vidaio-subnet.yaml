@@ -1,0 +1,314 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  Validators set real weights derived from accumulated per-miner scores, but
+  burn_proportion = 4/5 (80%) of miner emissions is redirected to the subnet owner UID
+  on every weight-set. Only the remaining 20% is distributed across miners, split by
+  task type and tier. Documented exponential upscaling final-score formula
+  (S_F = 0.1 * e^(6.979*(S_pre-0.5))) does not match the implemented log10-based
+  calculate_final_score(), so docs and code diverge.
+
+subnet:
+  name: "Vidaio Subnet"
+  owner_repo: "vidaio-subnet__vidaio-subnet"
+  netuid: 85
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners perform AI-driven video processing in two task types: upscaling (enhance a
+    downscaled video back to high resolution) and compression (reduce file size while
+    maintaining quality above a VMAF threshold). Validators send synthetic and organic
+    video challenges; miners return a processed-video URL. Upscaling is scored on PIE-APP
+    perceptual quality gated by a VMAF threshold plus a content-length term; compression
+    is scored on compression ratio plus VMAF margin above threshold.
+  submission_format: [content_link]
+
+scoring_signals:
+  - name: pieapp_quality_score_upscaling
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 0.5
+    normalization: other
+    normalization_other: >-
+      sigmoid then log10-based transform: calculate_final_score maps PIE-APP into a
+      0-1 quality score; gated to 0 when VMAF below threshold.
+    notes: >-
+      QUALITY_WEIGHT = 0.5. S_Q is the PIE-APP final score; set to 0 if
+      vmaf_score/100 < vmaf_threshold (default vmaf_threshold 0.5).
+  - name: content_length_score_upscaling
+    metric_kind: throughput
+    direction: higher_is_better
+    weight: 0.5
+    normalization: other
+    normalization_other: "logarithmic: S_L = log(1+content_length)/log(1+320) (per docs)"
+    notes: >-
+      LENGTH_WEIGHT = 0.5. Rewards longer processed content length (currently 5s or 10s
+      supported).
+  - name: compression_rate_score
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 0.8
+    normalization: other
+    normalization_other: >-
+      ((compression_ratio-1.25)/18.75)^0.9 above threshold, with log bonus beyond 20x;
+      normalized by factor 1.12. compression_ratio = 1/compression_rate.
+    notes: >-
+      COMPRESSION_RATE_WEIGHT (w_c) = 0.8 in config; calculate_compression_score default
+      compression_weight = 0.70. Zeroed when compression_rate >= 0.80 (< 1.25x).
+  - name: vmaf_quality_margin_compression
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 0.2
+    normalization: other
+    normalization_other: "0.7 + 0.3*min(1, vmaf_excess/(100-threshold)) above threshold"
+    notes: >-
+      COMPRESSION_VMAF_WEIGHT (w_vmaf) = 0.2 in config; default quality_weight = 0.30 in
+      calculate_compression_score. Hard cutoff: score 0 if VMAF below threshold-5.
+
+ground_truth_sources:
+  - kind: reference_model
+    description: >-
+      VMAF (harmonic mean over sampled frames) and PIE-APP perceptual-difference metrics
+      compute objective quality between the validator's reference video and the miner's
+      processed output. Reference video is held by the validator (trim/permuted source).
+    source_identifier: "services/scoring (vmaf_metric.py, pieapp_metric.py)"
+    trust_model: trusted
+    notes: >-
+      VMAF uses 5 random frames; PIE-APP uses sampled frames. Scoring runs on validator-side
+      scoring service over HTTP.
+  - kind: organic_traffic
+    description: >-
+      Real user-submitted videos routed via the organic gateway are also processed and a
+      subset randomly selected for scoring.
+    source_identifier: "neurons/validator.py score_organics_upscaling / score_organics_compression"
+    trust_model: trusted
+    notes: "1 upscaling pair and up to 5 compression pairs randomly sampled per organic round."
+
+aggregation:
+  method: exponential_decay_ema
+  composition: multiplicative
+  normalization: other
+  normalization_other: >-
+    Per-task tier allocation: weights within top-10 and rank 11-50 tiers are score-proportional
+    and scaled to fixed allocation shares (comp 0.30/0.30, up 0.20/0.20); then 80% burned and
+    20% kept, ultimately normalized on-chain by process_weights_for_netuid.
+  temperature: null
+  decay_rate: 0.75
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "subnet owner UID (SubnetOwnerHotkey -> get_burn_uid)"
+    fraction: 0.8
+    dynamic: false
+    notes: >-
+      self.burn_proportion = float(4/5). scores scaled by (1 - burn_proportion); owner UID
+      appended with burn_proportion * total_scores.
+  notes: >-
+    accumulate_score is an EMA: accumulate_score = accumulate_score*decay_factor +
+    score_with_multiplier*(1-decay_factor), where score_with_multiplier = s_f * total_multiplier
+    and total_multiplier = bonus * penalty_f * penalty_q (upscaling) or bonus * penalty_f
+    (compression). decay_factor = 0.75.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    WeightSynthesizer loops every 1200s calling set_weights; weights only emitted when
+    current_block > last_update + SUBNET_TEMPO (100). Miner weights come from
+    MinerManager.weights: split 60/40-style tiered allocation across compression/upscaling
+    top-10 and rank-11-50 tiers, with 80% of emission burned to the owner UID.
+  on_chain_call: set_weights
+  tempo_or_interval: 100
+  smoothing:
+    kind: ema
+    alpha: 0.25
+    window: null
+    notes: >-
+      EMA on accumulate_score with decay_factor 0.75; effective new-sample weight
+      (1 - decay_factor) = 0.25.
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Compression: score zeroed if compression_rate >= 0.80 (< 1.25x, suspected return of
+      original) or if VMAF more than 5 points below threshold. Upscaling: quality score
+      zeroed if VMAF below threshold.
+  - kind: rate_limit
+    enforcement: barrier
+    description: >-
+      ServingCounter rate limits per-validator requests by stake-normalized share
+      (build_rate_limit); create_miner_batches caps per-miner performance records
+      (max_performance_records=10) and skips recently-updated capped miners.
+  - kind: other
+    kind_other: "historical_performance_multiplier"
+    enforcement: penalty
+    description: >-
+      Rolling 10-round historical multipliers: bonus up to +15% (BONUS_MAX 0.15),
+      S_F penalty up to -20% (PENALTY_F_MAX 0.20), S_Q penalty up to -25% (PENALTY_Q_MAX
+      0.25) applied multiplicatively to the per-round score.
+
+sub_competitions:
+  structure: per_task_type
+  stages:
+    - name: upscaling
+      role: other
+      advancement_rule: "top_10_and_rank_11_to_50_get_emission"
+    - name: compression
+      role: other
+      advancement_rule: "top_10_and_rank_11_to_50_get_emission"
+  count: 2
+  notes: >-
+    Miners declare their task type via TaskWarrantProtocol. Emission allocation splits
+    compression (0.30 top / 0.30 mid) and upscaling (0.20 top / 0.20 mid); a missing
+    category's share is redistributed to the other.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, performance_ledger, reputation]
+  status_values: []
+  reset_policy: >-
+    On hotkey change for a UID, MinerPerformanceHistory and MinerMetadata rows are deleted
+    (refresh_miner_manager). accumulate_score, bonus/penalty multipliers and counts reset
+    to defaults on certain step paths.
+  notes: >-
+    SQL-backed MinerMetadata (accumulate_score, bonus_multiplier, penalty_f/q_multiplier,
+    counts, total_rounds_completed) and MinerPerformanceHistory (rolling 10-round window,
+    s_f/s_q records) in video_subnet_validator.db.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "docs/incentive_mechanism.md"
+    - "README.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "vidaio_subnet_core/base/config.py"
+      line_ref: "29"
+      quote: 'parser.add_argument("--netuid", type=int, help="Subnet netuid", default=85)'
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "neurons/validator.py"
+      line_ref: "9"
+      quote: "import bittensor as bt"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "46-47"
+      quote: >-
+        Handle video upscaling and compression requests from validators and end-users.
+        Process both upscaling tasks (enhancing video quality) and compression tasks
+        (reducing file size while maintaining quality).
+    - claim_field: "/mechanism_status"
+      source_path: "vidaio_subnet_core/validating/managing/miner_manager.py"
+      line_ref: "31"
+      quote: "self.burn_proportion = float(4/5)   # 80% of miner emissions burnt"
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "vidaio_subnet_core/validating/managing/miner_manager.py"
+      line_ref: "1314-1318"
+      quote: >-
+        scores = [x * (1 - self.burn_proportion) for x in scores]; uids.append(owner_uid);
+        scores.append(self.burn_proportion * total_scores)
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "vidaio_subnet_core/validating/managing/miner_manager.py"
+      line_ref: "1188-1203"
+      quote: >-
+        def get_burn_uid(self): sn_owner_hotkey = self.subtensor.query_subtensor(
+        "SubnetOwnerHotkey", params=[self.config.netuid]) ... return sn_owner_uid
+    - claim_field: "/aggregation/decay_rate"
+      source_path: "vidaio_subnet_core/configs/score.py"
+      line_ref: "5"
+      quote: "decay_factor: float = Field(default=0.75)"
+    - claim_field: "/aggregation/notes"
+      source_path: "vidaio_subnet_core/validating/managing/miner_manager.py"
+      line_ref: "334-341"
+      quote: >-
+        applied_multiplier = miner.total_multiplier; score_with_multiplier = s_f *
+        applied_multiplier; miner.accumulate_score = (miner.accumulate_score *
+        CONFIG.score.decay_factor + score_with_multiplier * (1 - CONFIG.score.decay_factor))
+    - claim_field: "/aggregation/normalization_other"
+      source_path: "vidaio_subnet_core/validating/managing/miner_manager.py"
+      line_ref: "1244-1248"
+      quote: >-
+        alloc_comp_top, alloc_comp_mid = 0.30, 0.30; alloc_up_top, alloc_up_mid = 0.20, 0.20;
+        TOP_N = 10  # boundary between "top" and "mid" tiers
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "vidaio_subnet_core/validating/managing/miner_manager.py"
+      line_ref: "87-88"
+      quote: "self.QUALITY_WEIGHT = 0.5; self.LENGTH_WEIGHT = 0.5"
+    - claim_field: "/scoring_signals/2/weight"
+      source_path: "vidaio_subnet_core/validating/managing/miner_manager.py"
+      line_ref: "81-82"
+      quote: "self.COMPRESSION_RATE_WEIGHT = 0.8  # w_c; self.COMPRESSION_VMAF_WEIGHT = 0.2  # w_vmaf"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "services/scoring/video_similarity_score_sythetic.py"
+      line_ref: "360-364"
+      quote: >-
+        if vmaf_score / 100 < VMAF_THRESHOLD: ... pieapp_scores.append(0.0);
+        reasons.append(f"vmaf score is too low ...") scores.append(0.0)
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "services/scoring/scoring_function.py"
+      line_ref: "51-53"
+      quote: >-
+        if compression_rate >= 0.80: ... return 0.0, 0.0, 0.0, f"No meaningful compression
+        ... Minimum 1.25x required."
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "vidaio_subnet_core/validating/managing/miner_manager.py"
+      line_ref: "63-69"
+      quote: >-
+        self.UPSCALING_BONUS_THRESHOLD = 0.32 ... self.BONUS_MAX = 0.15; self.PENALTY_F_MAX = 0.20;
+        self.PENALTY_Q_MAX = 0.25
+    - claim_field: "/anti_gaming/2/enforcement"
+      source_path: "vidaio_subnet_core/validating/managing/miner_manager.py"
+      line_ref: "617-624"
+      quote: >-
+        miner.bonus_multiplier = 1.0 + (miner.bonus_count / 10) * self.BONUS_MAX ...
+        miner.total_multiplier = (miner.bonus_multiplier * miner.penalty_f_multiplier *
+        miner.penalty_q_multiplier)
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "neurons/validator.py"
+      line_ref: "1514"
+      quote: "if self.current_block > self.last_update + CONFIG.SUBNET_TEMPO:"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "neurons/validator.py"
+      line_ref: "1520-1525"
+      quote: >-
+        future = self.set_weights_executor.submit(self.subtensor.set_weights, netuid=...,
+        wallet=..., uids=uint_uids, weights=uint_weights)
+    - claim_field: "/weight_setting/cadence"
+      source_path: "neurons/validator.py"
+      line_ref: "1546-1557"
+      quote: "while True: ... await self.validator.set_weights() ... await asyncio.sleep(1200)"
+    - claim_field: "/sub_competitions/structure"
+      source_path: "neurons/validator.py"
+      line_ref: "295-298"
+      quote: >-
+        if response.warrant_task == TaskType.UPSCALING: upscaling_miners.append((axon, uid));
+        elif response.warrant_task == TaskType.COMPRESSION: compression_miners.append((axon, uid))
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "neurons/validator.py"
+      line_ref: "239-253"
+      quote: >-
+        if miner.hotkey != latest_hotkey: delete_uids.append(uid) ... delete_stmt =
+        delete(MinerPerformanceHistory).where(MinerPerformanceHistory.uid.in_(delete_uids))
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "vidaio_subnet_core/configs/score.py"
+      line_ref: "16"
+      quote: "max_performance_records: int = Field(default=10)"
+    - claim_field: "/documentation/status"
+      source_path: "docs/incentive_mechanism.md"
+      line_ref: "26-27"
+      quote: >-
+        The VIDAIO subnet validation mechanism ensures quality and reliability of miners'
+        contributions through comprehensive assessment systems for different video processing tasks.
+  unresolved:
+    - "Documented upscaling final-score S_F = 0.1*e^(6.979*(S_pre-0.5)) is not present in code; the implemented calculate_final_score is log10-based, so the live upscaling final score formula is not the documented one."
+    - "Length score formula S_L = log(1+content_length)/log(1+320) appears only in docs; not located in the scoring service source read."
+    - "vmaf_threshold default in config is 0.5 (fraction) but docs/compression use 85/89/93; the live threshold value used for upscaling gating is ambiguous between config default and runtime override."
+    - "weight_setting smoothing alpha is inferred as (1-decay_factor)=0.25 from the EMA, not a literally named alpha constant."

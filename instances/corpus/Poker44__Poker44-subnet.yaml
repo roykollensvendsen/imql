@@ -1,0 +1,341 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  Validator burns 97% of emissions to UID 0 (BURN_FRACTION = 0.97); only the
+  remaining 3% follows the scoring/winner allocation. In the live provider_runtime
+  path, on-chain weights are read from the backend competition settlement vector,
+  and before the first daily winner is settled the backend fallback typically
+  returns UID 0 (100% burn). The local reward/scoring code is fully implemented
+  and exercised but its output only governs the 3% keep slice (or is bypassed
+  entirely when backend settlement weights are present).
+
+subnet:
+  name: "Poker44 — Poker Bot Detection Subnet"
+  owner_repo: "Poker44__Poker44-subnet"
+  netuid: 126
+  implementation_lang: python
+
+task:
+  summary: >-
+    Validators query miners with DetectionSynapse(chunks=...) — each chunk is a
+    homogeneous list of poker hand payloads that is entirely human or entirely
+    bot. Miners return one risk_score per chunk. Validators round predictions and
+    score them against the known per-chunk human/bot labels using a reward that
+    combines average precision and bot recall, gated by a hard human-safety
+    penalty on false-positive rate. The goal is objective, reproducible detection
+    of bots in online poker.
+  submission_format: [signals]
+
+scoring_signals:
+  - name: ap_score
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.65
+    normalization: none
+    notes: >-
+      average_precision_score(y_true, y_pred) over the reward window; contributes
+      0.65 to base_score. Zero when no positive labels present.
+  - name: bot_recall
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.35
+    normalization: none
+    notes: >-
+      tp / positive_count; contributes 0.35 to base_score
+      (base_score = 0.65*ap_score + 0.35*bot_recall).
+  - name: human_safety_penalty
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Multiplicative gate: (1 - fpr)**2, forced to 0.0 when fpr >= 0.10.
+      Final reward = base_score * human_safety_penalty. Not an additive signal.
+  - name: coverage_rate
+    metric_kind: throughput
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      len(scores)/expected_chunk_count, tracked per cycle and reported in the
+      competition score payload; does not directly enter the reward formula.
+  - name: latency_mean_seconds
+    metric_kind: latency
+    direction: lower_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Mean dendrite process_time over the window; reported in competition score
+      payload but does not enter the reward formula.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Per-chunk human/bot labels derived from Poker44 benchmark-table hands.
+      batch.is_human determines label (0=human, 1=bot). Production batches are
+      fetched from the central eval API via the provider_runtime dataset provider.
+    source_identifier: "ProviderRuntimeDatasetProvider / api.poker44.net /internal/eval/*"
+    trust_model: trusted
+    notes: >-
+      Validators do not run their own tables; canonical batches come from the
+      central platform backend.
+
+aggregation:
+  method: proportional
+  composition: gated
+  normalization: l1
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: 0.97
+    dynamic: false
+    notes: >-
+      BURN_FRACTION = 0.97 burned to UID_ZERO (0); KEEP_FRACTION = 1.0 - 0.97 = 0.03
+      distributed to scored miners. In WINNER_TAKE_ALL=False (default) podium mode
+      the 0.03 keep is split across the top-3 positive-reward miners with fixed
+      shares [0.5, 0.3, 0.2]. If no miner has positive reward, UID 0 gets 100%.
+  notes: >-
+    Local path: _select_weight_targets ranks reward_map and (WINNER_TAKE_ALL=False)
+    forms a podium of up to 3 positive-reward miners with fixed splits [0.5,0.3,0.2]
+    scaled by KEEP_FRACTION, plus BURN_FRACTION to UID 0. Final raw_weights are then
+    L1-normalized in set_weights (raw_weights = scores / l1-norm). When the backend
+    provides a competition settlement vector, set_weights uses that vector instead
+    (with the same 97/3 burn/keep convention).
+
+weight_setting:
+  cadence: continuous
+  method: >-
+    Each forward cycle computes windowed rewards, selects podium/burn targets,
+    and EMA-updates self.scores. set_weights resolves either the backend
+    competition settlement vector or the local L1-normalized scores, processes
+    them via process_weights_for_netuid, and submits on chain. Cycles sleep
+    poll_interval (default 300s) between ticks.
+  on_chain_call: commit_reveal
+  tempo_or_interval: "300s poll_interval between forward cycles"
+  smoothing:
+    kind: ema
+    alpha: 0.05
+    window: null
+    notes: >-
+      update_scores applies self.scores = alpha*scattered_rewards + (1-alpha)*self.scores
+      with alpha = config.neuron.moving_average_alpha (default 0.05). Rewards
+      themselves are computed over a rolling reward_window (default 40 samples) in
+      _compute_windowed_rewards before EMA.
+
+anti_gaming:
+  - kind: liveness_check
+    enforcement: rejection
+    description: >-
+      _compute_windowed_rewards assigns reward 0.0 (and metrics fpr=1.0) to any
+      miner with fewer than `window` prediction/label samples, so insufficiently
+      responsive miners earn nothing until they accumulate a full window.
+  - kind: risk_limit
+    enforcement: penalty
+    description: >-
+      Hard human-safety penalty in reward(): human_safety_penalty = max(0, 1-fpr)**2,
+      and is forced to 0.0 when fpr >= 0.10, zeroing the reward of any miner that
+      misclassifies humans as bots above the 10% false-positive threshold.
+  - kind: deduplication
+    enforcement: other
+    enforcement_other: "logging/observability only"
+    description: >-
+      _record_served_chunk_fingerprints tracks chunk fingerprints across cycles and
+      warns when chunks are reused; does not directly alter scoring.
+  - kind: code_inspection
+    enforcement: other
+    enforcement_other: "observability metadata only"
+    description: >-
+      Optional model_manifest attached to responses feeds suspicion/compliance
+      registries (evaluate_manifest_suspicion / evaluate_manifest_compliance).
+      README states this does not change validator scoring or on-chain set_weights.
+
+sub_competitions:
+  structure: tiered
+  stages:
+    - name: podium
+      role: main
+      advancement_rule: >-
+        Top-3 miners by reward (sorted by -reward, then uid), restricted to those
+        with strictly positive reward.
+      multipliers:
+        rank_1: 0.5
+        rank_2: 0.3
+        rank_3: 0.2
+        scaled_by_keep_fraction: 0.03
+  count: 3
+  notes: >-
+    Default mode is WINNER_TAKE_ALL=False, giving a 3-slot podium. A documented
+    target settlement model is winner-take-all (per README and WINNER_TAKE_ALL
+    flag), but that flag is False in the committed constants.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, performance_ledger, reputation]
+  status_values: []
+  reset_policy: >-
+    On metagraph resync, scores[uid] is zeroed when a hotkey is replaced. Rolling
+    prediction/label/coverage/latency buffers accumulate per uid; rewards use the
+    last `window` entries.
+  notes: >-
+    EMA self.scores persisted to state.npz; prediction_buffer/label_buffer/
+    coverage_buffer/latency_buffer hold rolling per-uid history; model_manifest,
+    compliance, and suspicion registries persisted as JSON per uid.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/validator.md"
+    - "docs/miner.md"
+    - "docs/training-benchmark.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "poker44/utils/config.py"
+      line_ref: "22"
+      quote: 'parser.add_argument("--netuid", type=int, help="Subnet netuid", default=126)'
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "poker44/score/scoring.py"
+      line_ref: "1-6"
+      quote: '"""Reward and scoring utilities for Poker44 poker bot detection.""" ... import numpy as np'
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "62-75"
+      quote: "Miners receive `DetectionSynapse(chunks=...)`. ... validators expect one `risk_score` per chunk;"
+      confidence: high
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "poker44/score/scoring.py"
+      line_ref: "33"
+      quote: "base_score = 0.65 * ap_score + 0.35 * bot_recall"
+      confidence: high
+    - claim_field: "/scoring_signals/1/weight"
+      source_path: "poker44/score/scoring.py"
+      line_ref: "33"
+      quote: "base_score = 0.65 * ap_score + 0.35 * bot_recall"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "poker44/score/scoring.py"
+      line_ref: "23-24"
+      quote: "if y_pred.size and np.any(y_true == 1): ap_score = average_precision_score(y_true, y_pred)"
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "poker44/score/scoring.py"
+      line_ref: "21"
+      quote: "bot_recall = tp / positive_count"
+      confidence: high
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "poker44/score/scoring.py"
+      line_ref: "29-34"
+      quote: "human_safety_penalty = max(0.0, 1.0 - fpr) ** 2 / if fpr >= 0.10: human_safety_penalty = 0.0 ... rew = base_score * human_safety_penalty"
+      confidence: high
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "poker44/validator/forward.py"
+      line_ref: "212-216"
+      quote: "coverage_rate = (float(len(scores_f)) / float(expected_chunk_count) if expected_chunk_count > 0 else 0.0)"
+      confidence: high
+    - claim_field: "/scoring_signals/4/notes"
+      source_path: "poker44/validator/forward.py"
+      line_ref: "603-612"
+      quote: "process_time = getattr(dendrite_info, \"process_time\", None) ... return value if value >= 0 else None"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "poker44/validator/forward.py"
+      line_ref: "127-130"
+      quote: "# batch.is_human is False for bots, True for humans / # We need: 1=bot, 0=human / batch_label = 0 if batch.is_human else 1"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "neurons/validator.py"
+      line_ref: "94-97"
+      quote: "self.provider = ProviderRuntimeDatasetProvider(provider_runtime_cfg, wallet=self.wallet,)"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "poker44/validator/constants.py"
+      line_ref: "3-7"
+      quote: "BURN_EMISSIONS = True ... BURN_FRACTION = 0.97 ... KEEP_FRACTION = 1.0 - BURN_FRACTION ... UID_ZERO = 0"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/enabled"
+      source_path: "poker44/base/validator.py"
+      line_ref: "37-38"
+      quote: "BACKEND_BURN_FRACTION = 0.97 / BACKEND_KEEP_FRACTION = 1.0 - BACKEND_BURN_FRACTION"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "poker44/validator/forward.py"
+      line_ref: "685-696"
+      quote: "podium = positive[:3] / podium_splits = [0.5, 0.3, 0.2][: len(podium)] ... rewards = [BURN_FRACTION] + [KEEP_FRACTION * frac for frac in podium_splits]"
+      confidence: high
+    - claim_field: "/aggregation/normalization"
+      source_path: "poker44/base/validator.py"
+      line_ref: "342-349"
+      quote: "norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True) ... raw_weights = self.scores / norm"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "poker44/utils/config.py"
+      line_ref: "65-69"
+      quote: '"--neuron.moving_average_alpha", type=float, default=0.05, help="Exponential moving average smoothing factor for scores."'
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "poker44/base/validator.py"
+      line_ref: "594-597"
+      quote: "alpha: float = self.config.neuron.moving_average_alpha / self.scores = (alpha * scattered_rewards + (1 - alpha) * self.scores)"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "neurons/validator.py"
+      line_ref: "69-71"
+      quote: 'self.poll_interval = int(os.getenv("POKER44_POLL_INTERVAL_SECONDS", str(getattr(cfg, "poll_interval_seconds", 300))))'
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "poker44/base/validator.py"
+      line_ref: "454-461"
+      quote: '"""Fallback for bittensor 9.6.0 commit-reveal path, which omits `hotkey`."""'
+      confidence: medium
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "poker44/validator/forward.py"
+      line_ref: "569-587"
+      quote: "if len(pred_buf) < window or len(label_buf) < window: ... rewards.append(0.0) ... \"fpr\": 1.0,"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "poker44/score/scoring.py"
+      line_ref: "28-31"
+      quote: "# Hard human-safety penalty: a miner that harms humans should not win. ... if fpr >= 0.10: human_safety_penalty = 0.0"
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "poker44/validator/forward.py"
+      line_ref: "429-434"
+      quote: "if summary[repeated_count] > 0: bt.logging.warning reused chunk fingerprints"
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "README.md"
+      line_ref: "115-117"
+      quote: "Poker44 supports a lightweight `model_manifest` attached to miner responses. This does not change validator scoring or on-chain `set_weights`."
+      confidence: high
+    - claim_field: "/sub_competitions/stages/0/multipliers"
+      source_path: "poker44/validator/constants.py"
+      line_ref: "10"
+      quote: "WINNER_TAKE_ALL = False            # Distribute emissions across a fixed podium"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "poker44/base/validator.py"
+      line_ref: "537-539"
+      quote: "for uid, hotkey in enumerate(self.hotkeys): if hotkey != self.metagraph.hotkeys[uid]: self.scores[uid] = 0  # hotkey has been replaced"
+      confidence: high
+    - claim_field: "/mechanism_status"
+      source_path: "README.md"
+      line_ref: "84-91"
+      quote: "validators read the canonical competition weight vector from the backend. ... `97%` is burned to `uid 0`, and the remaining `3%` follows the backend-provided winner vector. Before the first settlement exists, the backend returns its explicit fallback vector (typically `uid 0`, which keeps the burn at `100%`)."
+      confidence: high
+  unresolved:
+    - "reward_window default 40 vs 20: neurons/validator.py sets self.reward_window from POKER44_REWARD_WINDOW default 40, while _compute_windowed_rewards uses getattr default 20; effective live window depends on env."
+    - "Exact backend competition settlement weight algorithm lives server-side (api.poker44.net) and is not in this repo."
+    - "Whether on-chain submission ends up as commit-reveal or classic set_weights depends on RPC availability at runtime (multiple fallbacks in set_weights)."

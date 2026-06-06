@@ -1,0 +1,256 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Validator computes accuracy-based rewards and sets them directly on chain via
+  subtensor.set_weights after L1 normalization of EMA scores. No burn allocation or
+  burn UID is present anywhere in the code. Rewards are gated to zero for miners whose
+  coldkey alpha stake is below a daily-increasing minimum threshold.
+
+subnet:
+  name: "FakeNews Subnet"
+  owner_repo: "gutenberg-team__fakenews-subnet"
+  netuid: null
+  implementation_lang: python
+
+task:
+  summary: >-
+    A validator fetches a real news article, then uses LLMs to generate paraphrased
+    ("real", label 0) and fabricated ("fake", label 1) variants. Miners receive the
+    articles (and, in version 0, the original) and must return a fake-probability in
+    [0.0, 1.0] for each. Miner predictions are rounded to binary and scored against the
+    ground-truth labels; reward is a blend of long- and short-window classification
+    accuracy over the miner's stored prediction history.
+  submission_format: [signals]
+
+scoring_signals:
+  - name: long_term_accuracy
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.5
+    normalization: none
+    notes: >-
+      accuracy_score over the last _LONG_TERM_WINDOW=300 stored predictions (results),
+      scaled by window_k = available/window when history is shorter than the window.
+      Weighted by _LONG_ALPHA=0.5.
+  - name: short_term_accuracy
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.5
+    normalization: none
+    notes: >-
+      accuracy_score over the last _SHORT_TERM_WINDOW=20 stored predictions, scaled by
+      window_k. Weighted by (1 - _LONG_ALPHA) = 0.5. Predictions are np.round of the
+      probability before comparison to labels; entries equal to -1 (missing/invalid)
+      are excluded.
+
+ground_truth_sources:
+  - kind: llm_judgment
+    description: >-
+      Ground-truth labels are deterministic by construction: the validator itself
+      generates the fake (label 1) and paraphrased real (label 0) articles from a real
+      source article using OpenAI prompts (weak/strong fake, weak/strong original). The
+      label is the prompt's LABEL_PROBABILITY, not a judgment of the miner output.
+    source_identifier: "fakenews/validator/task/fakenews_detection_no_original.py"
+    trust_model: trusted
+    notes: >-
+      Real source articles are fetched from a private news API (NewsAPIClient). Labels
+      are assigned at generation time, so the comparison against miner predictions is
+      deterministic.
+
+aggregation:
+  method: weighted_average
+  composition: weighted_sum
+  normalization: l1
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: >-
+      No burn logic present. set_weights normalizes scores by their L1 norm and emits
+      them directly; if the norm is zero it is replaced by ones (no burn fallback).
+  notes: >-
+    Per-miner reward = sum over tasks of task.REWARD_WEIGHT * (0.5*accuracy_long +
+    0.5*accuracy_short). Only one task is registered (FakenewsDetectionNoOriginal,
+    REWARD_WEIGHT=1, FORWARD_PROBABILTY=1; validator asserts both sum to 1.0). Rewards
+    feed an EMA into self.scores, which is then L1-normalized in set_weights.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    set_weights() L1-normalizes the EMA score vector (raw_weights = scores / ||scores||_1),
+    runs process_weights_for_netuid, converts to uint16, and calls subtensor.set_weights
+    with version_key=spec_version. Triggered when (block - metagraph.last_update[uid]) >
+    neuron.epoch_length and step != 0 and not disable_set_weights.
+  on_chain_call: set_weights
+  tempo_or_interval: "100 blocks (neuron.epoch_length default)"
+  smoothing:
+    kind: ema
+    alpha: 0.1
+    window: null
+    notes: >-
+      update_scores applies scores[uids] = alpha*rewards + (1-alpha)*scores[uids] with
+      alpha = neuron.moving_average_alpha (default 0.1). Before the EMA, rewards are
+      multiplied by has_enough_stake[uids] (0/1 stake gate).
+
+anti_gaming:
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      resync_metagraph computes a per-coldkey minimum alpha threshold via
+      calculate_minimum_miner_alpha() = 150 + 6*days_since(2025-03-20); miners whose
+      coldkey alpha stake is below this have has_enough_stake=0, which zeroes their
+      reward before the EMA update. Stake is consumed per-hotkey within a coldkey.
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      _normalize_miner_probs penalizes malformed responses: if the response length does
+      not match the labels, or a value is non-numeric/NaN/Inf/out-of-range, the
+      prediction is forced to abs(label-1) (i.e. the wrong answer), counting as an
+      incorrect classification.
+  - kind: liveness_check
+    enforcement: penalty
+    description: >-
+      Performance history is keyed by (uid, hotkey); if a UID's hotkey changes the
+      miner's history is reset (reset_miner_history), preventing inheritance of a prior
+      miner's accuracy.
+
+sub_competitions:
+  structure: single
+  stages: []
+  count: 1
+  notes: >-
+    README describes a roadmap of 6 escalating tasks, but only one task
+    (FakenewsDetectionNoOriginal) is registered in the validator at extraction time.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [performance_ledger, cumulative_score]
+  status_values: []
+  reset_policy: >-
+    PerformanceTracker stores up to STORE_LAST_N_PREDICTIONS_DEFAULT=500 recent
+    predictions/labels per UID in a deque. History is reset when a UID is new or its
+    hotkey changes. self.scores EMA is zeroed for replaced hotkeys in resync_metagraph.
+  notes: >-
+    Both the rolling prediction/label history (per UID) and the EMA score vector
+    (self.scores, persisted to state.npz / *_performance_history.pkl) are maintained
+    across steps.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/VALIDATOR.md"
+    - "docs/MINER.md"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "fakenews/validator/reward.py"
+      line_ref: "17-25"
+      quote: "import math\nimport numpy as np\nfrom fakenews.validator.performance_tracker import PerformanceTracker"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "104-118"
+      quote: "Using LLMs, validators create two different versions of the article: 1. A paraphrased version ... 2. A fake news article ... 0: Reliable ... 1: Fake news. Miners should score each version of the article on a scale from 0 to 1."
+    - claim_field: "/task/submission_format"
+      source_path: "fakenews/validator/reward.py"
+      line_ref: "49-50"
+      quote: "responses (list[list[float]]): Miner responses in the range [0.0, 1.0]."
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "fakenews/validator/reward.py"
+      line_ref: "29-32"
+      quote: "_LONG_ALPHA: Final[float] = (0.5  # Weight for long term performance, 1 - _LONG_ALPHA is the weight for short term performance"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "fakenews/validator/reward.py"
+      line_ref: "32-33"
+      quote: "_LONG_TERM_WINDOW: Final[int] = 300\n    _SHORT_TERM_WINDOW: Final[int] = 20"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "fakenews/validator/performance_tracker.py"
+      line_ref: "110-119"
+      quote: "keep_idx = [i for i, p in enumerate(recent_preds) if p != -1] ... predictions = np.round(pred_probs) ... accuracy = accuracy_score(labels, predictions) * window_k"
+    - claim_field: "/aggregation/method"
+      source_path: "fakenews/validator/reward.py"
+      line_ref: "152-158"
+      quote: "return cls._LONG_ALPHA * metrics_long[\"accuracy\"] + (1 - cls._LONG_ALPHA) * metrics_short[\"accuracy\"]"
+    - claim_field: "/aggregation/notes"
+      source_path: "fakenews/validator/reward.py"
+      line_ref: "90-103"
+      quote: "weighted_reward = task.REWARD_WEIGHT * reward ... final_reward += weighted_reward"
+    - claim_field: "/aggregation/normalization"
+      source_path: "fakenews/base/validator.py"
+      line_ref: "277-284"
+      quote: "norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True) ... raw_weights = self.scores / norm"
+    - claim_field: "/aggregation/burn_allocation/enabled"
+      source_path: "fakenews/base/validator.py"
+      line_ref: "280-284"
+      quote: "if np.any(norm == 0) or np.isnan(norm).any(): norm = np.ones_like(norm)  # Avoid division by zero or NaN ... raw_weights = self.scores / norm"
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "fakenews/validator/task/fakenews_detection_no_original.py"
+      line_ref: "label = prompt.LABEL_PROBABILITY"
+      quote: "label = prompt.LABEL_PROBABILITY ... GeneratedArticleMetadata(body=result, label=label, ...)"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "fakenews/base/validator.py"
+      line_ref: "311-319"
+      quote: "result, msg = self.subtensor.set_weights(wallet=self.wallet, netuid=self.config.netuid, uids=uint_uids, weights=uint_weights, ... version_key=self.spec_version,)"
+    - claim_field: "/weight_setting/cadence"
+      source_path: "fakenews/base/neuron.py"
+      line_ref: "151-163"
+      quote: "return (self.block - self.metagraph.last_update[self.uid]) > self.config.neuron.epoch_length and self.neuron_type != \"MinerNeuron\""
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "fakenews/utils/config.py"
+      line_ref: "82-87"
+      quote: "\"--neuron.epoch_length\", ... \"The default epoch length (how often we set weights, measured in 12 second blocks).\", default=100,"
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "fakenews/utils/config.py"
+      line_ref: "223-228"
+      quote: "\"--neuron.moving_average_alpha\", type=float, ... default=0.1,"
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "fakenews/base/validator.py"
+      line_ref: "408-413"
+      quote: "rewards = rewards * self.has_enough_stake[uids_array] ... self.scores[uids_array] = alpha * rewards + (1 - alpha) * self.scores[uids_array]"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "fakenews/base/utils/min_miners_alpha.py"
+      line_ref: "7-14"
+      quote: "MINERS_MINIMUM_ALPHA_BASE = 150 ... MINERS_MINIMUM_ALPHA_DAILY_INCREASE = 6 ... return MINERS_MINIMUM_ALPHA_BASE + MINERS_MINIMUM_ALPHA_DAILY_INCREASE * considering_days"
+    - claim_field: "/anti_gaming/0/enforcement"
+      source_path: "fakenews/base/validator.py"
+      line_ref: "348-354"
+      quote: "has_enough_stake = int(coldkey_stake[coldkey] - min_miner_alpha >= 0) ... self.has_enough_stake[i] = has_enough_stake"
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "fakenews/validator/reward.py"
+      line_ref: "171-181"
+      quote: "if len(probs) != len(labels): probs = [-1.0] * len(labels) ... normalized_prob = float(_prob) if _prob >= 0.0 and _prob <= 1.0 else abs(label - 1)"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "fakenews/validator/reward.py"
+      line_ref: "74-77"
+      quote: "if tracked_hotkeys.get(uid) != hotkey: bt.logging.warning(...) performance_tracker.reset_miner_history(uid, hotkey)"
+    - claim_field: "/sub_competitions/count"
+      source_path: "fakenews/base/validator.py"
+      line_ref: "89-91"
+      quote: "self.tasks = [tasks.FakenewsDetectionNoOriginal(openai_api_key=openai_api_key, keypair=self.dendrite.keypair),]"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "fakenews/validator/performance_tracker.py"
+      line_ref: "13-19"
+      quote: "STORE_LAST_N_PREDICTIONS_DEFAULT = 500 ... self.store_last_n_predictions: int = store_last_n_predictions"
+    - claim_field: "/per_miner_state/notes"
+      source_path: "fakenews/base/validator.py"
+      line_ref: "421-427"
+      quote: "np.savez(self.config.neuron.full_path + \"/state.npz\", step=self.step, scores=self.scores, hotkeys=self.hotkeys, has_enough_stake=self.has_enough_stake,)"
+    - claim_field: "/documentation/primary_docs"
+      source_path: "README.md"
+      line_ref: "128-146"
+      quote: "Reward_{miner} = \\sum_{tasks} weight_{task} \\times (\\alpha \\cdot Accuracy_{long} + (1 - \\alpha) \\cdot Accuracy_{short}) ... α: Weight for long-term retrospective, set to 0.5."
+  unresolved:
+    - "/subnet/netuid: netuid default is 1 in config (placeholder); the real mainnet
+      netuid is not asserted in source. wandb project default 'SN66_Validator' hints at
+      66 but is not authoritative."

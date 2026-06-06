@@ -1,0 +1,187 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+# This repository (chutesai/chutes) is the client SDK + CLI for the chutes.ai platform.
+# It contains NO validator/scoring/weight-setting code. The README explicitly states the
+# validator/API code lives in a separate repo (rayonlabs/chutes-api) and the miner code in
+# rayonlabs/chutes-miner. The on-chain incentive/emission mechanism is therefore absent here.
+# The repo documents a usage-based BILLING model (GPU hourly rates, deployment fee) and a
+# hardware-validation library (GraVal), but not how validator weights / emissions are computed.
+mechanism_status: unknown
+mechanism_status_notes: >-
+  The Bittensor weight/emission incentive mechanism is not present in this repository. This is
+  the client SDK/CLI only; per README the validator/API code is in rayonlabs/chutes-api and miner
+  code in rayonlabs/chutes-miner. No set_weights call, scoring function, or emission/burn logic
+  exists in this tree (grep for set_weights|emission|incentive|burn|reward|consensus|yuma returns
+  nothing). The operative reality of on-chain weight setting cannot be determined from this repo.
+
+subnet:
+  name: "Chutes (chutes.ai)"
+  owner_repo: "chutesai__chutes"
+  netuid: null
+  implementation_lang: python
+
+task:
+  summary: >-
+    On the chutes.ai compute platform, miners contribute GPU hardware and run "chutes"
+    (containerized FastAPI-style applications, e.g. vLLM/SGLang/diffusion model servers) on top of
+    docker images. Users (authenticated via Bittensor hotkey signature) deploy and call these
+    applications and are billed per GPU-hour. The GraVal library validates that miners' claimed
+    GPUs are authentic (VRAM checks, device-seeded matrix multiplications). How miner contribution
+    translates into on-chain validator weights/emissions is NOT defined in this repository.
+  submission_format: [compute_service]
+
+# No scoring signals are defined in this repository. The validator scoring lives in the separate
+# chutes-api repo. Left empty per evidence discipline; see provenance.unresolved.
+scoring_signals: []
+
+ground_truth_sources:
+  - kind: hardware_probe
+    description: >-
+      GraVal graphics-card validation library used as middleware inside each chute to verify the
+      GPUs miners claim to run are authentic (VRAM capacity checks, matrix multiplications seeded by
+      device information, filesystem checks, device-info challenges, pings). This is a hardware
+      authenticity probe; the README does not describe how its results feed validator weights.
+    source_identifier: "GraVal"
+    trust_model: adversarial
+    notes: >-
+      Quoted from README only. The repo references GraVal as middleware but does not contain the
+      scoring/weight logic that would consume its results.
+
+aggregation:
+  method: undocumented
+  # composition / normalization / temperature / decay_rate / floors: not present in this repo.
+  burn_allocation:
+    enabled: false
+    notes: "No burn or emission-routing logic present in this repository."
+  notes: >-
+    No aggregation of miner scores into weights exists in this client SDK. Validator aggregation
+    is in the separate chutes-api repo and is undocumented here.
+
+weight_setting:
+  cadence: undocumented
+  method: ""
+  on_chain_call: unknown
+  tempo_or_interval: null
+  smoothing:
+    kind: none
+    notes: "No weight-setting / smoothing code in this repository."
+
+anti_gaming:
+  - kind: hardware_validation
+    enforcement: rejection
+    description: >-
+      GraVal hardware-validation library runs as middleware within each chute to ensure miner GPUs
+      are authentic/correct (VRAM capacity checks, device-seeded matrix multiplications, filesystem
+      checks, device-info challenges, pings). Per README it decrypts validator traffic and performs
+      additional validation steps. Enforcement consequence (rejection vs scoring penalty) is not
+      specified in this repo; 'rejection' chosen as the closest documented effect (failing GPUs
+      would not be accepted as authentic).
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      Platform access requires a Bittensor wallet + hotkey; authentication is performed via
+      Bittensor hotkey signatures (HOTKEY_HEADER / SIGNATURE_HEADER / NONCE_HEADER). A registration
+      and (historically) a developer deposit / minimum balance acted as an economic barrier to entry.
+      This gates platform participation but is not an on-chain weight mechanism.
+
+sub_competitions:
+  structure: none
+  notes: "No sub-competition / tournament structure present in this repository."
+
+per_miner_state:
+  tracked: false
+  notes: >-
+    No per-miner scoring state is tracked in this client SDK. Any validator-side miner ledger would
+    live in the separate chutes-api repo.
+
+documentation:
+  status: absent
+  source_version: "0.20"
+  primary_docs:
+    - "README.md"
+    - "CHANGELOG.md"
+    - "docs/dev.md"
+  completeness: low
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8[1m]"
+  extracted_at: "2026-06-06"
+  confidence_overall: low
+  evidence:
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "chutes/config.py"
+      line_ref: "1-10"
+      quote: "from functools import lru_cache / import os / from loguru import logger"
+      confidence: high
+    - claim_field: "/mechanism_status"
+      source_path: "README.md"
+      line_ref: "5"
+      quote: "The miner code is available here, and validator/API code here."
+      confidence: high
+    - claim_field: "/mechanism_status_notes"
+      source_path: "README.md"
+      line_ref: "5"
+      quote: "The miner code is available [here](https://github.com/rayonlabs/chutes-miner), and validator/API code [here](https://github.com/rayonlabs/chutes-api)."
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "22-35"
+      quote: "A chute is essentially an application that runs on top of an image, within the platform. ... GraVal is the graphics card validation library used to help ensure the GPUs that miners claim to be running are authentic/correct."
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "140-151"
+      quote: "Once you have an image that is built and pushed and ready for use (see above), you can deploy applications on top of those."
+      confidence: medium
+    - claim_field: "/ground_truth_sources/0/kind"
+      source_path: "README.md"
+      line_ref: "31-35"
+      quote: "GraVal is the graphics card validation library used to help ensure the GPUs that miners claim to be running are authentic/correct. The library performs VRAM capacity checks, matrix multiplications seeded by device information, etc."
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/trust_model"
+      source_path: "README.md"
+      line_ref: "35"
+      quote: "it runs as middleware within the chute to decrypt traffic from the validator and perform additional validation steps (filesystem checks, device info challenges, pings, etc.)"
+      confidence: medium
+    - claim_field: "/anti_gaming/0/kind"
+      source_path: "README.md"
+      line_ref: "31-35"
+      quote: "GraVal is the graphics card validation library used to help ensure the GPUs that miners claim to be running are authentic/correct."
+      confidence: high
+    - claim_field: "/anti_gaming/1/kind"
+      source_path: "README.md"
+      line_ref: "38-39"
+      quote: "Currently, to become a user on the chutes platform, you must have a Bittensor wallet and hotkey, as authentication is performed via Bittensor hotkey signatures."
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "chutes/constants.py"
+      line_ref: "6-8"
+      quote: "HOTKEY_HEADER = \"X-Chutes-Hotkey\" / SIGNATURE_HEADER = \"X-Chutes-Signature\" / NONCE_HEADER = \"X-Chutes-Nonce\""
+      confidence: high
+    - claim_field: "/documentation/status"
+      source_path: "README.md"
+      line_ref: "1"
+      quote: "This package provides the command line interface and development kit for use with the chutes.ai platform."
+      confidence: high
+    - claim_field: "/documentation/source_version"
+      source_path: "CHANGELOG.md"
+      line_ref: "2"
+      quote: "# 0.20"
+      confidence: high
+  unresolved:
+    - "/scoring_signals — no validator scoring signals are defined in this repo (they live in rayonlabs/chutes-api)."
+    - "/aggregation/method — how per-miner scores aggregate into weights is not present in this repo."
+    - "/aggregation/burn_allocation — no emission/burn logic present; cannot confirm presence or fraction."
+    - "/weight_setting — no set_weights/commit_reveal call site, cadence, or smoothing in this repo."
+    - "/weight_setting/smoothing/alpha — no EMA/moving-average constant present."
+    - "subnet.netuid — not declared anywhere in this repo."
+    - "Whether GraVal hardware-validation results feed validator weights, and the enforcement effect (penalty vs elimination vs rejection)."
+    - "Relationship between the documented per-GPU-hour billing/pricing model and on-chain emissions (billing is platform-economic, not on-chain weight setting)."
+  extractor_notes: >-
+    Client SDK/CLI repository only. locate.py found no weights anchors and only weak reward anchors
+    (auth/schema utilities, not scoring). grep across *.py and *.md for set_weights|emission|
+    incentive|burn|reward|consensus|yuma|subtensor weight returned zero matches. The actual
+    incentive mechanism (validator scoring, aggregation, weight setting, emissions, any burn) is
+    out of tree — per README it resides in rayonlabs/chutes-api. Code-derived incentive fields are
+    therefore left empty/undocumented and listed in unresolved.

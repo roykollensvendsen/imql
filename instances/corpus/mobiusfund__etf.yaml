@@ -1,0 +1,319 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: mixed
+mechanism_status_notes: >-
+  Two live scoring mechanisms split by a dynamic API-driven ratio [burn, etf, imm]:
+  V1 ETF (stake-amount x duration bonus) and V2 IMM (order-fill volume). A burn UID
+  (BRN_UID=0) receives an emission share sized by ratio[0]. The repo README states the
+  current split as ETF=0.75, IMM=0.25, but the literal burn fraction is fetched at runtime
+  from an API (IMM_RATIO), so the live burn fraction is not a source constant. The
+  template reward.py (query*2) is unused boilerplate; the real scoring lives in
+  ETF/core/functions.py and is wired in via Validator.score overriding self.scores.
+
+subnet:
+  name: "HODL - The Alpha Exchange and ETF Subnet"
+  owner_repo: "mobiusfund__etf"
+  netuid: 118
+  implementation_lang: python
+
+task:
+  summary: >-
+    Zero-code mining. Under V1 (ETF) a miner stakes TAO (via its coldkey) into one of five
+    supported TrustedStake alpha indexes; reward grows with stake amount and stake duration,
+    incentivizing long-term conviction. Under V2 (IMM) a miner fills buy/sell orders on the
+    HODL Exchange and is rewarded by fill volume in a rolling time window. Total emissions are
+    split between ETF and IMM by a runtime ratio, with a residual share burned to a burn UID.
+  submission_format: [other]
+  submission_format_other: >-
+    On-chain stake delegation into supported indexes (V1) and order-fill activity on an
+    off-chain escrow order book (V2); no axon responses are scored.
+
+scoring_signals:
+  - name: etf_stake_conviction
+    metric_kind: other
+    metric_kind_other: stake_amount_with_duration_bonus
+    direction: higher_is_better
+    weight: null
+    normalization: other
+    normalization_other: >-
+      Per-coldkey score divided by hotkey count, then per-index rescaled so each index's
+      total equals INDEX_RATIO (equal 1/5 split) of the overall ETF score sum.
+    notes: >-
+      scoring(bal, blk) = bal**GAMMA * (1 + KAPPA*log(1 + min((mg.block-blk)/7200, DMAX)/DNORM)).
+      GAMMA=1.00, KAPPA=0.25, DNORM=30, DMAX=36500. bal is coldkey stake value in TAO across
+      subnets; (mg.block-blk)/7200 is stake duration in days. Matches README formula
+      score = S*(1 + 0.25*ln(1 + D/30)).
+  - name: imm_fill_volume
+    metric_kind: volume
+    direction: higher_is_better
+    weight: null
+    normalization: other
+    normalization_other: >-
+      Per-coldkey total fill volume in a rolling window (sell volume capped by coldkey stake
+      held), then rescaled so the IMM score sum equals ratio[2]/ratio[1] times the ETF score
+      sum; divided by hotkey count.
+    notes: >-
+      Volume is summed fill 'tao' over IMM_DATA in a rolling window (IMM_WINDOW days, README
+      says currently 5). For buy orders (type 2) the counted volume is min(filled, stake still
+      held in coldkey). Only coldkeys NOT staked in an ETF index are counted.
+
+ground_truth_sources:
+  - kind: market_data
+    description: >-
+      On-chain stake amounts and durations read from the Bittensor metagraph / subtensor
+      ('finney'), priced via subnet alpha prices (nn[s.netuid].price).
+    source_identifier: "bt.Subtensor('finney'); st.get_stake_info_for_coldkey; st.all_subnets()"
+    trust_model: oracle
+    notes: "Stake value = sum(stake * subnet alpha price) per coldkey."
+  - kind: organic_traffic
+    description: >-
+      Order-fill volume and rolling-window data from the HODL Exchange escrow order book,
+      fetched from subnet118.com APIs; index membership and blacklist from TrustedStake admin APIs.
+    source_identifier: "https://api.subnet118.com/imm/{data,window,ratio}; https://api.app.trustedstake.ai/admin/{blacklist,indexes}"
+    trust_model: trusted
+    notes: >-
+      INDEX_IDS lists the five supported TrustedStake index delegate ss58 addresses;
+      COLDKEY_BL is an admin blacklist of coldkeys.
+
+aggregation:
+  method: proportional
+  composition: hybrid
+  normalization: l1
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: null
+    dynamic: true
+    notes: >-
+      BRN_UID=0 score set to sc['score'].sum()/sum(ratio[1:])*ratio[0] (else 1.0 when
+      sum(ratio[1:])==0). ratio=[burn, etf, imm] is fetched from IMM_RATIO at runtime
+      (default [1.0,0.0,0.0] on failure -> all miner scores zeroed, full burn). If ratio[1]==0
+      ETF scores are zeroed; if ratio[2]==0 IMM scores are zeroed. README states current
+      ETF=0.75, IMM=0.25 but the literal burn fraction is API-driven, not a source constant.
+  notes: >-
+    Final per-UID score = ETF score, overridden by IMM score where a coldkey has IMM activity
+    (sc.loc[~sc['score2'].isna(), 'score'] = sc['score2']), plus the BRN_UID burn share.
+    Weights are then L1-normalized in BaseValidatorNeuron.set_weights (raw_weights = scores/norm).
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    Validator.score() runs only when the wall-clock minute is 20 or 50 (twice hourly) plus a
+    random 20-50s jitter, then sets self.scores = fn.score() directly (no moving-average in this
+    override path). BaseValidatorNeuron.set_weights L1-normalizes scores and emits.
+  on_chain_call: set_weights
+  tempo_or_interval: "twice per hour (minute==20 or 50)"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      The base template's update_scores EMA (moving_average_alpha) is bypassed: Validator.score
+      assigns self.scores = fn.score() directly each cycle. fn.score recomputes from current
+      on-chain/API state with no temporal smoothing of the final reward.
+
+anti_gaming:
+  - kind: deduplication
+    enforcement: penalty
+    description: >-
+      Per-coldkey score is divided by the number of registered hotkeys (sc['count']), so
+      splitting one coldkey across many hotkeys does not increase total reward.
+  - kind: other
+    kind_other: blacklist_exclusion
+    enforcement: rejection
+    description: >-
+      Coldkeys on the TrustedStake admin blacklist (COLDKEY_BL) are excluded from ETF index
+      delegator sets before scoring.
+  - kind: other
+    kind_other: cross_mechanism_exclusivity
+    enforcement: barrier
+    description: >-
+      A coldkey staked in an ETF index is not counted for IMM (IMM uses only coldkeys with
+      index isna()), preventing double counting across V1 and V2.
+  - kind: risk_limit
+    enforcement: penalty
+    description: >-
+      For IMM buy orders the counted volume is capped at the stake the coldkey still holds
+      (d2['volume'] = min(volume, stake)); assets bought must remain in the coldkey during the
+      window to count.
+  - kind: other
+    kind_other: stake_duration_requirement
+    enforcement: barrier
+    description: >-
+      Stake start block is floored at FIRST_BLOCK; duration = (mg.block - blk)//7200 days,
+      rewarding long-held stake. Scores are NaN/zero when mg.block <= blk.
+
+sub_competitions:
+  structure: multi_mechanism
+  stages:
+    - name: ETF
+      role: main
+    - name: IMM
+      role: main
+  count: 2
+  notes: >-
+    Two coexisting mechanisms (V1 ETF, V2 IMM) sharing emissions by the runtime ratio, with a
+    burn share to BRN_UID. README roadmap: V1 ETF live, V2 HODL Exchange Q1 2026, V3 futures/options Q3 2026.
+
+per_miner_state:
+  tracked: false
+  state_kinds: []
+  status_values: []
+  reset_policy: ""
+  notes: >-
+    No persistent per-miner ledger in the scoring code; every cycle fn.score() recomputes from
+    current chain/API state. Stake duration is derived from on-chain stake start block, not a
+    locally maintained ledger.
+
+documentation:
+  status: docs_and_code
+  source_version: "V1 live; V2 HODL Exchange transition (per README roadmap and FAQ)"
+  primary_docs:
+    - "README.md"
+    - "Docs/FAQ.md"
+    - "Docs/HODL - The ETF Subnet.pdf"
+    - "Docs/HODL Exchange & IMM Mechanism 2026.pdf"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: /subnet/name
+      source_path: README.md
+      line_ref: "3"
+      quote: "# HODL - The Alpha Exchange and ETF Subnet"
+      confidence: high
+    - claim_field: /subnet/netuid
+      source_path: ETF/core/constants.py
+      line_ref: "3"
+      quote: "NETUID = 118"
+      confidence: high
+    - claim_field: /subnet/implementation_lang
+      source_path: ETF/core/functions.py
+      line_ref: "3-7"
+      quote: "import os, math, datetime ... import bittensor as bt ... import pandas as pd"
+      confidence: high
+    - claim_field: /task/summary
+      source_path: README.md
+      line_ref: "58-83"
+      quote: "ETF - Incentivized long-term conviction ... IMM - Incentivized market making ... Total subnet emissions are divided between ETF and IMM based on a set ratio, currently defined as ETF = 0.75, IMM = 0.25."
+      confidence: high
+    - claim_field: /scoring_signals/0/notes
+      source_path: ETF/core/functions.py
+      line_ref: "40-41"
+      quote: "return bal ** GAMMA * (1 + KAPPA * math.log(1 + min((mg.block - blk) / 7200, DMAX) / DNORM)) if mg.block > blk else float('nan')"
+      confidence: high
+    - claim_field: /scoring_signals/0/notes
+      source_path: README.md
+      line_ref: "72"
+      quote: "score = S \\cdot \\left( 1 + 0.25 \\cdot ln \\left( 1 + \\frac {\\ D\\ } {\\ 30\\ } \\right) \\right)"
+      confidence: high
+    - claim_field: /scoring_signals/0/notes
+      source_path: ETF/core/constants.py
+      line_ref: "25-28"
+      quote: "GAMMA = 1.00\nKAPPA = 0.25\nDNORM = 30\nDMAX = 36500"
+      confidence: high
+    - claim_field: /scoring_signals/0/normalization_other
+      source_path: ETF/core/functions.py
+      line_ref: "56-63"
+      quote: "sc['score'] /= sc['count'] ... sc.loc[sc['index'] == i, 'score'] *= ir[i] * scz / sci"
+      confidence: high
+    - claim_field: /scoring_signals/1/notes
+      source_path: README.md
+      line_ref: "81"
+      quote: "Score is based on total fill volume in a rolling time window, currently 5 days. ... For buy orders, assets bought must remain in the coldkey during the time window in order to be counted."
+      confidence: high
+    - claim_field: /scoring_signals/1/normalization_other
+      source_path: ETF/core/functions.py
+      line_ref: "121-138"
+      quote: "if len(d2): d2['volume'] = d2[['volume', 'stake']].min(1) ... df['score'] = dfz * df['score'] / df['score'].sum() ... df['score'] /= df['count']"
+      confidence: high
+    - claim_field: /ground_truth_sources/0/source_identifier
+      source_path: ETF/core/functions.py
+      line_ref: "8,44"
+      quote: "st = bt.Subtensor('finney') ... return sum([float(s.stake) * float(nn[s.netuid].price) for s in st.get_stake_info_for_coldkey(ck) if s.netuid])"
+      confidence: high
+    - claim_field: /ground_truth_sources/1/source_identifier
+      source_path: ETF/core/constants.py
+      line_ref: "7-8,30-32"
+      quote: "COLDKEY_BL = 'https://api.app.trustedstake.ai/admin/blacklist' ... IMM_DATA = 'https://api.subnet118.com/imm/data'"
+      confidence: high
+    - claim_field: /aggregation/burn_allocation/address_or_uid
+      source_path: ETF/core/constants.py
+      line_ref: "5"
+      quote: "BRN_UID = 0"
+      confidence: high
+    - claim_field: /aggregation/burn_allocation/notes
+      source_path: ETF/core/functions.py
+      line_ref: "146"
+      quote: "sc.loc[sc['uid'] == BRN_UID, 'score'] = sc['score'].sum() / sum(ratio[1:]) * ratio[0] if sum(ratio[1:]) else 1.0"
+      confidence: high
+    - claim_field: /aggregation/burn_allocation/dynamic
+      source_path: ETF/core/functions.py
+      line_ref: "72-74"
+      quote: "try: ratio = json.loads(requests.get(IMM_RATIO).json())\n    except: ratio = [1.0, 0.0, 0.0]\n    if not ratio[1]: sc['score'] = 0.0"
+      confidence: high
+    - claim_field: /aggregation/notes
+      source_path: ETF/core/functions.py
+      line_ref: "140-142"
+      quote: "sc = sc.join(df.set_index('uid')['score'], 'uid', rsuffix='2')\n    sc.loc[~sc['score2'].isna(), 'score'] = sc['score2']"
+      confidence: high
+    - claim_field: /aggregation/normalization
+      source_path: neurons/template/base/validator.py
+      line_ref: "234-241"
+      quote: "norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True) ... raw_weights = self.scores / norm"
+      confidence: high
+    - claim_field: /weight_setting/method
+      source_path: neurons/validator.py
+      line_ref: "60-69"
+      quote: "def score(self, _):\n        time.sleep(60)\n        while True:\n            if int(time.strftime('%M')) in [20, 50]: break ... self.scores = fn.score()"
+      confidence: high
+    - claim_field: /weight_setting/on_chain_call
+      source_path: neurons/template/base/validator.py
+      line_ref: "270-278"
+      quote: "result, msg = self.subtensor.set_weights(\n            wallet=self.wallet,\n            netuid=self.config.netuid,\n            uids=uint_uids,\n            weights=uint_weights,"
+      confidence: high
+    - claim_field: /anti_gaming/0/description
+      source_path: ETF/core/functions.py
+      line_ref: "56-57"
+      quote: "sc['count'] = sc.join(sc.groupby('coldkey').count()['uid'], 'coldkey', lsuffix='_')['uid']\n    sc['score'] /= sc['count']"
+      confidence: high
+    - claim_field: /anti_gaming/1/description
+      source_path: ETF/core/functions.py
+      line_ref: "27-29"
+      quote: "bl = requests.get(COLDKEY_BL).json() ... if d['type'] == 'Staking' and d['address'] not in bl"
+      confidence: high
+    - claim_field: /anti_gaming/2/description
+      source_path: ETF/core/functions.py
+      line_ref: "102"
+      quote: "kk = sc[sc['index'].isna()]['coldkey'].unique()"
+      confidence: high
+    - claim_field: /anti_gaming/3/description
+      source_path: ETF/core/functions.py
+      line_ref: "121"
+      quote: "if len(d2): d2['volume'] = d2[['volume', 'stake']].min(1)"
+      confidence: high
+    - claim_field: /anti_gaming/4/description
+      source_path: ETF/core/functions.py
+      line_ref: "52-53"
+      quote: "blk = max(ckblk[idx][ck], FIRST_BLOCK) ... days, bal = (mg.block - blk) // 7200 if mg.block > blk else float('nan'), ckbal[ck]"
+      confidence: high
+    - claim_field: /sub_competitions/notes
+      source_path: README.md
+      line_ref: "12-16"
+      quote: "- V1, Live at launch: HODL ETF\n- V2, Q1 2026: HODL Exchange\n- V3, Q3 2026: Futures and Options"
+      confidence: high
+    - claim_field: /documentation/primary_docs
+      source_path: README.md
+      line_ref: "9-10"
+      quote: "Please reference our [whitepaper](./Docs/HODL%20-%20The%20ETF%20Subnet.pdf) ... please see our [FAQ document](./Docs/FAQ.md)."
+      confidence: high
+  unresolved:
+    - "Live burn fraction (ratio[0]) and ETF/IMM split: fetched at runtime from IMM_RATIO API; README states ETF=0.75/IMM=0.25 but no literal burn constant exists in source."
+    - "IMM rolling-window length: README says 'currently 5 days' but the value is fetched from IMM_WINDOW API (json), not a source constant."
+    - "Whitepaper/IMM PDF internals not parsed (binary PDFs in Docs/); FAQ and README text used instead."

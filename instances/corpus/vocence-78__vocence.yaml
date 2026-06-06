@@ -1,0 +1,377 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: mixed
+mechanism_status_notes: >-
+  Full scoring pipeline is implemented (GPT-4o-audio trait extraction, weighted
+  element scoring, binary pass-threshold win-rate, stake-weighted global consensus,
+  winner-take-all weight setting). However the validator burns (weight 1.0 on UID 0)
+  whenever there are too few active validators, too few readable buckets, no usable
+  cross-validator data, or no eligible miner clears THRESHOLD_MARGIN — so the live
+  network frequently burns while the documented scoring is dormant.
+
+subnet:
+  name: "Vocence"
+  owner_repo: "vocence-78__vocence"
+  netuid: 78
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners deploy PromptTTS voice-intelligence models on Chutes exposing a single
+    /speak endpoint (text + voice-trait instruction -> WAV). Validators derive a task
+    spec from real source audio via GPT-4o-audio, call each miner's /speak, and score
+    the generated audio on content (WER), audio naturalness (pairwise judge), and
+    prompt/voice-trait adherence (gender, pitch, speed, age_group, emotion, tone,
+    accent). Rewards go winner-take-all to the single globally-best miner.
+  submission_format: [api_response, model_weights]
+
+scoring_signals:
+  - name: script
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 0.30
+    normalization: none
+    notes: >-
+      1 - WER(spec.transcription, miner.transcription), clamped to [0,1]. WER is
+      Levenshtein distance over lowercase word tokens. Highest-weighted element.
+  - name: naturalness
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: 0.15
+    normalization: none
+    notes: >-
+      Pairwise GPT-4o-audio judge: source vs miner audio, presentation order
+      randomized; 1.0 if miner judged more natural else 0.0.
+  - name: gender
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: 0.10
+    normalization: none
+    notes: "Exact enum match (male/female/neutral): 1.0 if equal else 0.0."
+  - name: speed
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: 0.10
+    normalization: none
+    notes: "Ordinal enum (slow/normal/fast): exact=1.0, off-by-one=0.5, else 0.0."
+  - name: emotion
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: 0.10
+    normalization: none
+    notes: "Exact enum match over 8 emotion values: 1.0 if equal else 0.0."
+  - name: age_group
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: 0.10
+    normalization: none
+    notes: "Ordinal enum (child/young_adult/adult/senior): exact=1.0, off-by-one=0.5, else 0.0."
+  - name: pitch
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: 0.05
+    normalization: none
+    notes: "Ordinal enum (low/mid/high): exact=1.0, off-by-one=0.5, else 0.0."
+  - name: accent
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: 0.05
+    normalization: none
+    notes: "Exact enum match (us/uk/au/in/neutral/other): 1.0 if equal else 0.0."
+  - name: tone
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: 0.05
+    normalization: none
+    notes: "Exact enum match over 6 tone values: 1.0 if equal else 0.0."
+
+ground_truth_sources:
+  - kind: llm_judgment
+    description: >-
+      GPT-4o-audio-preview (or GPT_AUDIO_MODEL) used pointwise to extract the source
+      task spec and the miner-audio traits, and pairwise to judge naturalness.
+      Temperature 0.0 for both calls.
+    source_identifier: "gpt-4o-audio-preview"
+    trust_model: oracle
+    notes: >-
+      The "spec" (transcription + 7 voice traits) is derived from real source audio,
+      so the judge is also the ground-truth labeler for each evaluation.
+  - kind: deterministic_dataset
+    description: >-
+      Source audio clips pulled from the shared Hippius corpus bucket (LibriVox-sourced,
+      20-25s clips) used to derive each task spec.
+    source_identifier: "audio-corpus-bucket (AUDIO_SOURCE_BUCKET)"
+    trust_model: trusted
+    notes: "Validator selects a random .wav avoiding recently-used items; duration-gated 20-25s."
+
+aggregation:
+  method: winner_take_all
+  composition: weighted_sum
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: null
+    dynamic: true
+    notes: >-
+      When no miner is eligible / no consensus, validator sets weight 1.0 on burn
+      UID 0. BURN_UID = 0, OWNER_UID = 0. Burn is a full-cycle residual, not a fixed fraction.
+  notes: >-
+    Per-evaluation score = sum(element_weight * element_score) / sum(weights), in [0,1];
+    raw element weights are renormalized to sum to 1.0. Each evaluation becomes a binary
+    win (generated_wins) when score >= PASS_THRESHOLD (0.9); win_rate = wins/total is the
+    ranking primitive (continuous score is diagnostic only). Per-validator win_rates are
+    combined into a global stake-weighted mean: sum(sqrt(stake_v)*win_rate_v)/sum(sqrt(stake_v)),
+    falling back to equal weights if all stakes are zero. The single global winner that clears
+    every earlier eligible miner by THRESHOLD_MARGIN gets weight 1.0; all other valid miners get 0.0.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Winner-take-all: every CYCLE_LENGTH (150) blocks at offset 15, validator fetches valid
+    miners + active validators from owner API, reads recent MAX_EVALS_FOR_SCORING (50) evals
+    from each active validator bucket, computes stake-weighted global win_rates, applies
+    eligibility (>40 evals in >=3 buckets) + threshold-margin (0.02) + deterministic tie-breaks,
+    and sets weight 1.0 on the winner UID (0.0 on others). Burns to UID 0 if no eligible winner.
+  on_chain_call: set_weights
+  tempo_or_interval: "150 blocks"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA on the final reward; weights are set fresh each cycle (1.0 winner / 0.0 others, or
+      1.0 burn UID). A recency window of the most recent 50 evals (MAX_EVALS_FOR_SCORING) bounds
+      the per-validator score history, but this is a fixed-count window, not an EMA/SMA smoother.
+
+anti_gaming:
+  - kind: plagiarism_detection
+    enforcement: elimination
+    description: >-
+      detect_duplicates groups valid miners by model_hash; for each duplicate hash only the
+      earliest commit block is kept valid, later miners marked invalid (duplicate_model). The
+      owner base model weights hash is pinned (BASE_MODEL_WEIGHTS_HASH) so miners copying the
+      base model are caught.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      Each contributing validator's influence on the global score is weighted by sqrt(stake)
+      from the current metagraph (validator_weight = sqrt(stake)); zero/unavailable stakes fall
+      back to equal weights.
+  - kind: code_inspection
+    enforcement: rejection
+    description: >-
+      check_wrapper_integrity verifies the deployed chute source matches the canonical Vocence
+      wrapper; chute name must contain the magic word "vocence" (CHUTE_NAME_MAGIC_WORD). Failing
+      either marks the miner invalid.
+  - kind: rate_limit
+    enforcement: elimination
+    description: >-
+      A hotkey making more than MAX_POST_CUTOVER_COMMITS (2) on-chain commits at/after
+      COMMIT_LOCK_BLOCK is marked invalid (cap disabled when COMMIT_LOCK_BLOCK=0).
+  - kind: liveness_check
+    enforcement: rejection
+    description: >-
+      A validator only counts as active (and only its bucket is read) if it submitted
+      evaluation data within ACTIVE_VALIDATOR_WINDOW_HOURS (24h) and is present in the local
+      VALIDATOR_BUCKETS_JSON. Too few active validators -> whole cycle burns.
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      Pairwise naturalness presentation order randomized to neutralize position bias; trait
+      extractor drift coerced to closed enum via alias map; judge temperature pinned to 0.0;
+      ELEMENT_WEIGHTS and PASS_THRESHOLD must be identical across honest validators for consensus.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: >-
+    Single PromptTTS task (Q1 focus). The owner base model is injected as a synthetic
+    participant (uid 0, BASE_MODEL_COMMIT_BLOCK 1000) that miners must beat by THRESHOLD_MARGIN.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [status_enum, performance_ledger, registration_age]
+  status_values: [valid, invalid, duplicate_model, eligible, winner]
+  reset_policy: >-
+    Win rates recomputed each cycle from the most recent 50 evals per validator bucket (no
+    carryover EMA). Validity recomputed from owner API each cycle.
+  notes: >-
+    Eligibility uses commit block (registration_age proxy) for ordering ("later miners must beat
+    earlier baselines") and counts of evals per validator bucket. is_valid/invalid_reason carried
+    per participant from the owner API.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/scoring.md"
+    - "docs/validator-setup.md"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract / Claude Opus 4.8"
+  confidence_overall: high
+  extractor_notes: >-
+    Code (evaluation.py, global_scoring.py, coordinator.py, config.py, calculator.py) and
+    docs/scoring.md agree closely; constants taken verbatim from config.py / evaluation.py.
+  unresolved:
+    - "netuid is a config default (NETUID=78) overridable via env; assumed 78 per README and config."
+    - "Exact on-chain weight normalization by subtensor.set_weights not shown; uids/weights passed as 1.0/0.0 floats."
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "vocence/domain/config.py"
+      line_ref: "28"
+      quote: 'SUBNET_ID = int(os.environ.get("SUBNET_ID") or os.environ.get("NETUID", "78"))'
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "vocence/pipeline/evaluation.py"
+      line_ref: "1-11"
+      quote: '"""Audio assessment for Vocence using AudioJudge."""'
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "62-63"
+      quote: 'They expose a single `/speak` API (text + instruction -> WAV) ... Validators ... call each miner''s Chutes `/speak` endpoint with evaluation prompts, run the pre-defined scoring pipeline, and set weights on chain.'
+      confidence: high
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "vocence/pipeline/evaluation.py"
+      line_ref: "45-46"
+      quote: '_RAW_WEIGHTS: Dict[str, float] = { "script": 0.30,'
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "vocence/pipeline/evaluation.py"
+      line_ref: "224-225"
+      quote: 'if key == "script": return max(0.0, 1.0 - word_error_rate(str(expected or ""), str(actual or "")))'
+      confidence: high
+    - claim_field: "/scoring_signals/1/weight"
+      source_path: "vocence/pipeline/evaluation.py"
+      line_ref: "46"
+      quote: '"naturalness": 0.15,'
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "vocence/pipeline/evaluation.py"
+      line_ref: "264-265"
+      quote: 'miner_wins = bool(naturalness.get("miner_more_natural", False)); s = 1.0 if miner_wins else 0.0'
+      confidence: high
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "vocence/pipeline/evaluation.py"
+      line_ref: "236-240"
+      quote: 'if dist == 0: return 1.0; if dist == 1: return 0.5; return 0.0'
+      confidence: high
+    - claim_field: "/scoring_signals/6/weight"
+      source_path: "vocence/pipeline/evaluation.py"
+      line_ref: "38"
+      quote: 'ORDINAL_TRAITS = {"pitch", "speed", "age_group"}'
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "vocence/domain/config.py"
+      line_ref: "97"
+      quote: 'GPT_AUDIO_MODEL = os.environ.get("GPT_AUDIO_MODEL", "gpt-4o-audio-preview")'
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/notes"
+      source_path: "vocence/pipeline/evaluation.py"
+      line_ref: "169-170"
+      quote: 'model=GPT_AUDIO_MODEL, concatenation_method="no_concatenation", temperature=0.0,'
+      confidence: high
+    - claim_field: "/ground_truth_sources/1/source_identifier"
+      source_path: "vocence/domain/config.py"
+      line_ref: "74"
+      quote: 'AUDIO_SOURCE_BUCKET = os.environ.get("HIPPIUS_AUDIO_SOURCE_BUCKET", "audio-corpus-bucket")'
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "vocence/engine/coordinator.py"
+      line_ref: "442"
+      quote: 'weights.append(1.0 if hotkey == leader else 0.0)'
+      confidence: high
+    - claim_field: "/aggregation/normalization"
+      source_path: "vocence/pipeline/evaluation.py"
+      line_ref: "56-57"
+      quote: 'ELEMENT_WEIGHTS: Dict[str, float] = {k: v / _RAW_TOTAL for k, v in _RAW_WEIGHTS.items()}'
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "vocence/ranking/global_scoring.py"
+      line_ref: "162-163"
+      quote: 'entry["weighted_sum"] += validator_weight * win_rate; entry["weight_sum"] += validator_weight'
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "vocence/domain/config.py"
+      line_ref: "186-187"
+      quote: 'UID 0 is the burn key on Bittensor; when no miner is eligible, validators set weight 1 on UID 0 to burn incentives. BURN_UID = 0'
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/enabled"
+      source_path: "vocence/engine/coordinator.py"
+      line_ref: "410"
+      quote: 'subtensor.set_weights(wallet=wallet, netuid=SUBNET_ID, uids=[BURN_UID], weights=[1.0], wait_for_inclusion=True),'
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "vocence/domain/config.py"
+      line_ref: "29"
+      quote: 'CYCLE_LENGTH = int(os.environ.get("CYCLE_LENGTH", "150"))  # Set weights every 150 blocks (~30 minutes)'
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "vocence/engine/coordinator.py"
+      line_ref: "446"
+      quote: 'subtensor.set_weights(wallet=wallet, netuid=SUBNET_ID, uids=uids, weights=weights, wait_for_inclusion=True),'
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "docs/scoring.md"
+      line_ref: "291-310"
+      quote: 'candidate passes prior miner P if: candidate_global_win_rate >= P_global_win_rate + THRESHOLD_MARGIN ... Default: THRESHOLD_MARGIN = 0.02'
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "vocence/registry/validation.py"
+      line_ref: "346-382"
+      quote: 'For each unique model hash, only the miner with the earliest commit block is kept as valid. Later miners are marked as duplicates.'
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "vocence/ranking/global_scoring.py"
+      line_ref: "128-131"
+      quote: 'base_weights = { hotkey: math.sqrt(max(0.0, validator_stakes.get(hotkey, 0.0))) for hotkey in bucket_scores.keys() }'
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "vocence/registry/validation.py"
+      line_ref: "36"
+      quote: 'CHUTE_NAME_MAGIC_WORD = "vocence"'
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "vocence/domain/config.py"
+      line_ref: "50-51"
+      quote: 'COMMIT_LOCK_BLOCK = int(os.environ.get("COMMIT_LOCK_BLOCK", "8081000")) ... MAX_POST_CUTOVER_COMMITS = int(os.environ.get("MAX_POST_CUTOVER_COMMITS", "2"))'
+      confidence: high
+    - claim_field: "/anti_gaming/4/description"
+      source_path: "vocence/domain/config.py"
+      line_ref: "155"
+      quote: 'ACTIVE_VALIDATOR_WINDOW_HOURS = int(os.environ.get("ACTIVE_VALIDATOR_WINDOW_HOURS", "24"))'
+      confidence: high
+    - claim_field: "/anti_gaming/5/description"
+      source_path: "vocence/pipeline/evaluation.py"
+      line_ref: "321"
+      quote: 'swap = random.choice([True, False])'
+      confidence: high
+    - claim_field: "/per_miner_state/notes"
+      source_path: "vocence/ranking/global_scoring.py"
+      line_ref: "168-170"
+      quote: 'if total > MIN_EVALS_TO_COMPETE: entry["eligible_validator_count"] += 1'
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "vocence/pipeline/evaluation.py"
+      line_ref: "61"
+      quote: 'PASS_THRESHOLD: float = 0.9'
+      confidence: high
+    - claim_field: "/mechanism_status"
+      source_path: "docs/scoring.md"
+      line_ref: "330-342"
+      quote: 'Vocence burns for the cycle by setting weight 1.0 on burn UID 0 when any of these happen ... MIN_ACTIVE_VALIDATORS_FOR_GLOBAL_SCORING = 3'
+      confidence: high
+    - claim_field: "/sub_competitions/notes"
+      source_path: "vocence/domain/config.py"
+      line_ref: "176-185"
+      quote: 'OWNER_UID = 0 ... BASE_MODEL_COMMIT_BLOCK = 1000  # Block at which owner is treated as committed (never on chain)'
+      confidence: high

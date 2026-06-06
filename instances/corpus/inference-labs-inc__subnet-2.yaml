@@ -1,0 +1,280 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Validators compute and commit per-miner weights from a throughput-based curve
+  (throughput^5, normalized, IP-region capped, with a subnet-owner boost) via
+  timelocked commit-reveal. No burn/null-UID allocation is present in the
+  weight-setting path. Note a separate per-UID ScoreManager (decay/recovery EMA
+  on verified response time) and PoW-derived scores are maintained in state, but
+  the weights actually committed on-chain are derived from compute_throughput_weights,
+  not from that EMA score map.
+
+subnet:
+  name: "Subnet 2 — Proof of Inference (Inference Labs)"
+  owner_repo: "inference-labs-inc__subnet-2"
+  netuid: 2
+  implementation_lang: rust
+
+task:
+  summary: >-
+    Miners run custom AI models compiled into zero-knowledge circuits, receive
+    input data from validators, perform verified inference and return the
+    outputs together with a zk-proof of inference. Validators verify the proof
+    and reward miners primarily on verified throughput (proving rate x capacity)
+    and on response time, not on prediction correctness.
+  submission_format: [api_response]
+
+scoring_signals:
+  - name: verified_throughput
+    metric_kind: throughput
+    direction: higher_is_better
+    weight: 1.0
+    normalization: min_max
+    notes: >-
+      Committed weights derive from throughput = rate * capacity raised to
+      PERFORMANCE_CURVE_POWER (5.0), then L1-normalized across miners. Only
+      counted once a miner has at least PERFORMANCE_MIN_SAMPLES (100) samples;
+      otherwise raw weight is 0.
+  - name: response_time_metric
+    metric_kind: latency
+    direction: lower_is_better
+    weight: null
+    normalization: min_max
+    notes: >-
+      ScoreManager.update_score normalizes response_time to [0, 0.99] via
+      min/max, passes it through a normalized tangent curve, and moves a per-UID
+      score toward effective_max = (1/n) * (1 - tangent(norm)). This EMA-like
+      score is maintained in state but is NOT the source of the committed
+      throughput weights; recorded as a distinct signal.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Validators verify the miner's returned zero-knowledge proof of inference
+      (cryptographic integrity / source-model fingerprint) using the sn2-verify
+      Expander backend; scoring is based on proof validity, proving throughput
+      and response time rather than prediction accuracy.
+    source_identifier: "sn2-verify (Expander backend)"
+    trust_model: trusted
+    notes: >-
+      Output consistency between miner-reported outputs and the validator's run
+      is also checked (OutputConsistency::Consistent/Diverged).
+
+aggregation:
+  method: proportional
+  composition: gated
+  normalization: l1
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: >-
+      No burn or null-UID allocation found in the weight-setting path. A
+      subnet-owner UID boost exists instead: when an owner UID is present, all
+      other miners' normalized weights are multiplied by 0.2 and the owner UID
+      weight is set to 0.8.
+  notes: >-
+    raw_weight[uid] = (rate*cap)^5 for miners with >=100 samples, else 0; then
+    divided by the sum (L1 normalize). Skiplisted and coldstart miners get 0.
+    IP-region cap zeroes the lowest-weight miners in any region holding more
+    than floor(n * 0.25) miners, then re-normalizes. Final weights are scaled
+    to u16 (w * u16::MAX).
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    Throughput weights computed in update_weights, then committed as timelocked
+    (commit-reveal) weights. Skipped when blocks_since_last_update <
+    WEIGHT_RATE_LIMIT_BLOCKS (100) or when all weights are zero.
+  on_chain_call: commit_reveal
+  tempo_or_interval: "rate-limited: >= 100 blocks since last update (Tempo default 360)"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      The committed throughput weights are not temporally smoothed across
+      rounds; they are recomputed from the current throughput snapshot each
+      eligible cycle.
+
+anti_gaming:
+  - kind: commit_reveal
+    enforcement: barrier
+    description: >-
+      Weights are submitted via commit_timelocked_weights (timelocked drand
+      commit-reveal, COMMIT_REVEAL_VERSION 4) so they cannot be copied before
+      reveal.
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      RSV verification: proof verification failures record a strike; reaching
+      VERIFICATION_STRIKES_REQUIRED (3) within VERIFICATION_STRIKES_WINDOW_BLOCKS
+      (7200) skiplists the hotkey for VERIFICATION_SKIPLIST_TEMPOS (5) tempos.
+      Skiplisted and coldstart miners receive weight 0.
+  - kind: rate_limit
+    enforcement: barrier
+    description: >-
+      Coldstart: newly seen hotkeys are excluded (weight 0) for
+      VERIFICATION_COLDSTART_BLOCKS (1800) blocks before they can earn weight.
+  - kind: other
+    kind_other: ip_region_concentration_cap
+    enforcement: penalty
+    enforcement_other: cap_and_redistribute
+    description: >-
+      IP-region cap: at most floor(n * IP_REGION_CAP_FRACTION=0.25) miners per
+      /16-style IP region keep weight; excess (lowest-weight) miners in a
+      saturated region are zeroed and weights re-normalized. Mitigates
+      sybil/co-location concentration.
+
+sub_competitions:
+  structure: multi_mechanism
+  stages: []
+  count: null
+  notes: >-
+    Multiple parallel scoring paths feed validator state: verified-inference
+    throughput scoring (committed), a response-time decay/recovery score, and
+    PoW (proof-of-weights) derived scores via apply_pow_scores. Only the
+    throughput path produces the committed on-chain weights.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [performance_ledger, cumulative_score, cooldown, status_enum]
+  status_values: [skiplisted, coldstart, active]
+  reset_policy: >-
+    Per-UID scores persisted to disk; sync_uids drops stale UIDs and inserts new
+    ones at 0.0. Skiplist entries expire after VERIFICATION_SKIPLIST_TEMPOS
+    tempos; strike/coldstart records pruned by last-seen retention windows.
+  notes: >-
+    ScoreManager holds a HashMap<uid, f64> updated by decay (0.4) / recovery
+    (0.1). RsvManager tracks skiplist, strikes (sliding window), coldstart
+    first-seen, last_seen, and per-tempo sample budget. PerformanceTracker
+    tracks a windowed throughput snapshot (rate, capacity, count).
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/README.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: /subnet/netuid
+      source_path: crates/sn2-types/src/constants.rs
+      line_ref: "13"
+      quote: "pub const DEFAULT_NETUID: u16 = 2;"
+    - claim_field: /subnet/implementation_lang
+      source_path: README.md
+      line_ref: "291-301"
+      quote: "The codebase is organized as a Rust workspace with the following crates:"
+    - claim_field: /task/summary
+      source_path: README.md
+      line_ref: "30-37"
+      quote: >-
+        Generate predictions using custom, verifiable AI models that have been
+        converted into zero-knowledge circuits ... Confirm that miners are
+        acting faithfully, by verifying the authenticity of the miner's returned
+        zero-knowledge proof
+    - claim_field: /task/submission_format
+      source_path: README.md
+      line_ref: "233"
+      quote: >-
+        perform verified inferences on those inputs and respond with output
+        along with a zero-knowledge proof of inference.
+    - claim_field: /scoring_signals/0/metric_kind
+      source_path: crates/sn2-validator/src/scoring.rs
+      line_ref: "142-144"
+      quote: "let throughput = rate * cap as f64;\n                    throughput.powf(PERFORMANCE_CURVE_POWER)"
+    - claim_field: /scoring_signals/0/notes
+      source_path: crates/sn2-types/src/constants.rs
+      line_ref: "20-21"
+      quote: "pub const PERFORMANCE_CURVE_POWER: f64 = 5.0;\npub const PERFORMANCE_MIN_SAMPLES: usize = 100;"
+    - claim_field: /scoring_signals/1/metric_kind
+      source_path: crates/sn2-validator/src/scoring.rs
+      line_ref: "60-64"
+      quote: >-
+        let response_time_metric =
+        RESPONSE_TIME_WEIGHT * (1.0 - normalized_tangent_curve(response_time_normalized));
+        let calculated_score_fraction = response_time_metric.clamp(0.0, 1.0);
+        let effective_max = maximum_score * calculated_score_fraction;
+    - claim_field: /scoring_signals/1/normalization
+      source_path: crates/sn2-validator/src/scoring.rs
+      line_ref: "53-58"
+      quote: "let raw = (response_time - min_response_time) / (max_response_time - min_response_time);\n            raw.clamp(0.0, MAXIMUM_RESPONSE_TIME_DECIMAL)"
+    - claim_field: /ground_truth_sources/0/source_identifier
+      source_path: README.md
+      line_ref: "297"
+      quote: "`sn2-verify` | Proof verification via the [Expander](https://github.com/inference-labs-inc/Expander) backend"
+    - claim_field: /aggregation/normalization
+      source_path: crates/sn2-validator/src/scoring.rs
+      line_ref: "150-155"
+      quote: "let total: f64 = raw_weights.iter().sum();\n        if total > 0.0 {\n            for w in &mut raw_weights {\n                *w /= total;"
+    - claim_field: /aggregation/burn_allocation/notes
+      source_path: crates/sn2-validator/src/scoring.rs
+      line_ref: "159-166"
+      quote: "if let Some(owner) = owner_uid {\n            if let Some(idx) = uids.iter().position(|&u| u == owner) {\n                for w in &mut raw_weights {\n                    *w *= 0.2;\n                }\n                raw_weights[idx] = 0.8;"
+    - claim_field: /aggregation/notes
+      source_path: crates/sn2-validator/src/scoring.rs
+      line_ref: "137-148"
+      quote: "if skiplisted.contains(&uid) || coldstart.contains(&uid) {\n                    return 0.0;\n                }\n                let (rate, cap, count) = snap.get(&uid).copied().unwrap_or((0.0, 1, 0));\n                if count >= PERFORMANCE_MIN_SAMPLES {"
+    - claim_field: /weight_setting/on_chain_call
+      source_path: crates/sn2-chain/src/weights.rs
+      line_ref: "82-97"
+      quote: "pub async fn commit_timelocked_weights(\n        &self,\n        ...\n        let tx = subxt::dynamic::tx(\n            PALLET,\n            \"commit_timelocked_weights\","
+    - claim_field: /weight_setting/cadence
+      source_path: crates/sn2-validator/src/validator_loop/maintenance.rs
+      line_ref: "383-385"
+      quote: "if blocks_since < WEIGHT_RATE_LIMIT_BLOCKS {\n            return Ok(());\n        }"
+    - claim_field: /weight_setting/tempo_or_interval
+      source_path: crates/sn2-types/src/constants.rs
+      line_ref: "9"
+      quote: "pub const WEIGHT_RATE_LIMIT_BLOCKS: u64 = 100;"
+    - claim_field: /weight_setting/method
+      source_path: crates/sn2-validator/src/validator_loop/maintenance.rs
+      line_ref: "443-468"
+      quote: "let (weight_uids, weights) = self.score_manager.compute_throughput_weights(\n            &uids,\n            &snap,\n            owner_uid,\n            ...\n        let (ct_bytes, reveal_round) = self.weights_setter.generate_timelocked_commit("
+    - claim_field: /anti_gaming/0/kind
+      source_path: crates/sn2-chain/src/weights.rs
+      line_ref: "16"
+      quote: "const COMMIT_REVEAL_VERSION: u64 = 4;"
+    - claim_field: /anti_gaming/1/description
+      source_path: crates/sn2-types/src/constants.rs
+      line_ref: "24-26"
+      quote: "pub const VERIFICATION_STRIKES_REQUIRED: u32 = 3;\npub const VERIFICATION_STRIKES_WINDOW_BLOCKS: u64 = 7200;\npub const VERIFICATION_SKIPLIST_TEMPOS: u64 = 5;"
+    - claim_field: /anti_gaming/2/description
+      source_path: crates/sn2-types/src/constants.rs
+      line_ref: "27"
+      quote: "pub const VERIFICATION_COLDSTART_BLOCKS: u64 = 1800;"
+    - claim_field: /anti_gaming/3/description
+      source_path: crates/sn2-types/src/constants.rs
+      line_ref: "39"
+      quote: "pub const IP_REGION_CAP_FRACTION: f64 = 0.25;"
+    - claim_field: /anti_gaming/3/enforcement_other
+      source_path: crates/sn2-validator/src/scoring.rs
+      line_ref: "189-213"
+      quote: "let max_per_region = ((total_miners as f64) * IP_REGION_CAP_FRACTION).floor() as usize;\n    ...\n        for &idx in &by_weight[max_per_region..] {\n            weights[idx] = 0.0;"
+    - claim_field: /per_miner_state/state_kinds
+      source_path: crates/sn2-validator/src/scoring.rs
+      line_ref: "14-17"
+      quote: "pub struct ScoreManager {\n    scores: HashMap<u16, f64>,\n    persistence_path: PathBuf,\n}"
+    - claim_field: /per_miner_state/notes
+      source_path: crates/sn2-validator/src/scoring.rs
+      line_ref: "9-11"
+      quote: "const RATE_OF_DECAY: f64 = 0.4;\nconst RATE_OF_RECOVERY: f64 = 0.1;\nconst RESPONSE_TIME_WEIGHT: f64 = 1.0;"
+    - claim_field: /sub_competitions/notes
+      source_path: crates/sn2-validator/src/validator_loop/results.rs
+      line_ref: "67-68"
+      quote: "self.score_manager\n            .apply_pow_scores(&valid_uids, &valid_scores);"
+  unresolved:
+    - "Whether the response-time decay/recovery ScoreManager score is ever consumed for on-chain weights (the committed path uses compute_throughput_weights only); relationship between the two score maps is not explicit in source."
+    - "WEIGHTS_VERSION/version_key 11003 is set but its semantic meaning (version gating) is not documented in-repo."
+    - "Exact Tempo value on mainnet (queried from chain at runtime, default fallback 360); not a fixed source constant for this subnet."

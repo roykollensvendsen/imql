@@ -1,0 +1,421 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  Live blended sports+attestation scoring drives the miner weight vector, but
+  a fixed 80% of total weight is routed to UID 0 (burn) on every weight set via
+  apply_burn(weights, burn_fraction=0.80). Miners share the remaining 20%.
+
+subnet:
+  name: "Djinn Protocol"
+  owner_repo: "Djinn-Inc__djinn"
+  netuid: 103
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners run TLSNotary provers (and optional peer-notary sidecars) that verify
+    sports betting line availability and produce web attestations. Validators
+    challenge miners with sports queries (executability/odds checks against ESPN
+    + The Odds API ground truth) and dispatch TLSNotary attestation tasks.
+    Miners are rewarded for accuracy on sports queries, response speed, proof
+    coverage, uptime, advertised hardware capability, and valid TLSNotary
+    attestation proofs, blended into a single per-miner score.
+  submission_format: [api_response, signals]
+
+scoring_signals:
+  - name: accuracy
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.35
+    normalization: none
+    notes: >-
+      Sports challenge: fraction of recent (sliding window of last 20) queries
+      where result matched TLSNotary ground truth. W_ACCURACY = 0.35.
+  - name: speed
+    metric_kind: latency
+    direction: higher_is_better
+    weight: 0.25
+    normalization: min_max
+    notes: >-
+      Sports challenge response latency, min-max normalized across miners
+      (fastest=1.0, slowest=0.0). W_SPEED = 0.25.
+  - name: coverage
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.15
+    normalization: none
+    notes: >-
+      Fraction of recent proof requests (last 20) where miner's TLSNotary proof
+      verified. W_COVERAGE = 0.15.
+  - name: uptime
+    metric_kind: uptime
+    direction: higher_is_better
+    weight: 0.15
+    normalization: ema
+    notes: >-
+      EMA-smoothed uptime score, alpha=0.00193 (half-life = 1 Bittensor tempo,
+      360 blocks). W_UPTIME = 0.15. Also gets up to a 10% bonus scaled by
+      notary_reliability inside _compute_sports_scores.
+  - name: capability
+    metric_kind: hardware_spec
+    direction: higher_is_better
+    weight: 0.10
+    normalization: none
+    notes: >-
+      Resource capability bonus from advertised RAM/CPU/availability/session
+      headroom (capped at 0.5). Non-reporting miners get neutral 0.3.
+      W_CAPABILITY = 0.10.
+  - name: canonical_agreement
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 0.0
+    normalization: none
+    notes: >-
+      Agreement with canonical odds median consensus. OBSERVE-ONLY: W_CANONICAL
+      = 0.0, surfaced in breakdown but not multiplied into final weight.
+  - name: attest_validity
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.60
+    normalization: none
+    notes: >-
+      Attestation challenge: fraction of recent (last 10) attestations whose
+      TLSNotary proof verified. W_ATTEST_VALIDITY = 0.60 within the attestation
+      sub-score.
+  - name: attest_speed
+    metric_kind: latency
+    direction: higher_is_better
+    weight: 0.40
+    normalization: min_max
+    notes: >-
+      Attestation latency, min-max normalized independently of sports speed.
+      W_ATTEST_SPEED = 0.40 within the attestation sub-score.
+
+ground_truth_sources:
+  - kind: market_data
+    description: >-
+      Sports betting odds/lines used to construct challenges and check miner
+      answers (real + synthetic lines mixed).
+    source_identifier: "The Odds API"
+    trust_model: oracle
+    notes: "Module docstring: 'executability checks via The Odds API'."
+  - kind: deterministic_dataset
+    description: >-
+      Public game/score data used to resolve sports outcomes and verify line
+      availability.
+    source_identifier: "ESPN public API"
+    trust_model: trusted
+    notes: "README: validator picks a live sport from ESPN; resolves outcomes via ESPN game data."
+  - kind: commit_reveal
+    description: >-
+      TLSNotary cryptographic web attestation proofs that the validator verifies
+      to confirm a miner actually fetched a given web resource.
+    source_identifier: "TLSNotary"
+    trust_model: adversarial
+    notes: >-
+      Proof validity drives both accuracy gating (unverified proofs never
+      counted correct) and the attestation validity sub-score.
+
+aggregation:
+  method: weighted_average
+  composition: hybrid
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: 0.80
+    dynamic: false
+    notes: >-
+      apply_burn assigns burn_fraction (config.bt_burn_fraction = 0.80,
+      hardcoded protocol parameter, .env BT_BURN_FRACTION ignored) to UID 0 and
+      scales miner weights into the remaining 0.20. Applied every weight set in
+      the epoch loop.
+  notes: >-
+    Per-miner score = (1 - W_ATTESTATION_BLEND)*sports + W_ATTESTATION_BLEND*attest,
+    with W_ATTESTATION_BLEND = 0.30 (only when attestation data exists; otherwise
+    pure sports). Sports and attestation are each internal weighted sums of their
+    signals. The blended score is then multiplied by a sqrt volume-confidence
+    factor and several multiplicative gates (challenged-but-never-valid 0.05
+    penalty, optional reliability/shield/proof-complexity amplifiers, bootstrap
+    and circuit-breaker zeroing) — hence composition: hybrid. Final raw scores
+    are L1-normalized to sum to 1 across miners (then burn re-scales). Empty
+    epochs use uptime+history(+attestation) weights instead.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    compute_weights_detailed(is_active) builds per-miner blended scores,
+    normalizes to sum 1, apply_burn routes 80% to UID 0, then set_weights pushes
+    the vector on chain. Gated by should_set_weights (>= MIN_WEIGHT_INTERVAL
+    blocks since on-chain last_update).
+  on_chain_call: set_weights
+  tempo_or_interval: "100 blocks (MIN_WEIGHT_INTERVAL)"
+  smoothing:
+    kind: ema
+    alpha: 0.00193
+    window: null
+    notes: >-
+      No EMA on the final blended reward itself. The only EMA in scoring is on
+      the uptime component (MinerMetrics.ema_uptime, _EMA_ALPHA = 0.00193,
+      half-life = 1 tempo / 360 blocks), which survives the per-epoch reset.
+      Attestation metrics also accumulate across epochs rather than resetting.
+
+anti_gaming:
+  - kind: liveness_check
+    enforcement: penalty
+    description: >-
+      Miners challenged for attestation but never producing a valid proof are
+      multiplied by 0.05 (95% penalty) in both active and empty epochs unless
+      they have a verified proactive proof.
+  - kind: commit_reveal
+    enforcement: rejection
+    description: >-
+      TLSNotary proofs must verify cryptographically; queries with
+      proof_status 'unverified' are never counted correct (R25-18). Proof bytes
+      are capped at MAX_PROOF_BYTES_PER_SESSION = 1_048_576 so padded wire
+      proofs can't game the proof-complexity amplifier.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      New-miner zero-weight bootstrap (gated by DJINN_FF_NEW_MINER_ZERO_WEIGHT):
+      fresh hotkeys held at weight 0 until BOOTSTRAP_MIN_SAMPLES=50 scored
+      samples AND BOOTSTRAP_MIN_AGE_SECONDS=86400 (24h) age. Also a
+      coldkey-density sybil divisor (DJINN_FF_COLDKEY_DENSITY_WEIGHT) and a
+      volume-confidence sqrt shrinkage below VOLUME_TARGET=250 samples.
+  - kind: deterministic_check
+    enforcement: elimination
+    description: >-
+      Consensus circuit breaker (DJINN_FF_CIRCUIT_BREAKER): miners flagged by a
+      CUSUM tracker for sustained deviation from validator consensus are forced
+      to weight 0.
+  - kind: hardware_validation
+    enforcement: penalty
+    description: >-
+      Proof-complexity amplifier (DJINN_FF_PROOF_COMPLEXITY_WEIGHT) and notary
+      reliability amplifier (DJINN_FF_RELIABILITY_WEIGHT, RELIAB_FLOOR=0.20,
+      gate RELIAB_GATE_MIN_ASSIGNED=5) reward per-UID TLSNotary/notary work that
+      a shared-sidecar sybil cluster cannot replicate per UID. Non-notary miners
+      take a 0.5 free-rider penalty on attestation score.
+
+sub_competitions:
+  structure: multi_mechanism
+  stages:
+    - name: sports_challenge
+      role: main
+      advancement_rule: "scored on accuracy/speed/coverage/uptime/capability; 70% blend weight"
+    - name: attestation_challenge
+      role: main
+      advancement_rule: "scored on proof validity/speed; 30% blend weight (W_ATTESTATION_BLEND)"
+  count: 2
+  notes: >-
+    Two independently-scored challenge types blended into one weight. A separate
+    empty-epoch path scores uptime+history(+attestation) when no challenges ran.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [performance_ledger, cumulative_score, reputation, registration_age]
+  status_values: []
+  reset_policy: >-
+    Per-epoch sports counters (queries, latencies, proofs, notary duties) reset
+    in reset_epoch() after weights are set; consecutive_epochs increments for
+    participants. Attestation metrics, ema_uptime, lifetime counters, and
+    notary-pair history persist across resets. All state persisted to SQLite so
+    scores survive restarts; metrics reset on hotkey change (new miner on a UID).
+  notes: >-
+    first_seen_at drives the bootstrap window (registration_age); ema_uptime and
+    notary_reliability are the reputation signals; lifetime_* counters are the
+    cumulative ledger.
+
+documentation:
+  status: code_authoritative
+  source_version: null
+  primary_docs:
+    - "validator/README.md"
+    - "validator/djinn_validator/core/scoring.py"
+    - "docs/whitepaper.md"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8"
+  extracted_at: "2026-06-06"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "validator/djinn_validator/bt/neuron.py"
+      line_ref: "27"
+      quote: "Bittensor validator neuron for Djinn Protocol subnet 103."
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "validator/djinn_validator/core/scoring.py"
+      line_ref: "1"
+      quote: "\"\"\"Miner scoring module — implements split sports/attestation scoring."
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "validator/README.md"
+      line_ref: "3"
+      quote: "Validators challenge miners to verify sports betting line availability, dispatch TLSNotary attestation tasks, manage peer notary assignment, and set on-chain weights based on miner performance."
+      confidence: high
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "validator/djinn_validator/core/scoring.py"
+      line_ref: "535"
+      quote: "W_ACCURACY = 0.35"
+      confidence: high
+    - claim_field: "/scoring_signals/1/weight"
+      source_path: "validator/djinn_validator/core/scoring.py"
+      line_ref: "536"
+      quote: "W_SPEED = 0.25"
+      confidence: high
+    - claim_field: "/scoring_signals/2/weight"
+      source_path: "validator/djinn_validator/core/scoring.py"
+      line_ref: "537"
+      quote: "W_COVERAGE = 0.15"
+      confidence: high
+    - claim_field: "/scoring_signals/3/weight"
+      source_path: "validator/djinn_validator/core/scoring.py"
+      line_ref: "538"
+      quote: "W_UPTIME = 0.15"
+      confidence: high
+    - claim_field: "/scoring_signals/4/weight"
+      source_path: "validator/djinn_validator/core/scoring.py"
+      line_ref: "546"
+      quote: "W_CAPABILITY = 0.10  # Resource capability bonus"
+      confidence: high
+    - claim_field: "/scoring_signals/5/weight"
+      source_path: "validator/djinn_validator/core/scoring.py"
+      line_ref: "545"
+      quote: "W_CANONICAL = 0.0"
+      confidence: high
+    - claim_field: "/scoring_signals/5/notes"
+      source_path: "validator/djinn_validator/core/scoring.py"
+      line_ref: "231-234"
+      quote: "The metric is observe-only until the weight-formula integration lands; ``compute_weights_detailed`` surfaces it in the breakdown but does NOT multiply it into the final weight."
+      confidence: high
+    - claim_field: "/scoring_signals/6/weight"
+      source_path: "validator/djinn_validator/core/scoring.py"
+      line_ref: "566"
+      quote: "W_ATTEST_VALIDITY = 0.60  # TLSNotary proof correctness"
+      confidence: high
+    - claim_field: "/scoring_signals/7/weight"
+      source_path: "validator/djinn_validator/core/scoring.py"
+      line_ref: "567"
+      quote: "W_ATTEST_SPEED = 0.40  # Normalized attestation latency"
+      confidence: high
+    - claim_field: "/scoring_signals/3/normalization"
+      source_path: "validator/djinn_validator/core/scoring.py"
+      line_ref: "245"
+      quote: "_EMA_ALPHA = 0.00193"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "validator/djinn_validator/core/scoring.py"
+      line_ref: "1090"
+      quote: "score = (1.0 - self.W_ATTESTATION_BLEND) * sports + self.W_ATTESTATION_BLEND * attest"
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "validator/djinn_validator/core/scoring.py"
+      line_ref: "572"
+      quote: "W_ATTESTATION_BLEND = 0.30"
+      confidence: high
+    - claim_field: "/aggregation/normalization"
+      source_path: "validator/djinn_validator/core/scoring.py"
+      line_ref: "1519-1529"
+      quote: "\"\"\"Normalize weights to sum to 1.0. ... result = {uid: score / total for uid, score in raw.items()}"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "validator/djinn_validator/config.py"
+      line_ref: "271"
+      quote: "bt_burn_fraction: float = 0.80"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "validator/djinn_validator/bt/neuron.py"
+      line_ref: "191"
+      quote: "result: dict[int, float] = {0: burn_fraction}"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "validator/djinn_validator/config.py"
+      line_ref: "268-270"
+      quote: "Burn fraction is a protocol parameter, not operator-configurable. Hardcoded so .env overrides can't cause validators to diverge."
+      confidence: high
+    - claim_field: "/mechanism_status"
+      source_path: "validator/djinn_validator/main.py"
+      line_ref: "1197"
+      quote: "weights = neuron.apply_burn(weights or {}, burn_fraction)"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "validator/djinn_validator/bt/neuron.py"
+      line_ref: "228-235"
+      quote: "result = self.subtensor.set_weights(netuid=self.netuid, wallet=self.wallet, uids=uids, weights=vals,"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "validator/djinn_validator/bt/neuron.py"
+      line_ref: "30"
+      quote: "MIN_WEIGHT_INTERVAL = 100"
+      confidence: high
+    - claim_field: "/weight_setting/cadence"
+      source_path: "validator/djinn_validator/bt/neuron.py"
+      line_ref: "315-328"
+      quote: "def should_set_weights(self) -> bool: ... return interval >= self.MIN_WEIGHT_INTERVAL"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "validator/djinn_validator/core/scoring.py"
+      line_ref: "159-160"
+      quote: "Alpha = 0.00193 gives a half-life of exactly 1 Bittensor tempo (360 blocks)."
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "validator/djinn_validator/core/scoring.py"
+      line_ref: "1109-1110"
+      quote: "if m.attestations_total > 0 and m.attestations_valid == 0 and not m.proactive_proof_verified: score *= 0.05  # 95% penalty"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "validator/djinn_validator/core/scoring.py"
+      line_ref: "52"
+      quote: "MAX_PROOF_BYTES_PER_SESSION = 1_048_576"
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "validator/djinn_validator/core/scoring.py"
+      line_ref: "582-583"
+      quote: "BOOTSTRAP_MIN_SAMPLES = 50 ... BOOTSTRAP_MIN_AGE_SECONDS = 86400  # 24 hours"
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "validator/djinn_validator/core/scoring.py"
+      line_ref: "1191-1205"
+      quote: "if (_ff.circuit_breaker and self._circuit_breaker is not None and m.hotkey and self._circuit_breaker.is_flagged(m.hotkey)): ... score = 0.0"
+      confidence: high
+    - claim_field: "/anti_gaming/4/description"
+      source_path: "validator/djinn_validator/core/scoring.py"
+      line_ref: "1321-1345"
+      quote: "NOTARY_FREERIDER_PENALTY = 0.5 ... if not m.notary_capable: base *= self.NOTARY_FREERIDER_PENALTY"
+      confidence: high
+    - claim_field: "/scoring_signals/4/notes"
+      source_path: "validator/djinn_validator/core/scoring.py"
+      line_ref: "1402"
+      quote: "scores[uid] = min(0.5, score)"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "validator/djinn_validator/core/scoring.py"
+      line_ref: "1714-1718"
+      quote: "Attestation metrics are NOT reset per-epoch. ... we let them accumulate so attestation_validity_score() returns a running average."
+      confidence: high
+    - claim_field: "/per_miner_state/notes"
+      source_path: "validator/djinn_validator/core/scoring.py"
+      line_ref: "1098-1102"
+      quote: "samples = m.total_scored_samples() if samples < self.VOLUME_TARGET: ... volume_factor = math.sqrt(samples / self.VOLUME_TARGET)"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "validator/djinn_validator/core/scoring.py"
+      line_ref: "3"
+      quote: "Sports challenge weights (executability checks via The Odds API):"
+      confidence: high
+    - claim_field: "/ground_truth_sources/1/source_identifier"
+      source_path: "validator/README.md"
+      line_ref: "29"
+      quote: "Picks a live sport from ESPN, constructs a mix of real and synthetic betting lines"
+      confidence: high
+  unresolved:
+    - "Empty-epoch weights (W_EMPTY_UPTIME=0.50/W_EMPTY_HISTORY=0.50, and the with-attestation 0.35/0.30/0.35 split) are a distinct scoring path not represented as a separate scoring_signals set."
+    - "Several amplifiers (reliability RELIAB_FLOOR=0.20, SHIELD_BONUS=0.20, proof-complexity COMPLEXITY_* constants) are feature-flag-gated; the on/off state in production is not determinable from source."
+    - "Whether netuid 103 is the live mainnet deployment or whether emissions are currently flowing is not determinable from source (config also defaults to Base Sepolia testnet contracts)."

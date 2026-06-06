@@ -1,0 +1,267 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Validator computes per-miner overall scores (Volume 90%, Responsiveness 10%),
+  takes a moving average, normalizes scores to sum-to-one and calls set_weights.
+  Weight setting is gated on ENABLE_WEIGHT_SETTING (default "1" => enabled) and is
+  due once blocks_since_last_update > tempo. No burn allocation is present in the
+  code. Novelty score is documented but unimplemented (returns 0.0).
+
+subnet:
+  name: "Patrol"
+  owner_repo: "patrol_subnet"
+  netuid: 81
+  implementation_lang: python
+
+task:
+  summary: >-
+    A validator selects a target wallet (and target block) randomly from the
+    Bittensor chain and sends it to each miner. Each miner builds a subgraph of
+    relational on-chain data (nodes = wallets, edges = transaction/staking
+    relationships, plus supporting evidence) tracing the target out to N degrees
+    of separation, and submits it. The validator verifies the subgraph against
+    on-chain events (pass/fail) and then scores the miner on the volume of valid
+    data submitted (90%) and responsiveness/latency (10%).
+  submission_format: [signals]
+
+scoring_signals:
+  - name: volume
+    metric_kind: volume
+    direction: higher_is_better
+    weight: 0.9
+    normalization: none
+    notes: >-
+      Sigmoid of total_items = len(nodes) + len(edges):
+      1 / (1 + exp(-STEEPNESS * (total_items - INFLECTION_POINT))) with
+      STEEPNESS=0.005 and INFLECTION_POINT=1000. ~0.5 at 1000 items.
+  - name: responsiveness
+    metric_kind: latency
+    direction: higher_is_better
+    weight: 0.1
+    normalization: none
+    notes: >-
+      RESPONSE_TIME_HALF_SCORE / (response_time + RESPONSE_TIME_HALF_SCORE) with
+      RESPONSE_TIME_HALF_SCORE=2 seconds. Lower latency yields a higher score.
+  - name: novelty
+    metric_kind: other
+    metric_kind_other: novelty_uniqueness
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Documented as "coming soon"; calculate_novelty_score is a placeholder
+      returning 0.0 and novelty_score is stored as None. Not in overall_score.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      On-chain Bittensor events fetched and processed by the validator. Each
+      miner-submitted edge must match a processed chain event (exact key match
+      on coldkey source/destination/owner, category, type, rao_amount,
+      block_number, etc.); unmatched edges within fetched blocks fail validation.
+    source_identifier: "wss://archive.chain.opentensor.ai:443"
+    trust_model: oracle
+    notes: >-
+      Pass/fail verification: empty payload, single node, target-not-in-graph,
+      disconnected graph, out-of-range blocks, or mismatched edges => score 0.
+
+aggregation:
+  method: proportional
+  composition: weighted_sum
+  normalization: sum_to_one
+  normalization_other: ""
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: "No burn allocation present in the weight-setting code."
+  notes: >-
+    overall_score = volume_score*0.9 + responsiveness_score*0.1 per submission.
+    A moving average is taken over the latest scores divided by
+    moving_average_denominator (default 20). At weight time, last average overall
+    scores for metagraph miners are summed and each divided by the sum
+    (overall_weights = v / sum_of_scores) to produce sum-to-one weights.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    Normalize last-average overall scores to sum-to-one across miners present in
+    the metagraph, then submit via subtensor.set_weights.
+  on_chain_call: set_weights
+  tempo_or_interval: "blocks_since_last_update > tempo (chain tempo)"
+  smoothing:
+    kind: sma
+    alpha: null
+    window: 20
+    notes: >-
+      overall_score_moving_average = (sum(previous_overall_scores) +
+      overall_score) / moving_average_denominator, with moving_average_denominator
+      default 20 (previous fetched as denominator-1 latest scores).
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Pass/fail validation of the submitted subgraph against on-chain events;
+      failures (empty/null payload, single node, target not in graph,
+      disconnected graph, duplicate node/edge, blocks outside
+      [LOWER_BLOCK_LIMIT, current_block], or edges not matching on-chain events)
+      yield an ErrorPayload and a score of 0.0.
+  - kind: deduplication
+    enforcement: rejection
+    description: >-
+      Duplicate nodes (by id) and duplicate edges (by source/destination/
+      category/type/rao_amount/block_number key) raise PayloadValidationError,
+      failing the submission.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score]
+  status_values: []
+  reset_policy: ""
+  notes: >-
+    Per-(hotkey, uid) overall scores are persisted in a repository; a moving
+    average over the latest scores (denominator default 20) is maintained and
+    used at weight-setting time.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "docs/incentive.md"
+    - "README.md"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "src/patrol/validation/config.py"
+      line_ref: "5"
+      quote: 'NET_UID = int(os.getenv(''NET_UID'', "81"))'
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "src/patrol/validation/miner_scoring.py"
+      line_ref: "1-12"
+      quote: "from patrol.constants import Constants"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "32-37"
+      quote: >-
+        The flow of the subnet begins with validators selecting target wallets to
+        submit to miners. ... Miners construct a *subgraph* of relational data for
+        the target, and follow the data trace to expand their subgraph to N
+        degrees of separation from the original target.
+      confidence: high
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "src/patrol/validation/miner_scoring.py"
+      line_ref: "15-18"
+      quote: "self.importance = {'volume': 0.9, 'responsiveness': 0.1,}"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "src/patrol/validation/miner_scoring.py"
+      line_ref: "25-28"
+      quote: "score = 1 / (1 + math.exp(-Constants.STEEPNESS * (total_items - Constants.INFLECTION_POINT)))"
+      confidence: high
+    - claim_field: "/scoring_signals/1/weight"
+      source_path: "src/patrol/validation/miner_scoring.py"
+      line_ref: "15-18"
+      quote: "self.importance = {'volume': 0.9, 'responsiveness': 0.1,}"
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "src/patrol/validation/miner_scoring.py"
+      line_ref: "30-31"
+      quote: "return Constants.RESPONSE_TIME_HALF_SCORE / (response_time + Constants.RESPONSE_TIME_HALF_SCORE)"
+      confidence: high
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "src/patrol/validation/miner_scoring.py"
+      line_ref: "21-23"
+      quote: "def calculate_novelty_score(self, payload: Dict[str, Any]) -> float: # Placeholder for future implementation return 0.0"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "src/patrol/constants.py"
+      line_ref: "3-5"
+      quote: "RESPONSE_TIME_HALF_SCORE: int = 2 INFLECTION_POINT = 1000 STEEPNESS = 0.005"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "src/patrol/validation/miner_scoring.py"
+      line_ref: "70-73"
+      quote: 'overall_score = sum([ volume_score * self.importance["volume"], responsiveness_score * self.importance["responsiveness"] ])'
+      confidence: high
+    - claim_field: "/aggregation/normalization"
+      source_path: "src/patrol/validation/weight_setter.py"
+      line_ref: "30-31"
+      quote: "sum_of_scores = sum(scores_to_convert.values()) overall_weights = {k: v / sum_of_scores for k, v in scores_to_convert.items()}"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/window"
+      source_path: "src/patrol/validation/miner_scoring.py"
+      line_ref: "41-44"
+      quote: "moving_average_denominator: int = 20 ... previous_overall_scores = await self.miner_score_repository.find_latest_overall_scores((hotkey, uid), moving_average_denominator - 1)"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "src/patrol/validation/miner_scoring.py"
+      line_ref: "84"
+      quote: "overall_score_moving_average=(sum(previous_overall_scores) + overall_score) / moving_average_denominator"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "src/patrol/validation/weight_setter.py"
+      line_ref: "41"
+      quote: "await self.subtensor.set_weights(wallet=self.wallet, netuid=self.net_uid, uids=uid_values, weights=weight_values)"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "src/patrol/validation/weight_setter.py"
+      line_ref: "49-52"
+      quote: "blocks_since_last_update = await self.subtensor.blocks_since_last_update(self.net_uid, my_uid) tempo = await self.subtensor.tempo(self.net_uid) return blocks_since_last_update > tempo"
+      confidence: high
+    - claim_field: "/mechanism_status"
+      source_path: "src/patrol/validation/config.py"
+      line_ref: "16"
+      quote: 'ENABLE_WEIGHT_SETTING = os.getenv(''ENABLE_WEIGHT_SETTING'', "1") == "1"'
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "src/patrol/validation/graph_validation/bittensor_validation_mechanism.py"
+      line_ref: "39-45"
+      quote: "except SingleNodeResponse as e: ... return ErrorPayload(message=f\"Error: {str(e)}\") except Exception as e: ... return ErrorPayload(message=f\"Error: {str(e)}\")"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "src/patrol/validation/miner_scoring.py"
+      line_ref: "46-64"
+      quote: "if isinstance(payload, ErrorPayload): ... overall_score=0.0, volume_score=0.0, ... validation_passed=False"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "src/patrol/validation/graph_validation/bittensor_validation_mechanism.py"
+      line_ref: "63-85"
+      quote: 'if node_id in seen_nodes: raise PayloadValidationError(f"Duplicate node detected: {node_id}") ... if key in seen_edges: raise PayloadValidationError(f"Duplicate edge detected: {key}")'
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "src/patrol/validation/graph_validation/bittensor_validation_mechanism.py"
+      line_ref: "240-248"
+      quote: 'if edge_key not in event_keys: ... missing_edges.append(edge_key) ... raise PayloadValidationError(f"{len(missing_edges)} edges not found in on-chain events.")'
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "src/patrol/validation/config.py"
+      line_ref: "17"
+      quote: 'ARCHIVE_SUBTENSOR = os.getenv(''ARCHIVE_SUBTENSOR'', "wss://archive.chain.opentensor.ai:443")'
+      confidence: high
+    - claim_field: "/documentation/primary_docs"
+      source_path: "docs/incentive.md"
+      line_ref: "5-8"
+      quote: "Scoring contributions: - Volume - 90% - Responsiveness - 10%"
+      confidence: high
+  unresolved:
+    - "LOWER_BLOCK_LIMIT (3014341) and MAX_RESPONSE_TIME (12) are validation/timeout constants, not reward-curve constants; not mapped to a dedicated schema field."
+    - "Novelty weight is unknown (feature unimplemented); left null."

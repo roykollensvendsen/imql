@@ -1,0 +1,248 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Validator computes per-hotkey ratings from Kaspa pool metrics and sets them as
+  on-chain weights every set_weights_interval (default 60 min). No emission burn
+  in the weight-setting path. The README describes an off-chain Alpha buyback-and-burn
+  funded by pool fees (manual, announced on X), which is an economic mechanism on the
+  Alpha token, not an emission/weight burn.
+
+subnet:
+  name: "HashTensor (Subnet 16)"
+  owner_repo: "HashTensor__HashTensor_Subnet"
+  netuid: 16
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners contribute hashrate to HashTensor's Kaspa (PoW) mining pool via the Kaspa
+    Stratum Bridge. The pool exports per-worker Prometheus metrics (valid shares, share
+    difficulty, uptime). Miners register a Bittensor hotkey -> Kaspa worker mapping with a
+    signature. Validators score each hotkey on "Proof of Effective Work" (valid_shares x
+    difficulty) penalized by uptime, and set on-chain weights accordingly.
+  submission_format: [compute_service]
+
+scoring_signals:
+  - name: effective_work
+    metric_kind: throughput
+    direction: higher_is_better
+    weight: 1.0
+    normalization: min_max
+    notes: >-
+      Per worker: valid_shares * min(difficulty, max_difficulty) * difficulty_penalty *
+      share_penalty, summed over a hotkey's workers (compute_effective_work). Normalized by
+      dividing by the max effective_work across all hotkeys (work[hotkey]/max_work).
+      difficulty_penalty = exp(-(difficulty-max_difficulty)/max_difficulty) when difficulty
+      exceeds max_difficulty (default 16384.0). share_penalty = exp(-excess/allowed_shares)
+      when valid_shares exceed allowed (shares_per_minute=20 over the window).
+  - name: average_uptime
+    metric_kind: uptime
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Average fractional uptime across a hotkey's workers (uptime_seconds/window_seconds,
+      clamped to [0,1]). Applied multiplicatively as (avg_uptime ** uptime_alpha) with
+      uptime_alpha default 2.0, gating the normalized effective_work score. Final score
+      clamped to [0.0, 1.0].
+
+ground_truth_sources:
+  - kind: hardware_probe
+    description: >-
+      Prometheus endpoint of the HashTensor Kaspa pool (default
+      http://pool.hashtensor.com:9090) exporting Kaspa Stratum Bridge counters:
+      ks_valid_share_counter, ks_invalid_share_counter, ks_valid_share_diff_counter,
+      ks_miner_uptime_seconds, ks_miner_work_seconds_total, keyed by (wallet, worker).
+    source_identifier: "http://pool.hashtensor.com:9090"
+    trust_model: trusted
+    notes: >-
+      Centralized pool-owned Prometheus; metrics filtered to the pool owner wallet
+      (kaspa_pool_owner_wallet). Validators trust the pool's reported share/uptime data.
+
+aggregation:
+  method: weighted_average
+  composition: multiplicative
+  normalization: min_max
+  normalization_other: ""
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: >-
+      No emission/weight burn in code. README describes an off-chain Alpha buyback-and-burn
+      (target 90% of each buyback) funded by KAS pool fees, executed manually via Bittensor's
+      native burn extrinsic. Not represented in weight setting.
+  notes: >-
+    Final rating = clamp(normalized_effective_work * avg_uptime^alpha, 0, 1). Normalization
+    is max-scaling (divide by max work across hotkeys), not sum-to-one; the chain (Yuma)
+    normalizes the submitted weights.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    set_weights_task runs on a schedule; skips if now - last_set < set_weights_interval
+    (default 60 min). Computes ratings via Validator.compute_ratings, then calls set_weights,
+    which maps hotkey ratings to node weights (0 for unrated nodes) and calls
+    weights.set_node_weights via fiber.
+  on_chain_call: set_weights
+  tempo_or_interval: "3600 seconds (set_weights_interval default 60 min)"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA on the final reward. The scoring window is a rolling 60-minute Prometheus
+      window (config.window default timedelta(minutes=60)); each cycle recomputes from scratch.
+
+anti_gaming:
+  - kind: commit_reveal
+    enforcement: rejection
+    description: >-
+      Hotkey<->worker registration requires a signature; verify_signature(hotkey, worker,
+      signature) uses Keypair.verify and rejects invalid signatures (config.verify_signature
+      default True). Registration also checked against registration_time_tolerance (default 1 min).
+  - kind: rate_limit
+    enforcement: penalty
+    description: >-
+      Share-rate penalty: if valid_shares exceed allowed_shares (window_minutes *
+      shares_per_minute, shares_per_minute=20), an exponential penalty
+      exp(-excess/allowed_shares) is applied to that worker's effective work.
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      Difficulty cap: difficulty clamped to max_difficulty (default 16384.0) and an
+      exponential penalty exp(-(difficulty-max_difficulty)/max_difficulty) applied when a
+      worker reports difficulty above the cap.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: >-
+    Single PoW network (Kaspa) at present; README states support for additional PoW coins
+    is planned but not implemented in code.
+
+per_miner_state:
+  tracked: false
+  state_kinds: []
+  status_values: []
+  reset_policy: ""
+  notes: >-
+    Ratings recomputed each cycle from a rolling metrics window; no persistent per-miner
+    score/reputation ledger in the rating path. A hotkey<->worker mapping DB is maintained,
+    but it is identity mapping, not scoring state.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/validating.md"
+    - "docs/mining.md"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "src/constants.py"
+      line_ref: "5"
+      quote: "FINNEY_NETUID = 16"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "src/rating.py"
+      line_ref: "1-9"
+      quote: "# rating.py\n# Computes normalized ratings for Bittensor hotkeys based on miner metrics\nimport math"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "49-54"
+      quote: "Collects real-time data from Kaspa miners using Prometheus / Maps Bittensor hotkeys to Kaspa workers / Validators rate miners based on their contribution / Rewards are distributed based on ratings and uptime"
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "19"
+      quote: "Miners contribute hashrate to supported PoW networks (starting with Kaspa)."
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "src/rating.py"
+      line_ref: "33-49"
+      quote: "work += m.valid_shares * min(m.difficulty, self.max_difficulty) * self.penalty_exponential(m.difficulty) * share_penalty"
+    - claim_field: "/scoring_signals/0/normalization"
+      source_path: "src/rating.py"
+      line_ref: "91-96"
+      quote: "max_work = max(work.values(), default=1.0) ... norm_score = 0.0 if max_work == 0 else work[hotkey] / max_work"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "src/rating.py"
+      line_ref: "97-100"
+      quote: "avg_uptime = self.compute_avg_uptime(ms)  # in [0.0, 1.0]\n            penalized = norm_score * (avg_uptime**self.uptime_alpha)"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "src/rating.py"
+      line_ref: "17-25"
+      quote: "uptime_alpha: float = 2.0"
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "src/config.py"
+      line_ref: "12"
+      quote: "prometheus_endpoint: str = \"http://pool.hashtensor.com:9090\""
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "src/metrics.py"
+      line_ref: "93-124"
+      quote: "query = f\"sum(increase(ks_valid_share_counter[{resolution}])) by (wallet, worker)\""
+    - claim_field: "/ground_truth_sources/0/notes"
+      source_path: "src/metrics.py"
+      line_ref: "152-157"
+      quote: "if (self.pool_owner_wallet and miner_key.wallet != self.pool_owner_wallet): continue"
+    - claim_field: "/aggregation/composition"
+      source_path: "src/rating.py"
+      line_ref: "98"
+      quote: "penalized = norm_score * (avg_uptime**self.uptime_alpha)"
+    - claim_field: "/aggregation/notes"
+      source_path: "src/rating.py"
+      line_ref: "99-100"
+      quote: "scores[hotkey] = round(max(0.0, min(1.0, penalized)), self.ndigits)"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "README.md"
+      line_ref: "22"
+      quote: "Each buyback burns 90% of Alpha, cutting supply and strengthening its deflationary design."
+    - claim_field: "/weight_setting/method"
+      source_path: "src/tasks.py"
+      line_ref: "39-56"
+      quote: "interval = config.set_weights_interval.total_seconds() ... if now - last_set < interval: ... return ... ratings = await validator.compute_ratings() ... set_weights(...)"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "src/config.py"
+      line_ref: "26"
+      quote: "set_weights_interval: timedelta = timedelta(minutes=60)"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "src/set_weights.py"
+      line_ref: "54-64"
+      quote: "return weights.set_node_weights(substrate=substrate, keypair=keypair, node_ids=node_ids, node_weights=node_weights, netuid=netuid, ...)"
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "src/config.py"
+      line_ref: "17"
+      quote: "window: timedelta = timedelta(minutes=60)"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "src/utils.py"
+      line_ref: "47-54"
+      quote: "def verify_signature(hotkey: str, worker: str, signature: str) -> bool: ... return keypair.verify(worker, bytes.fromhex(signature))"
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "src/rating.py"
+      line_ref: "39-47"
+      quote: "allowed_shares = window_minutes * self.shares_per_minute ... excess = m.valid_shares - allowed_shares\n                share_penalty = math.exp(-excess / allowed_shares)"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "src/rating.py"
+      line_ref: "70-77"
+      quote: "if difficulty > self.max_difficulty: return math.exp(-(difficulty - self.max_difficulty) / self.max_difficulty)"
+    - claim_field: "/sub_competitions/notes"
+      source_path: "README.md"
+      line_ref: "44-45"
+      quote: "The first supported coin is Kaspa (KAS). Support for additional PoW coins is planned as the subnet evolves"
+    - claim_field: "/documentation/primary_docs"
+      source_path: "README.md"
+      line_ref: "68-89"
+      quote: "## Scoring Formula\nValidators compute a score for each hotkey in four steps, producing a value between 0.0 and 1.0:"
+  unresolved:
+    - "Exact on-chain tempo/epoch length: validator rate-limits its own set_weights to 60 min but the chain tempo for netuid 16 is not in the repo."
+    - "registration_time_tolerance enforcement path read indirectly; main.py registration handler not fully quoted."

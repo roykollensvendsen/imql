@@ -1,0 +1,255 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: mixed
+mechanism_status_notes: >-
+  On-chain weight-setting does NOT score miners locally. The validator fetches a
+  "top-with-burn" payload from the central bitsec.ai platform and assigns ALL emission
+  to a single selected top-agent hotkey plus a burn hotkey, split by burn_fraction
+  (default burn percentage 100 => full burn when no agents are returned). The actual
+  competitive scoring (ScaBench security-finding F1 scorer in validator/scorer.py) runs
+  off-chain on the platform; the in-repo template reward.py is unused dummy boilerplate.
+
+subnet:
+  name: "Bitsec Subnet v2 (Security Agent)"
+  owner_repo: "Bitsec-AI__sandbox"
+  netuid: null
+  implementation_lang: python
+
+task:
+  summary: >-
+    A miner submits a security-audit agent (an agent.py program) that, given a smart-contract
+    project's source files, produces a list of vulnerability findings (title, description,
+    severity, type). The central platform executes each submitted agent over benchmark
+    projects and scores its findings against an expected vulnerability set; the best-performing
+    agent is selected as the "top agent" and receives the non-burned emission fraction.
+  submission_format: [source_code]
+
+scoring_signals:
+  - name: finding_match_f1
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      validator/scorer.py (ScaBenchScorerV2) computes detection_rate (recall),
+      precision, and f1_score from true/false positives/negatives of matched findings.
+      Matching of an expected vulnerability to a tool finding is decided by an LLM judge
+      (MiniMax-M2.5-TEE via the Chutes inference proxy), with a default confidence_threshold
+      of 0.75 (or strict no-confidence mode). This scoring runs off-chain on the platform;
+      it does not appear in the on-chain weight-setting path.
+  - name: detection_rate
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      detection_rate = true_positives / total_expected (recall), one of the
+      ScoringResult fields produced by score_project.
+  - name: precision
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      precision = true_positives / (true_positives + false_positives), a ScoringResult field.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      A benchmark JSON file mapping project_id -> expected vulnerabilities (title, description,
+      severity, type). Tool/agent findings are matched one-by-one against these expected entries.
+    source_identifier: "ScaBench benchmark JSON (validator/scorer.py --benchmark)"
+    trust_model: trusted
+    notes: "Loaded from a benchmark file; expected_findings = entry['vulnerabilities']."
+  - kind: llm_judgment
+    description: >-
+      The expected<->found match decision itself is delegated to an LLM judge over the
+      Chutes inference proxy; it returns found/decision + confidence used to count true positives.
+    source_identifier: "MiniMaxAI/MiniMax-M2.5-TEE via {api_url}/inference"
+    trust_model: oracle
+    notes: "system='You are a precise vulnerability matcher. Be strict.'"
+
+aggregation:
+  method: winner_take_all
+  composition: gated
+  normalization: l1
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "burn hotkey from platform top-with-burn payload"
+    fraction: null
+    dynamic: true
+    notes: >-
+      burn_fraction = clamp(burn.percentage/100, 0, 1), default percentage 100.
+      The burn hotkey's UID receives burn_fraction; the first matching agent hotkey
+      receives agent_fraction = 1 - burn_fraction. When no agents are present or
+      percentage is 100, the result is a full burn.
+  notes: >-
+    split_top_agent_scores zeroes a metagraph-sized vector then adds burn_fraction to the
+    burn UID and agent_fraction to a single selected agent UID. set_weights then L1-normalizes
+    self.scores (raw_weights = scores / ||scores||_1). Only one agent hotkey is ever credited
+    (loop breaks on first match), so it is effectively winner-take-all among miners.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Forward loop calls update_top_miner_scores() (fetches platform top-with-burn payload and
+    overwrites self.scores via split_top_agent_scores). On sync(), should_set_weights() fires
+    once block - last_update > epoch_length, then set_weights() L1-normalizes scores and emits.
+  on_chain_call: set_weights
+  tempo_or_interval: "100 blocks (neuron.epoch_length default; ~12s blocks)"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      The base BaseValidatorNeuron.update_scores implements an EMA with
+      neuron.moving_average_alpha default 0.1, but the live path (update_top_miner_scores)
+      assigns self.scores = new_scores directly and bypasses that EMA.
+
+anti_gaming:
+  - kind: code_inspection
+    enforcement: rejection
+    description: >-
+      README describes the platform /upload/agent endpoint validating that the uploaded
+      agent.py is Python and uses only stdlib (a simple regex check) before storing it.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: >-
+    Single competition: agents are ranked by their off-chain score and one top agent is
+    selected. No tiered/ladder structure is present in code.
+
+per_miner_state:
+  tracked: false
+  state_kinds: []
+  status_values: []
+  reset_policy: ""
+  notes: >-
+    resync_metagraph zeroes scores for replaced hotkeys, but no persistent per-miner ledger
+    or status enum is maintained; live scores are overwritten each forward from the platform payload.
+
+documentation:
+  status: sparse
+  source_version: null
+  primary_docs: ["README.md", "docs/bitsec.ai (external)"]
+  completeness: low
+
+provenance:
+  extracted_by: "im-extract"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/name"
+      source_path: "README.md"
+      line_ref: "3"
+      quote: "# **Bitsec Subnet v2**"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "neurons/validator.py"
+      line_ref: "25-32"
+      quote: "import bittensor as bt ... from validator.manager import SandboxManager"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "26-34"
+      quote: "execute-agent Run the miner agent script locally on a single project. ... Agent file is in miner/agent.py"
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "50"
+      quote: "Endpoint: /upload/agent (POST) – Accepts a single agent.py file upload."
+    - claim_field: "/scoring_signals/0/name"
+      source_path: "validator/scorer.py"
+      line_ref: "722-725"
+      quote: "f1_score = ((2 * precision * detection_rate / (precision + detection_rate)) ..."
+    - claim_field: "/scoring_signals/0/metric_kind"
+      source_path: "validator/scorer.py"
+      line_ref: "266-272"
+      quote: "Check if an expected vulnerability exists in the tool findings. Returns: (found_match, matched_finding, justification, confidence, decision)"
+    - claim_field: "/scoring_signals/1/name"
+      source_path: "validator/scorer.py"
+      line_ref: "719"
+      quote: "detection_rate = (true_positives / len(expected_findings)) if expected_findings else 0.0"
+    - claim_field: "/scoring_signals/2/name"
+      source_path: "validator/scorer.py"
+      line_ref: "720-722"
+      quote: "precision = ((true_positives / (true_positives + false_positives)) if (true_positives + false_positives) > 0 else 0.0)"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "validator/scorer.py"
+      line_ref: "75-79"
+      quote: "self.confidence_threshold = self.config.get(\"confidence_threshold\", 0.75) ... self.model_id = self.config.get(\"model\", CHUTES_MODELS)"
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "validator/scorer.py"
+      line_ref: "811-813"
+      quote: "with open(args.benchmark, \"r\") as f: benchmark = json.load(f)"
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "validator/scorer.py"
+      line_ref: "868-872"
+      quote: "if entry.get(\"project_id\") == project_id or entry.get(\"id\") == project_id: expected_findings = entry.get(\"vulnerabilities\", [])"
+    - claim_field: "/ground_truth_sources/1/source_identifier"
+      source_path: "validator/scorer.py"
+      line_ref: "62-65"
+      quote: "MODELS = [ \"MiniMaxAI/MiniMax-M2.5-TEE\", ] CHUTES_MODELS = f\"{','.join(MODELS)}:throughput\""
+    - claim_field: "/ground_truth_sources/1/notes"
+      source_path: "validator/scorer.py"
+      line_ref: "377"
+      quote: "system = \"You are a precise vulnerability matcher. Be strict.\""
+    - claim_field: "/aggregation/method"
+      source_path: "validator/top_agents.py"
+      line_ref: "32-44"
+      quote: "for agent in agent_entries: ... new_scores[agent_uid] += agent_fraction; selected_agent_hotkey = agent_hotkey; break"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "validator/top_agents.py"
+      line_ref: "16-31"
+      quote: "burn_percentage = burn_entry.get(\"percentage\", 100) ... burn_fraction = min(max(float(burn_percentage) / 100.0, 0.0), 1.0) ... new_scores[burn_uid] += burn_fraction"
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "validator/platform_client.py"
+      line_ref: "158-161"
+      quote: "def get_top_agents(self): endpoint = \"agents/top-with-burn/\""
+    - claim_field: "/aggregation/normalization"
+      source_path: "template/base/validator.py"
+      line_ref: "241-248"
+      quote: "norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True) ... raw_weights = self.scores / norm"
+    - claim_field: "/weight_setting/method"
+      source_path: "template/validator/forward.py"
+      line_ref: "44-45"
+      quote: "await loop.run_in_executor(None, self.update_top_miner_scores)"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "template/base/validator.py"
+      line_ref: "277-285"
+      quote: "result, msg = self.subtensor.set_weights(wallet=self.wallet, netuid=self.config.netuid, uids=uint_uids, weights=uint_weights, ...)"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "template/utils/config.py"
+      line_ref: "84-88"
+      quote: "\"--neuron.epoch_length\", ... help=\"The default epoch length (how often we set weights, measured in 12 second blocks).\", default=100"
+    - claim_field: "/weight_setting/cadence"
+      source_path: "template/base/neuron.py"
+      line_ref: "164-169"
+      quote: "return ((self.block - self.metagraph.last_update[self.uid]) > self.config.neuron.epoch_length and self.neuron_type != \"MinerNeuron\")"
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "template/base/validator.py"
+      line_ref: "366-369"
+      quote: "alpha: float = self.config.neuron.moving_average_alpha; self.scores = (alpha * scattered_rewards + (1 - alpha) * self.scores)"
+    - claim_field: "/mechanism_status"
+      source_path: "neurons/validator.py"
+      line_ref: "75-89"
+      quote: "new_scores, selected_agent_hotkey, burn_hotkey, burn_fraction = split_top_agent_scores(...) ... self.scores = new_scores"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "README.md"
+      line_ref: "50"
+      quote: "Validate it's Python, uses only stdlib (simple regex check). Store in local folder with metadata"
+    - claim_field: "/per_miner_state/notes"
+      source_path: "template/base/validator.py"
+      line_ref: "308-311"
+      quote: "for uid, hotkey in enumerate(self.hotkeys): if hotkey != self.metagraph.hotkeys[uid]: self.scores[uid] = 0"
+    - claim_field: "/documentation/status"
+      source_path: "README.md"
+      line_ref: "24"
+      quote: "Refer to the [Bitsec docs](https://docs.bitsec.ai) for the latest documentation."
+  unresolved:
+    - "subnet.netuid — not pinned in repo (config default netuid=1 is the template placeholder, not the production Bitsec netuid)."
+    - "Exact burn.percentage value in production — only the default 100 and the clamp formula are in code; the live value comes from the platform payload."
+    - "How the platform ranks/orders agent_entries before returning them (the off-chain selection of which agent is 'top') is not in this repo."
+    - "Whether the off-chain ScaBench F1 score is the sole basis for top-agent selection vs. other platform-side criteria."

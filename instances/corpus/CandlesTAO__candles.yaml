@@ -1,0 +1,293 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+# The documented scoring pipeline (color + price accuracy, decay-weighted EMA) is fully
+# implemented, BUT every set_weights call passes raw_weights through _apply_hardcoded_weights,
+# which forces 80% of all weight onto a single hardcoded UID (147), distributing only the
+# remaining 20% by the scored weights. So the genuine merit signal governs only ~20% of emission.
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  _apply_hardcoded_weights() unconditionally assigns 80% of the weight vector to hardcoded
+  UID 147 and spreads the remaining 20% proportionally among others on every set_weights call.
+  The merit-based scoring therefore governs only ~20% of emission. UID 147 is not a known
+  burn UID label in code, so this is captured as a fixed-fraction emission redirect (partial_burn).
+
+subnet:
+  name: "Candles Subnet"
+  owner_repo: "CandlesTAO__candles"
+  netuid: 31
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners predict cryptocurrency candle outcomes for the TAO-USD pair over hourly, daily, and
+    weekly intervals: each prediction supplies a candle color (red/green = down/up), a closing
+    price, and a confidence. Validators score the prediction once the interval closes against
+    real market data fetched from CoinDesk. Rewards combine color accuracy (weighted 60%) and
+    price proximity (weighted 40%), modulated by the miner's stated confidence.
+  submission_format: [signals]
+
+scoring_signals:
+  - name: color_accuracy
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.6
+    normalization: none
+    notes: >-
+      _calculate_color_score returns 1.0 if predicted candle color equals actual color, else 0.0.
+      Combined into base_score with a 0.6 weight.
+  - name: price_proximity
+    metric_kind: regression_error
+    direction: higher_is_better
+    weight: 0.4
+    normalization: none
+    notes: >-
+      _calculate_price_score computes percentage_error = abs(pred-actual)/actual, then converts
+      to a 0..1 score via exp(-percentage_error * 10). Combined into base_score with a 0.4 weight.
+      Higher final score is better (lower error -> higher score).
+  - name: confidence_weight
+    metric_kind: composite
+    direction: target_band
+    weight: null
+    normalization: none
+    notes: >-
+      Confidence (default 0.5 if absent) modulates the base score: if base_score>0.5 the score is
+      boosted by (confidence-0.5)*0.2, otherwise it is penalized by (confidence-0.5)*0.2. Acts as a
+      multiplicative/gated adjustment, not an additive signal, hence weight null.
+
+ground_truth_sources:
+  - kind: market_data
+    description: >-
+      Actual OHLC candle data for the closed interval, fetched per interval from the CoinDesk
+      price API via PriceClient, used as the actual color and actual close price for scoring.
+    source_identifier: "CoinDesk OHLC API (provider=coindesk); symbol TAO-USD"
+    trust_model: oracle
+    notes: >-
+      Requires COINDESK_API_KEY env var; validator raises if unset. actual_ohlc.color and
+      actual_ohlc.close are the references for color and price scoring.
+
+aggregation:
+  method: exponential_decay_ema
+  composition: hybrid
+  normalization: none
+  temperature: null
+  decay_rate: 0.032
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "147"
+    fraction: 0.8
+    dynamic: false
+    notes: >-
+      _apply_hardcoded_weights forces target_weight_ratio=0.8 of the weight to target_uid=147;
+      the remaining 0.2 is distributed proportionally to the merit-based raw weights among the
+      other UIDs. Not labeled a burn address in code, but functions as a fixed emission redirect.
+  notes: >-
+    Per-prediction final_score = clip(base_score +/- (confidence-0.5)*0.2). Per miner, daily scores
+    are averaged (total_score/prediction_count). Then _calculate_historical_decay_score aggregates
+    up to 31 daily scores: today gets decay 1.0, older days get decay exp(-0.032*days_ago) (=0 past
+    31 days), summed and divided by the number of effective days. The composition is hybrid:
+    weighted-sum of color/price + gated confidence + temporal decay aggregation.
+
+weight_setting:
+  cadence: continuous
+  method: >-
+    Background asyncio task _incentive_scoring_and_set_weights_async runs every 60s; when the
+    current UTC minute is divisible by INCENTIVE_SCORING_INTERVAL (default 30) it scores closed
+    intervals, runs update_scores (EMA), then calls set_weights_async. A second background loop
+    _periodic_weight_setting also checks should_set_weights every 60s. Raw weights are L1-normalized,
+    IP-deduplicated, then 80% hardcoded to UID 147 before process_weights_for_netuid.
+  on_chain_call: set_weights
+  tempo_or_interval: "INCENTIVE_SCORING_INTERVAL minutes (default 30)"
+  smoothing:
+    kind: ema
+    alpha: 0.1
+    window: null
+    notes: >-
+      update_scores applies self.scores = alpha*scattered_rewards + (1-alpha)*self.scores, where
+      alpha = config.neuron.moving_average_alpha (argparse default 0.1). This is the final-reward EMA,
+      distinct from the within-aggregation 31-day decay (aggregation.decay_rate).
+
+anti_gaming:
+  - kind: deduplication
+    enforcement: penalty
+    description: >-
+      enforce_unique_miner_ip=True: _filter_uids_by_unique_ip keeps only the lowest UID per IP when
+      querying, and _apply_ip_deduplication_to_weights zeroes weights of duplicate-IP miners (keeping
+      the highest-weighted UID per IP). IP 0.0.0.0 is exempted.
+  - kind: deduplication
+    enforcement: rejection
+    description: >-
+      Within an interval, PredictionBatchScorer tracks (prediction_id, miner_uid) keys and skips
+      duplicate predictions from the same miner for the same prediction_id.
+  - kind: other
+    kind_other: interval_id_whitelist
+    enforcement: rejection
+    description: >-
+      parse_responses ignores any miner prediction whose interval_id was not in the validator's
+      original request set (allowed_ids), preventing injection of unrequested intervals.
+
+sub_competitions:
+  structure: multi_asset
+  stages: []
+  count: 3
+  notes: >-
+    Three concurrent prediction horizons are requested and scored independently: hourly, daily,
+    and weekly intervals (TimeInterval enum). Not separate reward ladders but parallel interval
+    types whose scores are pooled per miner. Treated as multi_asset/multi-horizon; closest enum.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [performance_ledger, cumulative_score, registration_age]
+  status_values: []
+  reset_policy: >-
+    On hotkey change for a UID, detect_new_hotkeys clears self.scores[uid]=0 and calls
+    sqlite_storage.clear_miner_history for the old hotkey.
+  notes: >-
+    SQLite storage retains up to 31 days of historical daily scores per miner (get_historical_daily_scores,
+    days=31) used for decay aggregation. _get_days_since_registration converts blocks-since-last-update to
+    days (BLOCKS_PER_DAY=7200), capped 1..31, used as a fallback denominator when SQLite history is absent.
+
+documentation:
+  status: code_authoritative
+  source_version: null
+  primary_docs: ["README.md", "validator.md"]
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "215-217"
+      quote: "| Network  | netuid |\n| mainnet  | 31     |\n| testnet  | 357    |"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "7"
+      quote: "Miners compete to predict cryptocurrency price movements (candle colors and values), while validators score predictions against real market data."
+      confidence: high
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "candles/core/scoring/prediction_scorer.py"
+      line_ref: "126-127"
+      quote: "# Weight color prediction more heavily (60%) than price proximity (40%)\n        base_score = (color_score * 0.6) + (price_score * 0.4)"
+      confidence: high
+    - claim_field: "/scoring_signals/0/metric_kind"
+      source_path: "candles/core/scoring/prediction_scorer.py"
+      line_ref: "86"
+      quote: "return 1.0 if predicted_color == actual_color else 0.0"
+      confidence: high
+    - claim_field: "/scoring_signals/1/normalization"
+      source_path: "candles/core/scoring/prediction_scorer.py"
+      line_ref: "107-110"
+      quote: "percentage_error = abs(predicted_price - actual_price) / actual_price\n        # Convert to score using exponential decay\n        score = math.exp(-percentage_error * 10)  # 10 is a scaling factor"
+      confidence: high
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "candles/core/scoring/prediction_scorer.py"
+      line_ref: "132-137"
+      quote: "if base_score > 0.5:\n            weighted_score = base_score + (confidence - 0.5) * 0.2\n        else:\n            weighted_score = base_score - (confidence - 0.5) * 0.2"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "candles/validator/validator.py"
+      line_ref: "61-68"
+      quote: "api_key = os.getenv(\"COINDESK_API_KEY\")\n        ...\n        self.price_client = PriceClient(api_key=api_key, provider=\"coindesk\")"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/kind"
+      source_path: "candles/core/scoring/batch_scorer.py"
+      line_ref: "49-53"
+      quote: "actual_ohlc = (\n                    await self.prediction_scorer.price_client.get_price_by_interval(\n                        self.prediction_scorer.symbol, interval_id\n                    )\n                )"
+      confidence: high
+    - claim_field: "/aggregation/decay_rate"
+      source_path: "candles/validator/validator.py"
+      line_ref: "1078-1079"
+      quote: "lambda_val = 0.032  # Decay rate parameter\n        decay_factor = math.exp(-lambda_val * days_ago)"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "candles/validator/validator.py"
+      line_ref: "1019-1022"
+      quote: "effective_days = len(all_daily_scores)\n            # Calculate final decay-adjusted score\n            decay_adjusted_score = total_weighted_sum / effective_days"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "candles/validator/base.py"
+      line_ref: "431-445"
+      quote: "target_uid = 147\n        target_weight_ratio = 0.8  # 80%\n        ...\n        new_weights[target_uid] = target_weight_ratio"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "candles/validator/base.py"
+      line_ref: "447-448"
+      quote: "# Distribute remaining 20% among all other UIDs proportionally to their original weights\n        remaining_weight = 1.0 - target_weight_ratio  # 20%"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "candles/validator/base.py"
+      line_ref: "652-654"
+      quote: "# Apply hardcoded weight distribution: 80% to UID 147\n        raw_weights = self._apply_hardcoded_weights(raw_weights)"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "candles/validator/base.py"
+      line_ref: "692-700"
+      quote: "result, msg = self.subtensor.set_weights(\n            wallet=self.wallet,\n            netuid=self.config.netuid,\n            uids=uint_uids,\n            weights=uint_weights,"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "candles/validator/validator.py"
+      line_ref: "64-66"
+      quote: "self.incentive_scoring_interval = int(\n            os.getenv(\"INCENTIVE_SCORING_INTERVAL\", 30)\n        )"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "candles/validator/validator.py"
+      line_ref: "321"
+      quote: "if minutes % self.incentive_scoring_interval == 0:"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "candles/core/utils.py"
+      line_ref: "235-240"
+      quote: "\"--neuron.moving_average_alpha\",\n        type=float,\n        ...\n        default=0.1,"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "candles/validator/base.py"
+      line_ref: "920-921"
+      quote: "alpha: float = self.config.neuron.moving_average_alpha\n        self.scores: np.ndarray = alpha * scattered_rewards + (1 - alpha) * self.scores"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "candles/validator/base.py"
+      line_ref: "538-542"
+      quote: "deduplicated_weights[uid] = 0.0\n                bittensor.logging.debug(\n                    f\"Zeroing weight for UID {uid} (IP: {ip}) to prevent IP abuse. Keeping UID {ip_to_uid[ip]} instead.\""
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "candles/core/scoring/batch_scorer.py"
+      line_ref: "70-74"
+      quote: "if prediction_key in processed_prediction_keys:\n                    bittensor.logging.warning(\n                        f\"Skipping duplicate prediction from miner {miner_uid} for prediction_id: {prediction_id}\""
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "candles/validator/validator.py"
+      line_ref: "1200-1204"
+      quote: "if interval_id not in allowed_ids:\n                bittensor.logging.warning(\n                    f\"Ignoring prediction for unexpected interval_id: {interval_id}\"\n                )\n                continue"
+      confidence: high
+    - claim_field: "/sub_competitions/count"
+      source_path: "candles/validator/validator.py"
+      line_ref: "171-175"
+      quote: "cls._get_closed_hourly_intervals(now, current_timestamp),\n            cls._get_closed_daily_intervals(now, current_timestamp),\n            cls._get_closed_weekly_intervals(now, current_timestamp),"
+      confidence: high
+    - claim_field: "/per_miner_state/notes"
+      source_path: "candles/validator/validator.py"
+      line_ref: "985-988"
+      quote: "historical_scores = self.sqlite_storage.get_historical_daily_scores(\n                miner_uid, days=31\n            )"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "candles/validator/base.py"
+      line_ref: "221"
+      quote: "self.scores[uid] = 0.0"
+      confidence: high
+    - claim_field: "/mechanism_status"
+      source_path: "candles/validator/base.py"
+      line_ref: "421-423"
+      quote: "Apply hardcoded weight distribution: 80% to UID 147, 20% distributed among others."
+      confidence: high
+  unresolved:
+    - "UID 147 identity: code does not document whether UID 147 is a burn/owner/treasury UID; the 80% redirect is captured as fixed-fraction partial_burn but its real-world purpose is undocumented."
+    - "Whether the second redirect emission_control_scores(target_uid) (0.4 to target) is ever invoked: it is defined in base.py but no call site was found in the read files; not modeled."
+    - "Exact CoinDesk endpoint / CoinDeskResponseOHLC.color derivation thresholds (how actual candle color is determined) were not read in the prices client."
+  extractor_notes: >-
+    Implementation is code-authoritative and the scoring pipeline is fully implemented. The dominant
+    operative fact is the unconditional 80%-to-UID-147 weight override applied on every set_weights
+    call, which makes the live mechanism partial_burn regardless of the documented merit scoring.

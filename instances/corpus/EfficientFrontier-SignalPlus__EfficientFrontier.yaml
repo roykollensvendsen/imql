@@ -1,0 +1,288 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+# The documented mechanism is a sophisticated risk-adjusted trading-strategy ranking
+# (Calmar-like: weighted daily returns / decayed max drawdown). But the live
+# validator_forward path computes those rewards only for logging, then discards them
+# and assigns 100% weight to owner_uid 161 — an explicit full burn of miner emissions.
+mechanism_status: full_burn
+mechanism_status_notes: >-
+  core/validator_forward.py computes per-miner rewards via get_rewards() and logs them,
+  but the final action is validator.update_scores(np.array([1.0]), [161]) under a comment
+  "Burn 100% of the miner's emissions." set_weights() L1-normalizes scores, so a single
+  uid 161 with score 1.0 receives all weight. The documented scoring model (core/ranking_model.py)
+  is therefore dormant on-chain despite still being executed.
+
+subnet:
+  name: "EfficientFrontier-SignalPlus"
+  owner_repo: "EfficientFrontier-SignalPlus__EfficientFrontier"
+  netuid: 53
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners link a real CEX trading account through the SignalPlus platform and run live
+    trading strategies. A miner node calls the SignalPlus API to fetch account metadata
+    (balance, equity, PnL, drawdown), signs it, and returns it to the validator. The
+    documented reward favors strategies with consistently positive, time-weighted daily
+    returns and minimal decayed drawdown (a Calmar-like ranking), subject to numerous
+    zero-score violation rules. In the live code path, however, all miner emission is
+    burned to the owner UID.
+  submission_format: [signals, api_response]
+
+scoring_signals:
+  - name: strategy_score
+    metric_kind: risk_adjusted_ratio
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Documented daily Strategy Score = (Weighted Daily % Returns / Maximum Decayed Drawdown)
+      * Risk Factor * 10, capped via day_pnl factor. Computed in ScoreModel.calculate_score
+      (core/ranking_model.py) and returned by reward() as score_model.score. NOT used to set
+      on-chain weights in the live path (burned). Weight is null because it is a single composite
+      magnitude, not an additively weighted signal.
+  - name: exponentially_weighted_daily_returns
+    metric_kind: pnl
+    direction: higher_is_better
+    weight: null
+    normalization: ema
+    notes: >-
+      Numerator of the score: exponentially day-weighted, AUM-multiplied, qualification-gated
+      sum of daily return ratios / sum of day weights (calculate_exponentially_weighed_daily_returns).
+  - name: max_decayed_drawdown
+    metric_kind: regression_error
+    direction: lower_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Denominator of the score: worst peak-to-trough drawdown, decayed, used as
+      abs(measure_day_detail.decayedDrawDown) divisor in calculate_score.
+
+ground_truth_sources:
+  - kind: market_data
+    description: >-
+      Real CEX trading-account performance (balance, equity, PnL, drawdown) sourced from the
+      SignalPlus platform via its public API, which acts as a trusted intermediary verifying
+      exchange trade authenticity.
+    source_identifier: "t.signalplus.com / SignalPlus API (ReportDataHandler)"
+    trust_model: trusted
+    notes: >-
+      Miner fetches from SignalPlus API; data signed (verify256) so the validator can confirm
+      it is untampered. README: "SignalPlus will act as a trusted intermediary".
+
+aggregation:
+  method: proportional
+  composition: gated
+  normalization: l1
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "161"
+    fraction: 1.0
+    dynamic: false
+    notes: >-
+      validator_forward.py: owner_uid = 161; validator.update_scores(np.array([1.0]), [owner_uid])
+      under comment "Burn 100% of the miner's emissions." Only uid 161 receives a non-zero
+      score, so after L1 normalization in set_weights it holds 100% of the weight.
+  notes: >-
+    Documented reward share is proportional: Strategy Reward = Strategy Daily Score /
+    Total Daily Score of Top-50 Strategies * Total Daily Reward Pool. Composition is gated
+    because many violation conditions (min balance, qualification, mmr, observation period)
+    multiply the magnitude to zero. The on-chain aggregation is overridden by the full burn.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    scores normalized to weights via L1 norm (raw_weights = self.scores / norm), then
+    process_weights_for_netuid + convert_weights_and_uids_for_emit before subtensor.set_weights.
+    In the live path scores = a single 1.0 on uid 161, so 100% weight goes to the owner.
+  on_chain_call: set_weights
+  tempo_or_interval: "sleeps 10 minutes after a successful set_weights; loop gated by should_set_weights()"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      update_scores directly overwrites score with the latest reward ("Directly update score
+      with the latest reward"), no EMA/moving-average smoothing.
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Validator verifies an asymmetric signature on miner-reported data (verify256 over
+      rawData + signature) in reward(); failure returns 0. Also checks the reported
+      hotkey/coldkey match the metagraph for the uid (returns 0 on mismatch).
+  - kind: liveness_check
+    enforcement: rejection
+    description: >-
+      is_measure_time_expired: reported measureTime older than 25 hours returns score 0;
+      empty response returns 0.
+  - kind: risk_limit
+    enforcement: penalty
+    description: >-
+      Documented MMR / excessive-risk adjustment: margin usage > 0.8 discounts score *0.5,
+      > 0.5 discounts *0.8 (core/ranking_model.py calculate_score mmrEnd branches). Documented
+      whitelisted-asset, wash-trade, net-withdrawal and min-volume rules zero the day's positive
+      return (RankingRulesEN.md section 3.3).
+  - kind: collateral
+    enforcement: barrier
+    description: >-
+      Registration fee (documented ~1 TAO / $500 USD) and a minimum 10,000 USDT account equity
+      to qualify; 14-day observation period before a strategy is eligible for ranking.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: >-
+    Documented "Top-50" reward eligibility and per-strategy ranking, but no distinct
+    sub-competition tracks in code. Not modeled as sub_competitions.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [performance_ledger, registration_age, status_enum]
+  status_values: []
+  reset_policy: >-
+    Life-to-date records capped at 90 days (documented LTD <= 90 days). Subnet-init period of
+    14 days from subNetCreateTime gives flat scores (0.01 or 1.0).
+  notes: >-
+    ScoreModel carries a per-day performance ledger (list of DayDetailDTO with equity, drawdown,
+    index values), an inception/observation age (inTopRank, is_sub_net_init, inObserveTime), and
+    a quit flag. This state lives in miner-reported data scored centrally, not in validator-persisted
+    state (save_state/load_state are no-ops).
+
+documentation:
+  status: docs_and_code
+  source_version: "RankingRulesEN.md Last Updated: December 12th, 2024"
+  primary_docs:
+    - "README.md"
+    - "docs/Introduction/RankingRulesEN.md"
+    - "core/ranking_model.py"
+    - "core/validator_reward.py"
+    - "core/validator_forward.py"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8"
+  extracted_at: "2026-06-06"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "core/validator_reward.py"
+      line_ref: "46"
+      quote: "cache = MetaGraphCache(netuid=53)"
+      confidence: high
+    - claim_field: "/mechanism_status"
+      source_path: "core/validator_forward.py"
+      line_ref: "119-125"
+      quote: "Burn 100% of the miner's emissions. owner_uid = 161  validator.update_scores(np.array([1.0]), [owner_uid])"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "core/validator_forward.py"
+      line_ref: "124-125"
+      quote: "owner_uid = 161\n    validator.update_scores(np.array([1.0]), [owner_uid])"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "core/validator_forward.py"
+      line_ref: "124"
+      quote: "owner_uid = 161"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "354-358"
+      quote: "The miner will call the official public API to retrieve account-related metadata such as balance, equity, PnL, and drawdown ... This data is then passed to the validator for evaluating the strategy's performance."
+      confidence: high
+    - claim_field: "/scoring_signals/0"
+      source_path: "core/ranking_model.py"
+      line_ref: "162-170"
+      quote: "s = self.exponentially_weighed_daily_returns / abs(self.measure_day_detail.decayedDrawDown) ... finally_score = mmr_score * 10 * min(abs(self.measure_day_detail.day_pnl) / 1000, 1)"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "docs/Introduction/RankingRulesEN.md"
+      line_ref: "37-38"
+      quote: "Strategy Score = Weighted Daily % Returns / Maximum Decayed Drawdown * 10"
+      confidence: high
+    - claim_field: "/scoring_signals/1"
+      source_path: "core/ranking_model.py"
+      line_ref: "122-134"
+      quote: "def calculate_exponentially_weighed_daily_returns(self) -> float: numerator = sum( item.day_weight(...) * item.calc_return_ratio() * item.aum_multiplier() ... return numerator / denominator"
+      confidence: high
+    - claim_field: "/scoring_signals/2"
+      source_path: "core/ranking_model.py"
+      line_ref: "109-120"
+      quote: "def draw_down(self, d: int) -> float: ... result = (min_value - max_value) / max_value ... return min(results)"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0"
+      source_path: "README.md"
+      line_ref: "299"
+      quote: "SignalPlus will act as a trusted intermediary through its integrated connectivity with all the major trading exchanges."
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "docs/Introduction/RankingRulesEN.md"
+      line_ref: "237"
+      quote: "Strategy Reward = Strategy's Daily Score / Total Daily Score of Top-50 Strategies * Total Daily Reward Pool"
+      confidence: high
+    - claim_field: "/aggregation/normalization"
+      source_path: "_sdk/template/base/validator.py"
+      line_ref: "251-258"
+      quote: "norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True) ... raw_weights = self.scores / norm"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "_sdk/template/base/validator.py"
+      line_ref: "288-296"
+      quote: "result, msg = self.subtensor.set_weights( wallet=self.wallet, netuid=self.config.netuid, uids=uint_uids, weights=uint_weights, ...)"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "_sdk/template/base/validator.py"
+      line_ref: "300-302"
+      quote: "sleep_minutes = 10 ... time.sleep(60 * sleep_minutes)"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/kind"
+      source_path: "_sdk/template/base/validator.py"
+      line_ref: "375"
+      quote: "self.scores[uid] = reward  # Directly update score with the latest reward"
+      confidence: high
+    - claim_field: "/anti_gaming/0"
+      source_path: "core/validator_reward.py"
+      line_ref: "71-85"
+      quote: "r = verify256(response['value']['rawData'], response['value']['signature']) if not r: ... return 0 ... if miner_hotkey != score_model.hotkey or miner_coldkey != score_model.coldkey: ... return 0"
+      confidence: high
+    - claim_field: "/anti_gaming/1"
+      source_path: "core/validator_reward.py"
+      line_ref: "54-90"
+      quote: "def is_measure_time_expired(measure_time): return (time.time() - measure_time / 1000) / 3600 > 25"
+      confidence: high
+    - claim_field: "/anti_gaming/2"
+      source_path: "core/ranking_model.py"
+      line_ref: "164-169"
+      quote: "if self.measure_day_detail.mmrEnd > 0.8: mmr_score = s * 0.5 elif self.measure_day_detail.mmrEnd > 0.5: mmr_score = s * 0.8 else: mmr_score = s"
+      confidence: high
+    - claim_field: "/anti_gaming/3"
+      source_path: "docs/Introduction/RankingRulesEN.md"
+      line_ref: "11-16"
+      quote: "The initial equity in the linked account must be at least 10,000 USDT (or equivalent) to qualify ... New strategies must undergo a 14-day observation period before becoming eligible for rewards."
+      confidence: high
+    - claim_field: "/per_miner_state/state_kinds"
+      source_path: "core/ranking_model.py"
+      line_ref: "70-91"
+      quote: "class ScoreModel(BaseModel): subNetCreateTime: int strategyId: str inceptionTime: int measureTime: int list: List[DayDetailDTO] lambdaValue: float inTopRank: bool minBalance: float quit: bool = False"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "docs/Introduction/RankingRulesEN.md"
+      line_ref: "16"
+      quote: "New strategies must undergo a 14-day observation period before becoming eligible for rewards."
+      confidence: medium
+    - claim_field: "/task/submission_format"
+      source_path: "core/validator_forward.py"
+      line_ref: "76-77"
+      quote: "raw_data_str = response.get('value', {}).get('rawData', '{}') raw_data = json.loads(raw_data_str)"
+      confidence: high
+  unresolved:
+    - "Exact lambda decay parameter (Trading Frequency λ): documented values {2,1,0.5} but 'currently disabled' (RankingRulesEN.md 93-102); lambdaValue is a runtime field, no literal constant in code."
+    - "Total Daily Reward Pool size and exact Top-50 cutoff are documented narratively only, not present as code constants."
+    - "Risk Factor exact curve is an image (RankingRulesEN.md 253), not a literal in the read code."
+    - "Whether owner_uid burn is permanent or a temporary measure — code unconditionally burns; docs (README roadmap) suggest centralized calc is temporary, but no toggle found."

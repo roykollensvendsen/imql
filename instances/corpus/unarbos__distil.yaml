@@ -1,0 +1,415 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Live king-of-the-hill emission. Per service.py the default
+  MULTI_KING_PAYOUT_ENABLED=1 splits emission equally across up to 5 most-recent
+  distinct kings; with that env unset it falls back to strict winner-take-all
+  (king=1.0). No documented burn allocation.
+
+subnet:
+  name: "Distil — SN97 (GLM-5 / Kimi-K2.6 distillation)"
+  owner_repo: "unarbos__distil"
+  netuid: 97
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners distill the teacher model (moonshotai/Kimi-K2.6, ~1T total / ~32B
+    active MoE) into a smaller student (<=33B total params, Kimi-family
+    DeepseekV3 architecture, vocab 163,840), upload it to HuggingFace, and
+    commit the repo link on-chain (one permanent commitment per hotkey).
+    Validators score every committed model on a multi-axis composite
+    (composite.final = alpha*worst_K_mean + (1-alpha)*weighted) anchored on
+    procedurally-generated v31 axes plus distillation/judge/discipline tiers,
+    crown the highest composite.final as "king", and set on-chain weights to
+    that king (winner-take-all, optionally split across recent kings).
+  submission_format: [model_weights, commitment_hash]
+
+scoring_signals:
+  - name: composite_final
+    metric_kind: composite
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      Ranking key. composite.final = COMPOSITE_FINAL_BOTTOM_WEIGHT*worst_K_mean
+      + (1-COMPOSITE_FINAL_BOTTOM_WEIGHT)*weighted. Code default alpha=0.85,
+      K (WORST_3_MEAN_K) default 3; README states live values alpha=0.85, K=5
+      (env-overridden).
+  - name: worst_K_mean
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Mean of the bottom-K non-broken per-axis values (K default 3). Anti-Goodhart
+      pressure; dominates final via alpha=0.85. Surfaced as worst_3_mean in API.
+  - name: weighted
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Convex combination Sum(w_i*axis_i)/Sum(w_i) over AXIS_WEIGHTS and tier
+      weights. Each axis normalized to [0,1].
+  - name: kl_divergence
+    metric_kind: loss
+    direction: lower_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      One distillation axis (top-20 sparse KL vs teacher); KL > maxKlThreshold
+      (2.0) disqualifies. KL alone never crowns; reward=exp(-kl) only in the
+      legacy distillation/validator/reward.py path.
+  - name: on_policy_rkl
+    metric_kind: loss
+    direction: lower_is_better
+    weight: null
+    normalization: none
+    notes: "Distillation tier axis, AXIS_WEIGHTS weight 0.30 (highest single axis weight)."
+  - name: judge_probe
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: "Quality tier; AXIS_WEIGHTS judge_probe 0.20 per README."
+
+ground_truth_sources:
+  - kind: reference_model
+    description: >-
+      Teacher model moonshotai/Kimi-K2.6 (multimodal wrapper, DeepSeek-V3 MoE
+      inner). Teacher logprobs/continuations are the distillation target; top-20
+      sparse logprobs returned per position.
+    source_identifier: "moonshotai/Kimi-K2.6"
+    trust_model: trusted
+    notes: "subnet-config.json teacher.model; vocabSize 163840, served via OpenRouter per README."
+  - kind: deterministic_dataset
+    description: >-
+      Block-hash-seeded prompts drawn from ClimbMix-400B and 11 procedurally
+      generated v31 axes (math/code/reasoning/long-context/knowledge/etc.);
+      every item regenerated per round from the on-chain block seed.
+    source_identifier: "karpathy/climbmix-400b-shuffle"
+    trust_model: trusted
+    notes: "evalPromptsH2h 300 / evalPromptsFull 60; no static answer key (anti-Goodhart)."
+  - kind: reference_model
+    description: >-
+      Always-in reference baseline (UID -1, Qwen/Qwen3.5-4B) run every round so
+      the asymmetric reference-broken-axes filter can drop axes the base model
+      cannot pass.
+    source_identifier: "Qwen/Qwen3.5-4B"
+    trust_model: trusted
+    notes: "subnet-config.json validator.referenceModel / referenceUid=-1."
+
+aggregation:
+  method: winner_take_all
+  composition: hybrid
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: "No burn allocation found in source."
+  notes: >-
+    King = highest composite.final from state/composite_scores.json. Emission
+    weight is winner-take-all (king=1.0) unless MULTI_KING_PAYOUT_ENABLED (default
+    1) splits 1.0/N equally across up to RECENT_KINGS_MAX=5 most-recent distinct
+    kings. Dethronement requires challenger.final > incumbent.final*(1+margin),
+    SINGLE_EVAL_DETHRONE_MARGIN default 0.03 (README states 5% live). Composition
+    is hybrid: signals combine additively within the composite but the final
+    on-chain allocation is a winner/recent-kings selection, and a per-axis
+    quality floor (KL>2.0, axis==0) gates to score 0.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Each epoch (~10 min / tempo default 360s) the validator computes the
+    composite for newly-evaluated commitments (single-eval per commitment, king
+    re-evaluated every round), selects the king, builds the emission-weight
+    vector (winner-take-all or recent-kings split), and calls set_weights
+    on-chain immediately.
+  on_chain_call: set_weights
+  tempo_or_interval: "360"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      eval/scoring.py docstring: "No EMA — models are permanently committed,
+      scores converge naturally". README step 8: "Raw scores, no EMA smoothing".
+      The legacy distillation/base/validator.py update_scores path does apply an
+      EMA (moving_average_alpha default 0.1) but is not the operative v31.2 path.
+
+anti_gaming:
+  - kind: deduplication
+    enforcement: rejection
+    description: >-
+      SHA256 hash of safetensors weights; identical weights to an existing model
+      are blacklisted (COPY DQ) for that commitment. Earlier commitment by block
+      number owns the hash.
+  - kind: plagiarism_detection
+    enforcement: rejection
+    description: >-
+      Logit/activation fingerprinting: models with cosine similarity > 0.99999
+      (activationCopyThreshold) on per-position vectors over the first 2 prompts
+      are flagged as functional copies even when hashes differ.
+  - kind: data_augmentation
+    enforcement: barrier
+    description: >-
+      Block-hash-seeded procedural v31 axes (no static answer key), Isomorphic
+      Perturbation Testing (name rotation in v31_consistency_paraphrase), and
+      GSM-NoOp topical-distractor injection (v31_math_robustness) defeat memorised
+      canonical wordings.
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Architecture/integrity precheck (no GPU): <=33B total params (MoE-aware
+      counting), Kimi tokenizer vocab 163840, no quantization (GPTQ/AWQ/FP8
+      rejected), model must stay public and unchanged on HuggingFace
+      (revision-pinned git-SHA integrity); failure = INVALID/REMOVED DQ.
+  - kind: liveness_check
+    enforcement: penalty
+    description: >-
+      Per-UID failure counts (failures.json); is_stale at max_failures default 3.
+      thinking_collapse_probe / reasoning_density axis penalise models that loop
+      without answering.
+
+sub_competitions:
+  structure: tournament
+  stages:
+    - name: precheck
+      role: qualifier
+      advancement_rule: >-
+        No-GPU architecture/integrity/duplicate checks every epoch; models that
+        fail are never sent to GPU.
+    - name: per_uid_composite_eval
+      role: main
+      advancement_rule: >-
+        Single-eval per commitment (FIFO by commit_block, capped at
+        SINGLE_EVAL_MAX_PER_ROUND default 10) plus always-in reference baseline;
+        compute composite.final.
+    - name: king_dethronement
+      role: boss
+      advancement_rule: >-
+        King = max composite.final; challenger dethrones only if
+        challenger.final > incumbent.final*(1+SINGLE_EVAL_DETHRONE_MARGIN)
+        (default 0.03; README 5%). King re-evaluated every round for paired
+        fairness.
+  count: null
+  notes: "King-of-the-hill architecture."
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, status_enum, cooldown]
+  status_values: [COPY, REMOVED, INVALID]
+  reset_policy: >-
+    DQ is per-hotkey (since 2026-05-04): once a hotkey is DQ'd a new on-chain
+    commit on the same hotkey does not clear it; the miner must register a new
+    hotkey. Failure counts reset on a successful eval (reset_failures) or model
+    update. README also describes per-commit DQ keyed hotkey:commit_block.
+  notes: >-
+    State persisted to ./state/ (scores.json, disqualified.json, failures.json,
+    composite_scores.json, score_history.json, recent_kings). recent_kings queue
+    (max 5) drives multi-king emission split.
+
+documentation:
+  status: docs_and_code
+  source_version: "v31.2"
+  primary_docs:
+    - "README.md"
+    - "docs/MINER_FAQ.md"
+    - "docs/AUTONOMOUS_OPERATIONS.md"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: medium
+  extractor_notes: >-
+    Repo contains two scoring code paths: the operative v31.2 king-of-the-hill
+    composite (scripts/validator/composite.py, single_eval.py, service.py,
+    eval/chain.py, eval/runtime.py + subnet-config.json) which the README/docs
+    describe as live, and a simplified/legacy KL-winner-take-all path
+    (distillation/validator/reward.py, distillation/base/validator.py,
+    eval/scoring.py). Fields are extracted from the operative path; the legacy
+    path's EMA (moving_average_alpha=0.1) and reward=exp(-kl) are noted as
+    non-operative. Code-default constants differ from README "live" values
+    (K=3 code vs 5 README; dethrone margin 0.03 code vs 5% README) — both are
+    cited; the code literal is treated as authoritative for numeric fields.
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "frontend/src/lib/subnet-config.json"
+      line_ref: "2"
+      quote: '"netuid": 97,'
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "scripts/validator/composite.py"
+      line_ref: "1"
+      quote: 'composite.py (3052 lines of Python validator scoring logic)'
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "12"
+      quote: >-
+        Miners distill the teacher into a smaller model (<=33B total params,
+        Kimi-family architecture, vocab 163,840), upload to HuggingFace, and
+        commit the repo link on-chain.
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "12"
+      quote: "commit the repo link on-chain. One commitment per hotkey"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "README.md"
+      line_ref: "19-22"
+      quote: "composite.final = α × worst_K_mean + (1 - α) × weighted ... Live tuning: α = 0.85, K = 5."
+      confidence: high
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "scripts/validator/composite.py"
+      line_ref: "896-899"
+      quote: 'COMPOSITE_FINAL_BOTTOM_WEIGHT = float(os.environ.get("COMPOSITE_FINAL_BOTTOM_WEIGHT", "0.85"))  WORST_3_MEAN_K = int(os.environ.get("WORST_3_MEAN_K", "3"))'
+      confidence: high
+    - claim_field: "/scoring_signals/4/notes"
+      source_path: "scripts/validator/composite.py"
+      line_ref: "219"
+      quote: "v30.7 (2026-05-09) — on_policy_rkl bumped 0.25 → 0.30"
+      confidence: high
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "frontend/src/lib/subnet-config.json"
+      line_ref: "33"
+      quote: '"maxKlThreshold": 2.0,'
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "frontend/src/lib/subnet-config.json"
+      line_ref: "4"
+      quote: '"model": "moonshotai/Kimi-K2.6",'
+      confidence: high
+    - claim_field: "/ground_truth_sources/1/source_identifier"
+      source_path: "README.md"
+      line_ref: "273"
+      quote: "Draws 120 prompts from ClimbMix-400B (`karpathy/climbmix-400b-shuffle`, 6542 shards), seeded by on-chain block hash"
+      confidence: high
+    - claim_field: "/ground_truth_sources/2/source_identifier"
+      source_path: "frontend/src/lib/subnet-config.json"
+      line_ref: "40-41"
+      quote: '"referenceModel": "Qwen/Qwen3.5-4B", "referenceUid": -1,'
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "README.md"
+      line_ref: "37"
+      quote: "The king is whoever has the highest `composite.final`. Winner-take-all — best miner gets 100% of emissions on chain."
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "scripts/validator/service.py"
+      line_ref: "342-347"
+      quote: >-
+        2026-05-01 (v30.4): combines the LIVE king with up to 4 most-recent
+        distinct previous kings ... Each distinct UID gets 1.0 / N emission ...
+        Falls back to the legacy winner-takes-all behaviour when ... MULTI_KING_PAYOUT_ENABLED=0
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "eval/chain.py"
+      line_ref: "94-147"
+      quote: "build_recent_kings_weights ... each receive an equal share (1.0 / N for N ≤ max_kings)"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/enabled"
+      source_path: "README.md"
+      line_ref: "277"
+      quote: "Sets weights on-chain: king = 1.0, everyone else = 0.0"
+      confidence: medium
+    - claim_field: "/weight_setting/cadence"
+      source_path: "README.md"
+      line_ref: "275"
+      quote: "Polls for new challengers every epoch (~10 min)"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "README.md"
+      line_ref: "286"
+      quote: "| `--tempo` | `360` | Seconds between epochs |"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "eval/chain.py"
+      line_ref: "233"
+      quote: "result = subtensor.set_weights("
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/kind"
+      source_path: "eval/scoring.py"
+      line_ref: "5"
+      quote: "- No EMA — models are permanently committed, scores converge naturally"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "distillation/base/validator.py"
+      line_ref: "245-248"
+      quote: "alpha: float = self.config.neuron.moving_average_alpha  self.scores = (alpha * scattered_rewards + (1 - alpha) * self.scores)"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "README.md"
+      line_ref: "90"
+      quote: "SHA256 hash duplicate detection: Model weight hashes tracked forever; copies blacklisted for that commitment"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "frontend/src/lib/subnet-config.json"
+      line_ref: "42"
+      quote: '"activationCopyThreshold": 0.99999,'
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "README.md"
+      line_ref: "41"
+      quote: "The 11 v31 procedural axes generate every item from the on-chain block-seed — so no two evaluations share items and there's no static answer key to memorise."
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "README.md"
+      line_ref: "82"
+      quote: "INVALID — Fails architecture checks (too large, wrong tokenizer, quantized, etc.)"
+      confidence: high
+    - claim_field: "/anti_gaming/4/description"
+      source_path: "eval/scoring.py"
+      line_ref: "221-223"
+      quote: "def is_stale(uid: int, failures: dict[str, int], max_failures: int = 3) -> bool: return failures.get(str(uid), 0) >= max_failures"
+      confidence: high
+    - claim_field: "/sub_competitions/structure"
+      source_path: "README.md"
+      line_ref: "45"
+      quote: "The validator uses a king-of-the-hill architecture for efficient, high-confidence scoring"
+      confidence: high
+    - claim_field: "/sub_competitions/stages/2/advancement_rule"
+      source_path: "scripts/validator/single_eval.py"
+      line_ref: "56-57"
+      quote: 'SINGLE_EVAL_DETHRONE_MARGIN = float(policy_env("SINGLE_EVAL_DETHRONE_MARGIN", "0.03"))'
+      confidence: high
+    - claim_field: "/sub_competitions/stages/1/advancement_rule"
+      source_path: "scripts/validator/single_eval.py"
+      line_ref: "73-74"
+      quote: 'SINGLE_EVAL_MAX_PER_ROUND = int(policy_env("SINGLE_EVAL_MAX_PER_ROUND", "10"))'
+      confidence: high
+    - claim_field: "/per_miner_state/state_kinds"
+      source_path: "eval/scoring.py"
+      line_ref: "47-57"
+      quote: "def load_scores(...) -> dict[str, float]: Load KL scores. Keys are string UIDs."
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "eval/scoring.py"
+      line_ref: "82-87"
+      quote: >-
+        once a hotkey is DQ'd, the miner needs a fresh on-chain registration
+        (= new hotkey) to be re-evaluated.
+      confidence: high
+    - claim_field: "/per_miner_state/notes"
+      source_path: "eval/state.py"
+      line_ref: "90"
+      quote: "RECENT_KINGS_MAX = 5"
+      confidence: high
+    - claim_field: "/documentation/source_version"
+      source_path: "README.md"
+      line_ref: "10"
+      quote: "## How It Works (v31.2, post-Kimi cutover)"
+      confidence: high
+  unresolved:
+    - "Exact live value of K (worst-K) and dethrone margin: README states K=5 / 5% as env-overridden live values, but code defaults are K=3 / 0.03. The .env file is not present in the repo, so the actual running values cannot be confirmed from source."
+    - "Whether MULTI_KING_PAYOUT_ENABLED is set to 1 (split) or 0 (strict WTA) in the live deployment — default is 1 (split) but driven by env."
+    - "Full per-axis AXIS_WEIGHTS table not exhaustively transcribed; only headline weights (on_policy_rkl 0.30, judge_probe 0.20, kl threshold 2.0) cited."

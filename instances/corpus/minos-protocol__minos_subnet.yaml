@@ -1,0 +1,375 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  Documented scoring (hap.py + AdvancedScorer + EMA) actively drives weights, but in normal
+  mode the validator burns the large majority of emission. Code defaults burn 87% of weight,
+  give the top eligible miner 10%, and split the remaining 3% as ranked pruning dust
+  (utils/weight_tracking.py DEFAULT_BURN_RATE/DEFAULT_WINNER_WEIGHT). At runtime the actual
+  burn_rate/winner_weight/dust params are fetched from the platform network config
+  (neurons/validator.py get_network_config) and are authoritative, so the literal split can
+  differ from these defaults; weight submission fails closed if that config is missing.
+
+subnet:
+  name: Minos
+  owner_repo: "minos-protocol__minos_subnet"
+  netuid: 107
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners perform hyperparameter search for state-of-the-art variant-calling tools (GATK
+    HaplotypeCaller, Google DeepVariant, BCFtools; FreeBayes deprecated) and submit only the
+    tool config they used. Every ~72-minute round the platform generates a fresh challenge
+    genome (BAM) with hidden synthetic mutations injected at read level via HelixForge.
+    Validators download each miner's submitted config, re-run the variant caller trustlessly on
+    the BAM, and score the resulting VCF against the platform's truth data with hap.py. Miners
+    never upload outputs.
+  submission_format:
+    - source_code
+  submission_format_other: ""
+
+scoring_signals:
+  - name: f1_snp
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      SNP F1 from hap.py (synthetic-only filtered metrics). Feeds Core F1 component
+      (truth-weighted with INDEL) and reported as snp_final. Core F1 has 60% of AdvancedScorer.
+  - name: f1_indel
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      INDEL F1 from hap.py. Combined with f1_snp into truth-weighted weighted_f1 for the Core F1
+      component; also reported as indel_final.
+  - name: completeness
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.15
+    normalization: none
+    notes: >-
+      Mean of recall (gamma=3.0 emphasis) and coverage=1-frac_na (gamma=2.0 emphasis).
+      Completeness component, 15% of AdvancedScorer.
+  - name: fp_rate
+    metric_kind: accuracy
+    direction: lower_is_better
+    weight: 0.15
+    normalization: none
+    notes: >-
+      Penalizes false-positive rate above target and call-count deviating from truth count
+      (size_ratio). Exponential penalties; 15% of AdvancedScorer.
+  - name: quality_ratios
+    metric_kind: accuracy
+    direction: target_band
+    weight: 0.10
+    normalization: none
+    notes: >-
+      Ti/Tv and Het/Hom ratio match penalties (exp(-|delta|/tolerance), tolerances 0.1 / 0.15).
+      Quality component, 10% of AdvancedScorer.
+  - name: overcall_penalty
+    metric_kind: accuracy
+    direction: lower_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Guardrail subtracted from the final 0-100 score. Triggers when region FP-per-target > 10
+      and SNP FP-per-target > 6; penalty = min(45.0, (fp_per_target - 10.0) * 4.0).
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    kind_other: ""
+    description: >-
+      Per-round merged truth VCF (GIAB benchmark + synthetic mutations injected by HelixForge)
+      plus a mutations-only VCF, downloaded from the platform via presigned URLs. hap.py scores
+      the miner VCF against this using the RTG vcfeval engine and a GRCh38 reference + SDF.
+    source_identifier: "GIAB GRCh38 v4.2.1 benchmark + HelixForge synthetic mutations (platform truth VCF)"
+    trust_model: trusted
+    notes: >-
+      Synthetic variants carry a 'SYNTHETIC' INFO flag; scoring is restricted to the synthetic
+      mutation regions (mutations VCF defines evaluation scope). SHA256-verified downloads.
+
+aggregation:
+  method: winner_take_all
+  method_other: ""
+  composition: weighted_sum
+  composition_other: ""
+  normalization: sum_to_one
+  normalization_other: ""
+  temperature: null
+  decay_rate: 0.80
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "burn_uid (from platform network config)"
+    fraction: 0.87
+    dynamic: true
+    notes: >-
+      Code default DEFAULT_BURN_RATE = 0.87. At runtime burn_rate/burn_uid come from the
+      platform network config and are authoritative; the residual unallocated dust is also
+      routed to burn (burn_weight = max(0, 1 - sum(weights)); burn_hotkey += burn_weight), so
+      the effective burn is a computed residual on top of the configured floor.
+  notes: >-
+    Normal mode: rank #1 eligible miner gets winner_weight (default 0.10) of the full vector;
+    ranks #2..dust_top_n (default 10) split the remaining miner budget (1 - burn_rate - winner)
+    by geometric decay base dust_decay (default 0.80). Warmup mode (before any miner is
+    eligible): non-burn miner budget split 50/30/20 among top 3 active miners by EMA. A
+    platform-derived canonical ranking can override the local rank-1 winner within a 0.02 EMA
+    tiebreak tolerance.
+
+weight_setting:
+  cadence: per_round
+  cadence_other: ""
+  method: >-
+    Per scoring round, after all assigned miners (primary + secondary) are scored and peer
+    backfill scores are fetched, ScoreTracker.get_winner_heavy_pruning_dust_weights builds the
+    absolute weight vector (burn + winner + pruning dust), and set_weights submits it on chain.
+    Weight params (burn_rate, winner_weight, dust_top_n, dust_decay) are fetched from the
+    platform network config; missing config fails closed (no weights set).
+  on_chain_call: set_weights
+  tempo_or_interval: "per ~72-minute round; chain-side weights_rate_limit enforced before submit"
+  smoothing:
+    kind: ema
+    kind_other: ""
+    alpha: 0.1
+    window: null
+    notes: >-
+      ema = (1 - alpha) * ema + alpha * combined_final, alpha = GENOMICS_CONFIG['ema_alpha'] =
+      0.1 (env EMA_ALPHA override). combined_final = advanced_score / 100. Absent miners' EMA
+      decays by DEFAULT_DECAY_FACTOR = 0.95 each missed round (env EMA_DECAY_FACTOR override);
+      EMA below 1e-6 is dropped.
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: rejection
+    enforcement_other: ""
+    description: >-
+      Validators re-run each miner's submitted config trustlessly on the same BAM rather than
+      accepting miner-uploaded outputs; scoring uses the RTG vcfeval engine (required, no xcmp
+      fallback) for deterministic, reproducible comparison. hap.py and bcftools Docker images
+      are pinned (hap.py by SHA256 digest) for reproducibility.
+  - kind: liveness_check
+    enforcement: penalty
+    enforcement_other: ""
+    description: >-
+      Eligibility requires scoring in at least 10 of the last 20 rounds
+      (MIN_PARTICIPATION_ROUNDS / PARTICIPATION_WINDOW). Below-threshold miners get 0 weight in
+      normal mode. Absent miners' EMA decays x0.95 each missed round, preventing stale high
+      scores from holding weight.
+  - kind: rate_limit
+    enforcement: barrier
+    enforcement_other: ""
+    description: >-
+      Tool config keys are whitelisted (ALLOWED_CONFIG_KEYS) before execution to prevent
+      param injection; region strings are validated; on-chain set_weights respects the chain
+      weights_rate_limit with exponential-backoff retry.
+  - kind: other
+    kind_other: overcall_guardrail
+    enforcement: penalty
+    enforcement_other: ""
+    description: >-
+      Overcall guardrail subtracts up to 45 points from the final score when a miner floods the
+      challenge region with false positives (region FP-per-target > 10 and SNP FP-per-target >
+      6), discouraging gaming recall by over-calling variants.
+
+sub_competitions:
+  structure: per_task_type
+  structure_other: ""
+  stages: []
+  count: null
+  notes: >-
+    A single scoring pipeline, but miners choose among multiple variant-calling tool templates
+    (gatk, deepvariant, bcftools; freebayes deprecated 2026-05-09). All tools are scored by the
+    same AdvancedScorer; no separate per-tool weighting or multipliers. README also describes a
+    future phase where miners submit custom algorithms once the hyperparameter space is
+    saturated (not yet implemented in this code).
+
+per_miner_state:
+  tracked: true
+  state_kinds:
+    - cumulative_score
+    - performance_ledger
+  status_values: []
+  reset_policy: >-
+    EMA persists across rounds (recoverable from platform state on restart). Absent miners decay
+    x0.95/round and are dropped when EMA < 1e-6. Participation tracked over a sliding 20-round
+    window.
+  notes: >-
+    Per-hotkey EMA score, last raw score, and round participation history (ScoreTracker). Miners
+    keyed by ss58 hotkey for stability across metagraph resyncs.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - README.md
+    - docs/architecture.md
+    - docs/tuning_guide.md
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8"
+  extracted_at: "2026-06-06"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: README.md
+      line_ref: "19"
+      quote: "**Subnet 107** on Bittensor mainnet (finney)."
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: neurons/validator.py
+      line_ref: "17"
+      quote: "import bittensor as bt"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: README.md
+      line_ref: "17"
+      quote: >-
+        Every 72 minutes, the platform generates a fresh challenge genome (BAM file) containing
+        hidden synthetic mutations injected using HelixForge at read level. Miners are rewarded
+        for performing hyperparameter search and providing configurations for state-of-the-art
+        variant calling tools
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: README.md
+      line_ref: "17"
+      quote: "they submit their variant-calling configuration (and pipelines in later stages), which the validator executes trustlessly."
+      confidence: high
+    - claim_field: "/scoring_signals/0/name"
+      source_path: utils/scoring.py
+      line_ref: "325-339"
+      quote: "f1_snp, precision_snp, recall_snp = _f1(tp_s, fp_s, fn_s)"
+      confidence: high
+    - claim_field: "/scoring_signals/2/weight"
+      source_path: utils/scoring.py
+      line_ref: "932-943"
+      quote: "- Completeness (15%): Average recall (γ=3.0) + coverage (γ=2.0)"
+      confidence: high
+    - claim_field: "/scoring_signals/3/weight"
+      source_path: utils/scoring.py
+      line_ref: "983-994"
+      quote: "# Component 3: FP Rate (15% weight) - penalize high FP and wrong call count"
+      confidence: high
+    - claim_field: "/scoring_signals/4/weight"
+      source_path: utils/scoring.py
+      line_ref: "996-1016"
+      quote: "# Component 4: Quality (10% weight) - Ti/Tv and Het/Hom ratio penalties"
+      confidence: high
+    - claim_field: "/scoring_signals/5/notes"
+      source_path: utils/scoring.py
+      line_ref: "386-389"
+      quote: "if fp_per_target > 10.0 and snp_fp_per_target > 6.0: overcall_penalty = min(45.0, (fp_per_target - 10.0) * 4.0)"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: neurons/validator.py
+      line_ref: "705-707"
+      quote: "The platform uploads a merged truth VCF (GIAB + synthetic) to S3."
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/notes"
+      source_path: utils/scoring.py
+      line_ref: "176"
+      quote: "if 'SYNTHETIC' in info:"
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: utils/weight_tracking.py
+      line_ref: "8-11"
+      quote: "Normal (once any miner is eligible): winner-heavy — the single top-performing eligible miner receives the main reward, with pruning dust distributed to the next ranked eligible miners."
+      confidence: high
+    - claim_field: "/aggregation/decay_rate"
+      source_path: utils/weight_tracking.py
+      line_ref: "427"
+      quote: "dust_raw = [dust_decay ** i for i in range(len(dust_recipients))]"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: utils/weight_tracking.py
+      line_ref: "61"
+      quote: "DEFAULT_BURN_RATE = 0.87"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/dynamic"
+      source_path: neurons/validator.py
+      line_ref: "1527-1528"
+      quote: "burn_weight = max(0.0, 1.0 - sum(weights.values())); weights[burn_hotkey] = weights.get(burn_hotkey, 0.0) + burn_weight"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: README.md
+      line_ref: "440"
+      quote: "validators burn 87% of their weight, give the top eligible miner 10%, and split the remaining 3% as ranked pruning dust across eligible ranks #2 through #10 using a 0.8 geometric decay."
+      confidence: high
+    - claim_field: "/mechanism_status"
+      source_path: neurons/validator.py
+      line_ref: "1260-1268"
+      quote: "network_cfg = await self.platform_client.get_network_config() ... required_policy_fields = {\"burn_rate\", \"burn_uid\", \"winner_weight\", \"dust_top_n\", \"dust_decay\"}"
+      confidence: high
+    - claim_field: "/weight_setting/cadence"
+      source_path: neurons/validator.py
+      line_ref: "1049-1050"
+      quote: "# --- Step 5: Set chain weights ---  await self._set_weights_after_round(round_id, submission_times)"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: neurons/validator.py
+      line_ref: "1692"
+      quote: "return self._set_weights_direct(uids_array, weights_array, retry_count)"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: base/genomics_config.py
+      line_ref: "25"
+      quote: '"ema_alpha": 0.1,  # EMA smoothing factor (used by ScoreTracker)'
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: utils/weight_tracking.py
+      line_ref: "164-166"
+      quote: "new_ema = (1 - self.alpha) * old_ema + self.alpha * raw_score"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: utils/weight_tracking.py
+      line_ref: "35"
+      quote: "DEFAULT_DECAY_FACTOR = 0.95"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: utils/scoring.py
+      line_ref: "685"
+      quote: 'logger.info("Using vcfeval engine")'
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: utils/weight_tracking.py
+      line_ref: "29-30"
+      quote: "PARTICIPATION_WINDOW = 20\nMIN_PARTICIPATION_ROUNDS = 10"
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: neurons/validator.py
+      line_ref: "1071-1077"
+      quote: "ALLOWED_CONFIG_KEYS = { \"tool\", \"version\", ... } sanitized_config = {k: v for k, v in tool_config.items() if k in ALLOWED_CONFIG_KEYS}"
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: utils/scoring.py
+      line_ref: "386-387"
+      quote: "if fp_per_target > 10.0 and snp_fp_per_target > 6.0:"
+      confidence: high
+    - claim_field: "/sub_competitions/notes"
+      source_path: README.md
+      line_ref: "17"
+      quote: "Once the hyperparameter space has been saturated, miners will compete to provide their own custom algorithms to identify mutations."
+      confidence: medium
+    - claim_field: "/per_miner_state/notes"
+      source_path: utils/weight_tracking.py
+      line_ref: "97-105"
+      quote: "self.ema_scores: Dict[str, float] = {} ... self.round_history: List[dict] = []"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: utils/weight_tracking.py
+      line_ref: "40"
+      quote: "WARMUP_WEIGHTS = [0.50, 0.30, 0.20]"
+      confidence: high
+  unresolved:
+    - "Live/effective burn_rate, winner_weight, dust_top_n, dust_decay at runtime: fetched from the hosted platform network config (api.theminos.ai), not present as literals in the repo. Only code defaults (0.87 / 0.10 / 10 / 0.80) are citable."
+    - "Core F1 component weight is documented as 60% (README and docstring) but is applied as 0.60 in compute_advanced_score; signal-level weights are listed for the other three components only since Core F1 is a composite of f1_snp/f1_indel."
+  extractor_notes: >-
+    Platform-coordinated subnet: the hosted Minos platform generates challenges, distributes
+    truth data, and supplies the authoritative reward policy (burn/winner/dust). The validator
+    fails closed (no weights) if that policy or canonical ranking is unavailable. Scoring code
+    (hap.py + AdvancedScorer + EMA) is fully present and active in-repo; the precise on-chain
+    burn split is platform-controlled and not a repo literal beyond the 0.87 default.

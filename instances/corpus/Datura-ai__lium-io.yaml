@@ -1,0 +1,285 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: mixed
+mechanism_status_notes: >-
+  TOTAL_BURN_EMISSION = 0.91 is burned every cycle (distributed to fixed burner UIDs),
+  leaving only 1 - 0.91 = 0.09 for actual miners under the default algorithm. The active
+  algorithm is "rental_price", which can dynamically convert part of the 0.91 burn into a
+  rental_share paid to miners with unrented high-end GPUs (capped at 0.91); when no eligible
+  rental supply exists the share is 0 and the cycle is effectively a 0.91 burn. So real
+  scoring (hardware/rental incentive) coexists with a large dynamic burn — hence mixed.
+
+subnet:
+  name: "Lium / Compute Subnet (Datura)"
+  owner_repo: "Datura-ai__lium-io"
+  netuid: 51
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners register GPU executors (machines). Validators send synthetic jobs to verify each
+    executor's GPU model, count, connectivity, collateral and rental state. Miners are rewarded
+    for providing real, verified, available GPU compute — primarily for unrented high-end GPUs
+    whose rental market value drives a dynamic "rental_price" emission share, plus a smaller
+    mining-pool reward for rented executors. Burner UIDs absorb the residual (0.91) burn emission.
+  submission_format: [compute_service]
+  submission_format_other: ""
+
+scoring_signals:
+  - name: gpu_hardware_validation
+    metric_kind: hardware_spec
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Validator runs synthetic jobs to determine gpu_model, gpu_count and a base score/job_score.
+      calculate_scores() gates the actual_score: machine price above base_price*MACHINE_MAX_PRICE_RATE,
+      missing EMA verifyx download speed, or (for non-excluded GPU types) missing collateral / outdated
+      contract version drive actual_score to 0 (gating, not additive).
+  - name: rental_price_incentive
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      For unrented eligible GPUs: incentive = rental_share * gpu_count * effective_rate /
+      total_rental_cost, where effective_rate = hourly_rate * unrented_cap_multiplier *
+      sysbox_multiplier. Multiplicative/proportional within the dynamic rental pool, not an
+      additive weighted signal.
+  - name: mining_score
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Default-pool score for rented / non-eligible GPUs: mining_score = score * gpu_portion *
+      gpu_count / total_gpu_count * sysbox_multiplier * uptime_multiplier; incentive =
+      mining_share * mining_score / total_mining_score where mining_share = 1 - TOTAL_BURN_EMISSION.
+
+ground_truth_sources:
+  - kind: hardware_probe
+    description: >-
+      Synthetic jobs executed on each executor over SSH verify GPU model/count, connectivity
+      (port/DinD probes), verifyx download speed, and rental state. Drives score/job_score.
+    source_identifier: "neurons/validators/src/services/task/score_calculator.py"
+    trust_model: adversarial
+    notes: "Validator-run probes; miners can attempt to fake hardware, hence adversarial."
+  - kind: market_data
+    description: >-
+      TAO price (CoinGecko) and alpha rate feed epoch_subnet_emission used to convert total
+      rental USD/hour cost into the rental emission share.
+    source_identifier: "incentive/price_provider.py (PriceProvider.get_tao_price / get_alpha_rate)"
+    trust_model: oracle
+    notes: "Used in _calculate_rental_share; on failure rental_share falls back to 0."
+
+aggregation:
+  method: proportional
+  composition: hybrid
+  normalization: sum_to_one
+  normalization_other: ""
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "NEW_BURNERS uids [187..196] (ENABLE_NEW_BURN_LOGIC=True); legacy BURNERS [4,206,207,208]"
+    fraction: 0.91
+    dynamic: true
+    notes: >-
+      TOTAL_BURN_EMISSION=0.91 is the burn pool ceiling. Under rental_price, burn_share =
+      TOTAL_BURN_EMISSION - rental_share, so the burn fraction is a dynamic residual that
+      shrinks as eligible rental supply grows (rental_share capped at 0.91). With new burn
+      logic, burn_share is split equally across the NEW_BURNERS uids.
+  notes: >-
+    Two-phase: per-cycle scores (mining incentives + burn scores) are accumulated into
+    miner_scores across cycles, then set_weights normalizes via process_weights_for_netuid.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Per sync cycle the validator accumulates cycle_scores (burn scores for burner UIDs +
+    mining/rental incentives for miners) into self.miner_scores. When should_set_weights()
+    is true (last_update >= tempo), set_weights normalizes accumulated scores with
+    process_weights_for_netuid, applies a positive floor, and calls subtensor.set_weights;
+    miner_scores is then reset to {}.
+  on_chain_call: set_weights
+  tempo_or_interval: "360 blocks (TEMPO); jobs every BLOCKS_FOR_JOB; sync loop every 12s (SYNC_CYCLE)"
+  smoothing:
+    kind: other
+    alpha: null
+    window: null
+    notes: >-
+      No EMA. Temporal smoothing is via additive accumulation of per-cycle scores into
+      miner_scores until a weight-set, then reset. First post-restart set_weights is skipped
+      (completed_cycles_since_start < 1 warm-up).
+
+anti_gaming:
+  - kind: hardware_validation
+    enforcement: barrier
+    description: >-
+      Synthetic jobs verify GPU model/count and connectivity before any score; spot-tier and
+      failed executors get mining_score 0 and are excluded from both pools.
+  - kind: collateral
+    enforcement: penalty
+    description: >-
+      For non-excluded GPU types, missing collateral sets actual_score and job_score to 0
+      (unless ENABLE_NO_COLLATERAL). Outdated contract version multiplies score by
+      SCORE_PORTION_FOR_OLD_CONTRACT = 0. (Note: B200 is in COLLATERAL_EXCLUDED_GPU_TYPES.)
+  - kind: rate_limit
+    enforcement: penalty
+    description: >-
+      price_per_gpu above base_price * MACHINE_MAX_PRICE_RATE (default 2.0) sets actual_score
+      to 0, preventing miners from inflating rental price for higher rental incentive.
+  - kind: liveness_check
+    enforcement: penalty
+    description: >-
+      Missing EMA verifyx download speed (probe failed/never measured) on unrented executors
+      sets actual_score and job_score to 0.
+
+sub_competitions:
+  structure: multi_mechanism
+  stages:
+    - name: "default incentive (rented / non-eligible GPUs)"
+      role: main
+      advancement_rule: "mining_share * mining_score / total_mining_score"
+    - name: "rental_price incentive (unrented eligible high-end GPUs)"
+      role: main
+      advancement_rule: "rental_share * gpu_count * effective_rate / total_rental_cost"
+    - name: "burn pool (fixed burner UIDs)"
+      role: other
+      advancement_rule: "burn_share = TOTAL_BURN_EMISSION - rental_share, split across burner uids"
+  count: 3
+  notes: >-
+    IncentiveFactory selects algorithm from IncentiveConfig.algorithm (default "rental_price";
+    options "default"|"rental_price"). Cap dilution is applied per (base_model, gpu_count_bucket).
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score]
+  status_values: []
+  reset_policy: >-
+    miner_scores accumulate per cycle and are persisted to Redis (MINER_SCORES_KEY); reset to
+    {} immediately after a successful set_weights.
+  notes: >-
+    Executor uptime (minutes) is also tracked in Redis and feeds uptime_multiplier in the
+    default mining score when collateral penalty is not skipped.
+
+documentation:
+  status: code_authoritative
+  source_version: null
+  primary_docs:
+    - "neurons/validators/README.md"
+    - "https://docs.lium.io/bittensor-subnet/validator"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "neurons/validators/README.md"
+      line_ref: "20-21"
+      quote: "btcli s register --netuid 51"
+      confidence: medium
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "neurons/validators/src/services/task/score_calculator.py"
+      line_ref: "1-9"
+      quote: "\"\"\"Score calculation logic for executor validation. ... from core.config import settings"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "neurons/validators/src/services/const.py"
+      line_ref: "285"
+      quote: "TOTAL_BURN_EMISSION = 0.91"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/dynamic"
+      source_path: "neurons/validators/src/incentive/rental_price.py"
+      line_ref: "278"
+      quote: "self.burn_share = TOTAL_BURN_EMISSION - self.rental_share"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "neurons/validators/src/core/config.py"
+      line_ref: "137-139"
+      quote: "BURNERS: list[int] = [4, 206, 207, 208]\n    NEW_BURNERS: list[int] = [187, 188, 189, 190, 191, 192, 193, 194, 195, 196]\n    ENABLE_NEW_BURN_LOGIC: bool = True"
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "neurons/validators/src/incentive/rental_price.py"
+      line_ref: "315-321"
+      quote: "result.effective_rate = result.hourly_rate * result.unrented_cap_multiplier * result.sysbox_multiplier\n        ... result.incentive = (\n            result.rental_share * result.gpu_count * result.effective_rate / result.total_rental_cost"
+      confidence: high
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "neurons/validators/src/incentive/default.py"
+      line_ref: "125-153"
+      quote: "job_result.mining_score = job_result.score * job_result.gpu_portion * job_result.gpu_count / job_result.total_gpu_count ... job_result.mining_score *= job_result.sysbox_multiplier * job_result.uptime_multiplier"
+      confidence: high
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "neurons/validators/src/incentive/default.py"
+      line_ref: "38-77"
+      quote: "self.mining_share = 1 - TOTAL_BURN_EMISSION ... result.incentive = (self.mining_share * result.mining_score / self.total_mining_score)"
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "neurons/validators/src/services/task/score_calculator.py"
+      line_ref: "44-48"
+      quote: "if price_per_gpu and price_per_gpu > base_price * settings.MACHINE_MAX_PRICE_RATE:\n        actual_score = 0.0"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "neurons/validators/src/services/task/score_calculator.py"
+      line_ref: "66-84"
+      quote: "if not collateral_deposited: ... actual_score = 0.0\n            job_score = 0.0 ... actual_score = actual_score * SCORE_PORTION_FOR_OLD_CONTRACT"
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "neurons/validators/src/services/task/score_calculator.py"
+      line_ref: "51-59"
+      quote: "if not rented and ema_verifyx_download is None:\n        actual_score = 0.0\n        job_score = 0.0"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "neurons/validators/src/clients/subtensor_client.py"
+      line_ref: "408-472"
+      quote: "processed_uids, processed_weights = process_weights_for_netuid( ... result, msg = self.subtensor.set_weights(\n            wallet=self.wallet, netuid=self.netuid, uids=uint_uids, weights=uint_weights,"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "neurons/validators/src/core/validator.py"
+      line_ref: "441-443"
+      quote: "for miner_hotkey, score in cycle_scores.items():\n                        self.miner_scores[miner_hotkey] = self.miner_scores.get(miner_hotkey, 0) + score"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "neurons/validators/src/services/const.py"
+      line_ref: "289-290"
+      quote: "TEMPO = 360  # blocks per epoch (from subtensor)\nSECONDS_PER_BLOCK = 12  # seconds per block"
+      confidence: high
+    - claim_field: "/sub_competitions/notes"
+      source_path: "neurons/validators/src/incentive/config.py"
+      line_ref: "234-237"
+      quote: "algorithm: str = Field(\n        default=\"rental_price\",\n        description=\"Incentive algorithm to use\""
+      confidence: high
+    - claim_field: "/ground_truth_sources/1/description"
+      source_path: "neurons/validators/src/incentive/rental_price.py"
+      line_ref: "554-561"
+      quote: "epoch_subnet_emission = TEMPO * tao_price * alpha_rate ... rental_share_raw = rental_cost_per_epoch / FIXED_RATIO / epoch_subnet_emission"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "neurons/validators/src/core/validator.py"
+      line_ref: "185-187"
+      quote: "await self.subtensor_client.set_weights(miner_scores=self.miner_scores)\n                        self.miner_scores = {}"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "neurons/validators/src/incentive/burn_service.py"
+      line_ref: "95-96"
+      quote: "burners = settings.NEW_BURNERS\n        burn_score_per_burner = burn_share / len(burners)"
+      confidence: high
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "neurons/validators/src/services/const.py"
+      line_ref: "291"
+      quote: "FIXED_RATIO = 0.41  # fixed constant for rental emission calculation"
+      confidence: high
+  unresolved:
+    - "Exact live value of IncentiveConfig.algorithm in production (default is rental_price, but 'default' is selectable) — assumed rental_price."
+    - "version_key used in set_weights (self.version_key) value not located in read files."
+    - "MACHINE_PRICES base USD/hour per GPU model (const.py line 178+) read only by name, not enumerated here."
+    - "BLOCKS_FOR_JOB and JOB_TIME_OUT numeric values not located in config read."
+  extractor_notes: >-
+    Active algorithm is rental_price (DefaultIncentive subclass). Burn is large and dynamic:
+    burn_share = 0.91 - rental_share. PORTION_FOR_UPTIME=1, UPTIME_REQUIRED_MINUTES=20160,
+    PORTION_FOR_SYSBOX=0.2 are present in config but SKIP_COLLATERAL_PENALTY defaults True so
+    uptime_multiplier is often 1. SCORE_PORTION_FOR_OLD_CONTRACT=0 and
+    MACHINE_MAX_PRICE_RATE=2.0 verified literally.

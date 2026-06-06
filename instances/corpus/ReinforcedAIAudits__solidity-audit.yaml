@@ -1,0 +1,283 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Validator computes per-miner scores from the audit-report comparison and time
+  score every cycle and pushes them on-chain via set_weights/commit_weights.
+  No burn allocation or emission-burn code path was found in the validator.
+
+subnet:
+  name: "Solidity-Audit"
+  owner_repo: "ReinforcedAIAudits__solidity-audit"
+  netuid: 92
+  implementation_lang: python
+
+task:
+  summary: >-
+    A miner is a thin client that, given a Solidity contract, returns a JSON audit
+    report listing vulnerabilities (vulnerability_class, from_line/to_line,
+    description, test_case, fixed_lines). The validator generates a task (random
+    text, valid contract, vulnerable, or hybrid contract enriched with a known
+    vulnerability), sends it to miners, and rewards reports whose vulnerability
+    class matches the injected/expected one (accounting for synonyms), plus line
+    precision/recall for hybrid tasks, faster response time, and quality of the
+    description/test_case/fixed_lines fields as judged by a model server.
+  submission_format: [api_response]
+
+scoring_signals:
+  - name: report_class_match
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.95
+    normalization: none
+    notes: >-
+      validate_reports_by_reference: 1.0 for a valid_contract with no reported
+      vulns; for vulnerable tasks, score from matching the task vulnerability_class
+      (is_synonyms) decayed by a coefficient over excess (false-positive) vuln
+      classes; weighted by WEIGHT_ONLY_SCORE = 0.95.
+  - name: response_time
+    metric_kind: latency
+    direction: higher_is_better
+    weight: 0.05
+    normalization: min_max
+    notes: >-
+      _calculate_time_score = min_time / max(min_time, result.time) (min_time
+      floored at 60s), gated by report_score/WEIGHT_ONLY_SCORE and scaled by
+      WEIGHT_TIME = 0.05.
+  - name: hybrid_line_f1
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      For HYBRID tasks the base score is blended with an F1 over reported vs
+      vulnerable line ranges, penalized by a sigmoid of the ratio of missed
+      healthy-code lines: score = (score + f1*(1 - missed_lines_penalty)) / 2.
+  - name: extra_fields_quality
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: 0.5
+    normalization: none
+    notes: >-
+      Model server /estimate_response returns description_score, test_case_score,
+      fixed_lines_score; each converted to a sigmoid penalty and combined with
+      WEIGHT_DESCRIPTION=0.5, WEIGHT_TEST_CASE=0.3, WEIGHT_FIXED_LINES=0.2 into a
+      penalty_factor, then mixed with the base score using WEIGHT_EXTRA_FIELDS=0.5.
+
+ground_truth_sources:
+  - kind: reference_model
+    description: >-
+      Validator generates the task contract and injects/knows the expected
+      vulnerability class and line range ahead of time (via the model server,
+      e.g. Claude 3.7 Sonnet for random templates); miner reports are compared
+      against this known vulnerability.
+    source_identifier: "MODEL_SERVER /{task_type} and validate_reports_by_reference"
+    trust_model: trusted
+    notes: >-
+      The known vulnerability class/lines act as the ground truth for matching.
+  - kind: llm_judgment
+    description: >-
+      Model server /estimate_response scores the description, test_case and
+      fixed_lines fields of matching reports.
+    source_identifier: "MODEL_SERVER /estimate_response"
+    trust_model: oracle
+    notes: "Used only for the extra-fields penalty."
+
+aggregation:
+  method: weighted_average
+  composition: hybrid
+  normalization: other
+  normalization_other: >-
+    Per-miner mean of buffered cycle scores, then multiplied by U16_MAX (65535)
+    and rounded to produce the integer weight vector; on-chain normalization is
+    left to Yuma consensus.
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: "No burn allocation found in validator code."
+  notes: >-
+    Final per-cycle reward = base_score (report + time) combined multiplicatively
+    with the LLM extra-fields penalty. ScoresBuffer keeps up to MAX_BUFFER=24
+    recent scores per uid; ScoresBuffer.scores() emits round(mean*65535).
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    Each validate() cycle adds a score per miner to ScoresBuffer, then set_weights
+    averages the buffer per uid and submits. Cycle gated by CYCLE_TIME
+    (VALIDATOR_SEND_REQUESTS_EVERY_X_SECS, default 3600s) or a fixed minute.
+  on_chain_call: commit_reveal
+  tempo_or_interval: "3600 seconds (CYCLE_TIME default)"
+  smoothing:
+    kind: sma
+    alpha: null
+    window: 24
+    notes: >-
+      ScoresBuffer is a fixed-length deque (MAX_BUFFER=24); set_weights uses the
+      simple mean of the buffered scores per uid.
+
+anti_gaming:
+  - kind: commit_reveal
+    enforcement: barrier
+    description: >-
+      If CommitRevealWeightsEnabled is true on chain, weights are submitted via
+      commit_weights rather than set_weights.
+  - kind: deduplication
+    enforcement: rejection
+    description: >-
+      Anti-duplicate-submission via Unique Network NFTs: each miner must mint an
+      NFT with encrypted proof of work; check_tokens verifies the NFT validator,
+      task and miner_info match and that report vuln classes equal those in the
+      NFT, else no score is assigned.
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Responses must pass signature verification (response.verify()) and NFT
+      collection ownership (check_nft_collection_ownership); failures yield a
+      None response scored 0.
+  - kind: code_inspection
+    enforcement: penalty
+    description: >-
+      False positives (excess vulnerability classes beyond the matching one)
+      decay the base score via _calculate_asymptotic_decay_coefficient.
+
+sub_competitions:
+  structure: per_task_type
+  stages: []
+  count: 4
+  notes: >-
+    Tasks are drawn from TaskType {hybrid_task, vulnerable (implied), random_task,
+    valid_contract} with selection weights [65, 20, 5, 10]; scoring branches on
+    task type (valid_contract rewards empty reports; hybrid adds line F1).
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score]
+  status_values: []
+  reset_policy: >-
+    ScoresBuffer per-uid deque (maxlen 24); reset for a uid when its hotkey
+    changes (clear_scores_for_old_hotkeys). State persisted via relayer storage.
+  notes: >-
+    Inactive miners get a 0 appended (except a brand-new miner is not punished
+    more than once).
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs: ["README.md"]
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "config/base.py"
+      line_ref: "15"
+      quote: "NETWORK_UID = 92 if NETWORK_TYPE == \"mainnet\" else 222"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "neurons/validator.py"
+      line_ref: "1-9"
+      quote: "import dataclasses\nimport json\nimport logging\nimport math"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "84-85"
+      quote: >-
+        The validator receives a completely random contract from the LLM, enriches
+        it with vulnerabilities, ensures that the contract remains valid ... and
+        knows the type of the vulnerability in advance.
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "55"
+      quote: "the response must be delivered as a single JSON object. For each vulnerability found, a separate JSON object with a description is formed."
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "neurons/validator.py"
+      line_ref: "34"
+      quote: "WEIGHT_ONLY_SCORE = 0.95"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "452-453"
+      quote: "report_score = (\n                cls.validate_reports_by_reference(result.response, task_map[miner.uid]) * cls.WEIGHT_ONLY_SCORE\n            )"
+    - claim_field: "/scoring_signals/1/weight"
+      source_path: "neurons/validator.py"
+      line_ref: "33"
+      quote: "WEIGHT_TIME = 0.05"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "405-410"
+      quote: "def _calculate_time_score(cls, result: MinerResult, min_time: float) -> float:\n        ... return min_time / max(min_time, result.time)"
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "639-641"
+      quote: "f1_score = 2 * (precision * recall) / (precision + recall) ... score = (score + f1_score * (1 - missed_lines_penalty)) / 2"
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "676-680"
+      quote: "total_penalty = (\n                description_penalty * cls.WEIGHT_DESCRIPTION\n                + test_case_penalty * cls.WEIGHT_TEST_CASE\n                + fixed_lines_penalty * cls.WEIGHT_FIXED_LINES\n            )"
+    - claim_field: "/scoring_signals/3/weight"
+      source_path: "neurons/validator.py"
+      line_ref: "38"
+      quote: "WEIGHT_EXTRA_FIELDS = 0.5"
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "neurons/validator.py"
+      line_ref: "613-620"
+      quote: "matching_vulns = {v for v in vulnerabilities_found if is_synonyms(task.vulnerability_class, v)}"
+    - claim_field: "/ground_truth_sources/1/source_identifier"
+      source_path: "neurons/validator.py"
+      line_ref: "528-531"
+      quote: "chunk = create_session().post(\n                    f\"{Config.MODEL_SERVER}/estimate_response\","
+    - claim_field: "/aggregation/normalization_other"
+      source_path: "neurons/base.py"
+      line_ref: "96-97"
+      quote: "score = sum(scores) / len(scores)\n            prepared_scores.append(round(score * int(self.U16_MAX)))"
+    - claim_field: "/aggregation/composition"
+      source_path: "neurons/validator.py"
+      line_ref: "685-687"
+      quote: "penalty_scores = [scores[i] * max(0.0, penalties.get(x, 1.0)) for i, x in enumerate(miners)]\n        base_score_weight = 1 - cls.WEIGHT_EXTRA_FIELDS\n        return [x * base_score_weight + penalty_scores[i] * cls.WEIGHT_EXTRA_FIELDS ...]"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "neurons/validator.py"
+      line_ref: "386-389"
+      quote: "if commitment_enabled:\n                    result, error = client.commit_weights(self.hotkey, self.config.net_uid, weights_dict)\n                else:\n                    result, error = client.set_weights(self.hotkey, self.config.net_uid, weights_dict)"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "config/base.py"
+      line_ref: "29"
+      quote: "CYCLE_TIME = int(os.getenv(\"VALIDATOR_SEND_REQUESTS_EVERY_X_SECS\", \"3600\"))"
+    - claim_field: "/weight_setting/smoothing/window"
+      source_path: "config/base.py"
+      line_ref: "31"
+      quote: "MAX_BUFFER = int(os.getenv(\"VALIDATOR_BUFFER\", \"24\"))"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "neurons/validator.py"
+      line_ref: "386-387"
+      quote: "if commitment_enabled:\n                    result, error = client.commit_weights(self.hotkey, self.config.net_uid, weights_dict)"
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "README.md"
+      line_ref: "76"
+      quote: "Each miner is required to generate an NFT containing encrypted proof of their work. This proof can only be verified using the private key of the requesting validator."
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "neurons/validator.py"
+      line_ref: "207-217"
+      quote: "if not response.verify(): ... if not self.check_nft_collection_ownership(response.collection_id, response.ss58_address): ... if not self.check_tokens(response, task):"
+    - claim_field: "/sub_competitions/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "101"
+      quote: "task_type = random.choices(list(TaskType), [65, 20, 5, 10])[0]"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "neurons/validator.py"
+      line_ref: "245-251"
+      quote: "for uid, key in old_hotkeys.items():\n            if key != new_hotkeys[uid]:\n                self._buffer_scores.reset(uid)"
+    - claim_field: "/mechanism_status"
+      source_path: "neurons/validator.py"
+      line_ref: "297-316"
+      quote: "rewards = self.validate_responses(...) ... self._buffer_scores.add_score(miner.uid, rewards[num]) ... self.set_weights()"
+  unresolved:
+    - "Exact decay coefficient: _calculate_asymptotic_decay_coefficient uses metamorphic_base = (3*2)/(5*2) = 0.6 raised to the excess-vuln count, but it is obfuscated; not recorded as a named constant."
+    - "Whether a separate 'vulnerable' TaskType exists: TaskType enum in protocol.py shows hybrid_task/random_task/valid_contract; random.choices uses 4 weights [65,20,5,10] implying a 4th type not fully confirmed."
+    - "sub_competitions count: inferred as 4 from the 4 selection weights, exact TaskType membership not fully enumerated here."
+    - "Yuma consensus normalization of the U16 weight vector is on-chain and not in this repo."

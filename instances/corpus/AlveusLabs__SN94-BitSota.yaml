@@ -1,0 +1,286 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  The shipped capacitorless config burns 90% of weight to a burn hotkey and pays
+  10% to the latest accepted SOTA winner (burn_share: 0.9). When no winner exists,
+  100% goes to burn. The code's hardcoded default reward_mode is "capacitor" (EVM
+  contract voting), but the example/committed validator configs select capacitorless
+  sticky_burnsplit. Scoring (CIFAR-10 binary DSL evaluation) is real but only gates
+  who, if anyone, receives the 10% winner share.
+
+subnet:
+  name: "BitSota"
+  owner_repo: "AlveusLabs__SN94-BitSota"
+  netuid: 94
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners evolve machine-learning algorithms (expressed in a DSL) via genetic
+    programming and submit those that beat the current State-of-the-Art (SOTA)
+    threshold on a fixed CIFAR-10 binary classification evaluation pipeline.
+    Validators re-evaluate submitted algorithms deterministically and, when an
+    algorithm beats SOTA, direct the winner share of on-chain weight to its miner;
+    the remainder is burned.
+  submission_format: [source_code]
+
+scoring_signals:
+  - name: cifar10_binary_median_accuracy
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Validator runs the algorithm over a deterministic suite of task_count tasks
+      and takes the median per-task score (np.median(scores)). The algorithm
+      "passes" if score >= sota_threshold. Used as a gate/winner-selection signal,
+      not as an additive weight component, so weight is null.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Deterministic CIFAR-10 binary task suite (also MNIST binary and scalar linear
+      regression registered) sampled with fixed seeds. task_count defaults to 128,
+      task_seed defaults to 1337, default_task_type cifar10_binary, default_input_dim 16.
+    source_identifier: "core/evaluations.py TASK_REGISTRY; validator_hyperparams.json"
+    trust_model: trusted
+    notes: >-
+      Validators do not trust miner-reported scores; they re-run algorithms with
+      deterministic per-task RNG seeds and use their own evaluated scores.
+  - kind: commit_reveal
+    description: >-
+      Relay service (relay.bitsota.com) finalizes SOTA events via validator votes;
+      sticky/windowed weight managers fetch finalized SOTA events (miner_hotkey,
+      start_block, end_block) to identify the winner.
+    source_identifier: "validator/relay_client.py; validator/sota_schedule.py"
+    trust_model: adversarial
+    notes: >-
+      In winner_source 'local' mode the validator uses its own locally-evaluated
+      best miner instead of relay-finalized events.
+
+aggregation:
+  method: winner_take_all
+  composition: gated
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "5Ef5EsPQoMVmJ8rYectQ26BEvscvATEGm365bcQjo1Y6bxGr"
+    fraction: 0.9
+    dynamic: false
+    notes: >-
+      burn_share: 0.9 in capacitorless sticky_burnsplit mode; winner_share defaults
+      to 1 - burn_share = 0.1. burn_hotkey example
+      5Ef5EsPQoMVmJ8rYectQ26BEvscvATEGm365bcQjo1Y6bxGr. If no winner exists, burn
+      receives 1.0. In the windowed (non-sticky) capacitorless manager the winner
+      receives full weight (1.0) during the reward window and burn 1.0 otherwise.
+  notes: >-
+    Sticky burn-split: weights are {burn_hotkey: burn_share, winner_hotkey:
+    winner_share}; weights change only when the accepted SOTA winner changes.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    Validator background loop sets on-chain weights via subtensor.set_weights once
+    per chain rate-limit window. should_set_weights() gates on
+    (current_block - last_update[uid]) > epoch_length. Sticky burn-split assigns
+    burn_share to burn_hotkey and winner_share to the latest SOTA winner.
+  on_chain_call: set_weights
+  tempo_or_interval: "alignment_mod: 360 blocks (config); epoch_length: 100"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA/SMA smoothing of the final weights; weights are set discretely and
+      change only when the winner changes (sticky) or the reward window flips
+      (windowed).
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Validators independently re-evaluate submitted algorithms on a deterministic
+      task suite rather than trusting miner-reported scores (verify_solution_quality
+      returns score >= sota_threshold).
+  - kind: rate_limit
+    enforcement: barrier
+    description: >-
+      SOTA threshold ratchets upward: each new accepted algorithm raises the bar so
+      the next submission must beat it (progressive improvement). Also IP/address
+      request rate limiting in validator config.
+  - kind: code_inspection
+    enforcement: elimination
+    description: >-
+      Blacklisting: if a miner's claimed score differs from the validator's
+      re-evaluated score by more than 10%, validators vote to blacklist; after
+      multiple votes the relay rejects the miner's submissions (per docs/rewards.md).
+
+sub_competitions:
+  structure: per_task_type
+  stages: []
+  count: null
+  notes: >-
+    TASK_REGISTRY supports cifar10_binary (default), mnist_binary, and scalar_linear,
+    selected per submission via task_type; cifar10_binary is the documented/default
+    validator benchmark. Direct vs pool participation modes also exist but only direct
+    mining feeds the on-chain SOTA winner mechanism.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [status_enum, reputation]
+  status_values: [active_winner, burn_default, blacklisted]
+  reset_policy: >-
+    Winner changes (and prior winner stops earning) when a new SOTA event is accepted
+    or a better local candidate is found; min_winner_improvement (default 0.0) gates
+    replacement of the local winner.
+  notes: >-
+    On-chain: validator tracks the current SOTA winner hotkey (sticky) or the active
+    windowed event. Off-chain pool mining tracks a reputation ledger converted to RAO
+    at hourly epoch boundaries (documentation only).
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/rewards.md"
+    - "docs/validation.md"
+    - "validator_config.yaml.example"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract (Opus 4.8)"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "validator_config.yaml.example"
+      line_ref: "9"
+      quote: "netuid: 94"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "validator/bittensor_validation.py"
+      line_ref: "5"
+      quote: "import bittensor as bt"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "14"
+      quote: >-
+        Miners: Evolve ML algorithms using genetic programming and self-improving
+        methods on our fixed CIFAR-10 binary evaluation pipeline
+    - claim_field: "/task/submission_format"
+      source_path: "core/evaluations.py"
+      line_ref: "220-221"
+      quote: >-
+        algorithm_dsl = solution_data.get("algorithm_dsl")
+        if not algorithm_dsl:
+    - claim_field: "/scoring_signals/0/metric_kind"
+      source_path: "core/evaluations.py"
+      line_ref: "366"
+      quote: "score = float(np.median(scores)) if scores else task.get_baseline_fitness()"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "core/evaluations.py"
+      line_ref: "394"
+      quote: "return score >= sota_threshold, score"
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "core/hyperparams.py"
+      line_ref: "141-148"
+      quote: >-
+        "task_count": 128, "task_seed": 1337, "default_task_type": "cifar10_binary",
+        "default_input_dim": 16,
+    - claim_field: "/ground_truth_sources/0/notes"
+      source_path: "docs/rewards.md"
+      line_ref: "95-96"
+      quote: >-
+        Validators don't trust miner-reported scores. They re-run algorithms and use
+        their own evaluated scores for voting. This prevents cheating.
+    - claim_field: "/ground_truth_sources/1/description"
+      source_path: "validator/capacitorless_sticky_weight_manager.py"
+      line_ref: "282-283"
+      quote: >-
+        event_id = int(e["id"])
+        miner_hotkey = str(e["miner_hotkey"])
+    - claim_field: "/aggregation/method"
+      source_path: "validator/capacitorless_sticky_weight_manager.py"
+      line_ref: "308-314"
+      quote: >-
+        if not winner_hotkey or winner_hotkey == self.burn_hotkey:
+        desired_scores = {self.burn_hotkey: 1.0}
+        else: desired_scores = {self.burn_hotkey: float(self.burn_share), str(winner_hotkey): float(self.winner_share)}
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "validator_config.yaml.example"
+      line_ref: "burn_share"
+      quote: "burn_share: 0.9"
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "validator_config.yaml.example"
+      line_ref: "burn_hotkey"
+      quote: 'burn_hotkey: "5Ef5EsPQoMVmJ8rYectQ26BEvscvATEGm365bcQjo1Y6bxGr"'
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "validator/capacitorless_sticky_weight_manager.py"
+      line_ref: "49-51"
+      quote: "winner_share_f = (float(winner_share) if winner_share is not None else 1.0 - burn_share_f)"
+    - claim_field: "/mechanism_status"
+      source_path: "docs/rewards.md"
+      line_ref: "55"
+      quote: "Validator sets on-chain weights: 90% burn_hotkey, 10% winner_hotkey"
+    - claim_field: "/mechanism_status_notes"
+      source_path: "neurons/validator_node.py"
+      line_ref: "72"
+      quote: 'reward_mode = str(config.get("reward_mode", "capacitor")).strip().lower()'
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "validator/bittensor_validation.py"
+      line_ref: "97-104"
+      quote: >-
+        result = self.subtensor.set_weights(wallet=self.wallet,
+        netuid=self.metagraph.netuid, uids=uint_uids, weights=uint_weights,
+    - claim_field: "/weight_setting/cadence"
+      source_path: "validator/bittensor_validation.py"
+      line_ref: "35-38"
+      quote: >-
+        def should_set_weights(self) -> bool:
+        return (self.subtensor.get_current_block() - self.metagraph.last_update[self.uid]) > self.config.epoch_length
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "validator_config.yaml.example"
+      line_ref: "alignment_mod"
+      quote: "alignment_mod: 360"
+    - claim_field: "/per_miner_state/notes"
+      source_path: "validator/capacitorless_sticky_weight_manager.py"
+      line_ref: "16-21"
+      quote: >-
+        Always assigns `burn_share` of weight to `burn_hotkey`. Assigns
+        `winner_share` of weight to the most recently accepted SOTA winner
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "docs/rewards.md"
+      line_ref: "98-99"
+      quote: >-
+        If your claimed score differs from validator's score by more than 10%,
+        validators vote to blacklist you.
+    - claim_field: "/sub_competitions/notes"
+      source_path: "core/evaluations.py"
+      line_ref: "31-35"
+      quote: >-
+        TASK_REGISTRY = { DEFAULT_TASK_TYPE: CIFAR10BinaryTask, "mnist_binary":
+        MNISTBinaryTask, "scalar_linear": ScalarLinearRegressionTask, }
+    - claim_field: "/aggregation/notes"
+      source_path: "validator_config.yaml.example"
+      line_ref: "mode"
+      quote: 'mode: "sticky_burnsplit"'
+  unresolved:
+    - >-
+      Which reward_mode runs in production on netuid 94 is not pinned by the repo:
+      the hardcoded code default is "capacitor" (EVM contract voting) but example
+      and committed configs use capacitorless sticky_burnsplit. The 90/10 split is
+      taken from the shipped example config (burn_share: 0.9), not a hardcoded
+      constant in scoring code.
+    - >-
+      Pool-mining reputation -> RAO conversion (evaluator_weight, evolver_weight,
+      tolerance_ratio, consensus_threshold, repetition_penalty, epoch budget,
+      pool fee, 5% per-miner cap) is described in docs/rewards.md with no concrete
+      numeric constants located in source; it is off-chain and not the on-chain
+      incentive, left unmodeled.
+    - >-
+      SOTA threshold value is fetched at runtime from relay.bitsota.com
+      (/sota_threshold); only default_threshold: 0.0 is in config.

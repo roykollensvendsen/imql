@@ -1,0 +1,277 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Validator computes performance scores (correctness/uptime/latency), smooths them
+  with EMA, and sets chain weights pro-rata to miner scores after each verification
+  cycle. No burn/recycle logic is present in the validator code; only the README
+  mentions a "default buyback-and-burn of ALPHA" as economic policy, not implemented
+  in the weight-setting path.
+
+subnet:
+  name: "FlameWire"
+  owner_repo: "unitone-labs__FlameWire"
+  netuid: 97
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners operate decentralized blockchain RPC/archive nodes (currently full-archive
+    Bittensor nodes) across regions (us/eu/as). Validators probe each node's data
+    correctness (events-storage hash match against a validator-controlled reference
+    archive), uptime (passed health checks / total), and latency. Miners are rewarded
+    for serving correct, available, low-latency archive RPC data, with regional
+    diversity and balancing factors applied.
+  submission_format: [compute_service]
+
+scoring_signals:
+  - name: correctness
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.4
+    normalization: none
+    notes: >-
+      Binary hard gate: 1.0 if node.data_verified (events-storage sha256 matches the
+      reference block hash for all sampled blocks), else 0.0. If correctness is 0 the
+      whole node score is forced to 0. DEFAULT_METRIC_WEIGHTS['correctness']=0.4.
+  - name: uptime
+    metric_kind: uptime
+    direction: higher_is_better
+    weight: 0.3
+    normalization: none
+    notes: >-
+      node.health.success_rate() = passed health checks / total checks, accumulated
+      into validator-local cumulative history across cycles. DEFAULT_METRIC_WEIGHTS['uptime']=0.3.
+  - name: latency
+    metric_kind: latency
+    direction: higher_is_better
+    weight: 0.3
+    normalization: min_max
+    notes: >-
+      Relative latency score in [0,1]: fastest node 1.0, slowest 0.0, linear in-between
+      via (max-latency)/(max-min). DEFAULT_METRIC_WEIGHTS['latency']=0.3. Lower raw
+      latency yields a higher score (direction recorded on the derived score).
+
+ground_truth_sources:
+  - kind: hardware_probe
+    description: >-
+      Validator-controlled archive RPC endpoint (REFERENCE_RPC_URL) supplies reference
+      blocks. For three random blocks (old/middle/new intervals) the validator fetches
+      the system events storage and compares the miner node's sha256 events hash against
+      the reference; also checks system_health (isSyncing) and chain_getHeader (head >=
+      network_head) for liveness.
+    source_identifier: "REFERENCE_RPC_URL / config.validator.reference_rpc_url"
+    trust_model: trusted
+    notes: >-
+      Truth comes from a validator-operated archive node, not chain consensus directly.
+      Gateway (gateway-dev.flamewire.io) brokers node lookups and RPC calls to miners.
+
+aggregation:
+  method: proportional
+  composition: hybrid
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: >-
+      No burn implemented in code. README economic model mentions "default
+      buyback-and-burn of ALPHA unless governance decides otherwise" but this is not
+      present in the scoring/weight-setting path.
+  notes: >-
+    Per-node total = weighted sum of correctness/uptime/latency (gated to 0 if
+    correctness fails). Per miner+region, node scores are sorted descending and
+    combined with diminishing returns (node N contributes score*(1/N)). Regional score
+    = base * regional_multiplier, where multiplier = clamp(target_share/actual_share,
+    0.5, 2.0) with target_share = 1/3 per region. Raw miner score = sum of regional
+    scores * diversity_bonus (1.0/1.1/1.2 for 1/2/3 regions covered). Final weights are
+    pro-rata: raw_scores / sum(raw_scores). The 1/N diminishing-returns base and the
+    diversity-bonus multipliers are not free-text decay constants and are captured in
+    extensions.
+
+weight_setting:
+  cadence: per_round
+  method: >-
+    After each full verification cycle, EMA-smoothed scores are written via
+    update_scores, then set_weights() sets weights = scores / (scores.sum() + 1e-8)
+    over all UIDs. Triggered immediately post-cycle (should_set_weights() returns False;
+    weights set explicitly in verify()), not on a fixed epoch tempo.
+  on_chain_call: set_weights
+  tempo_or_interval: "verification_interval=480 seconds (default)"
+  smoothing:
+    kind: ema
+    alpha: 0.1
+    window: null
+    notes: >-
+      apply_reward_ema: smoothed = (1-alpha)*previous + alpha*reward, applied only for
+      active (verified) miners; non-active UIDs zeroed immediately. DEFAULT_VALIDATOR_EMA_ALPHA=0.1,
+      overridable via VALIDATOR_EMA_ALPHA / --validator.ema_alpha.
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      Data correctness verified by comparing the miner node's sha256 of system-events
+      storage against the validator's reference archive block hash. Any mismatch sets
+      data_verified=False; failed correctness forces node score to 0 (zero-tolerance gate).
+  - kind: liveness_check
+    enforcement: penalty
+    description: >-
+      Health probe per node: system_health must report not syncing and chain_getHeader
+      head must be >= validator network_head. Failures reduce uptime success_rate.
+      Miners with no active/verified nodes this cycle have their EMA score zeroed immediately.
+  - kind: other
+    kind_other: regional_rebalancing
+    enforcement: barrier
+    enforcement_other: rebalancing
+    description: >-
+      Regional multiplier clamp(target_share/actual_share, 0.5, 2.0) discourages
+      crowding a single region; diversity bonus (up to 1.2x) rewards covering multiple
+      regions; per-region diminishing returns (1/N) limit gains from stacking many nodes
+      in one region.
+
+sub_competitions:
+  structure: multi_asset
+  stages: []
+  count: 3
+  notes: >-
+    Scoring is partitioned across three fixed regions (SUPPORTED_REGIONS = us, eu, as),
+    each with its own multiplier and diminishing-returns aggregation before summation.
+    Not a tournament/ladder; regions act as parallel scoring buckets per miner.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [performance_ledger, cumulative_score]
+  status_values: []
+  reset_policy: >-
+    Validator-local node health (CheckStats total/passed per node_id) is persisted to
+    node_health_stats.json and accumulated across cycles. EMA scores persisted to
+    scores.npy. ema_initialized_uids tracked and persisted. Scores zeroed when a hotkey
+    is replaced in the metagraph or when a miner has no active nodes in a cycle.
+  notes: >-
+    Cumulative local uptime history (_merge_local_health) feeds uptime scoring; EMA
+    state carries previous reward forward per active UID.
+
+documentation:
+  status: docs_and_code
+  source_version: "SN97"
+  primary_docs: ["README.md"]
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "flamewire/utils/config.py"
+      line_ref: "154"
+      quote: 'parser.add_argument("--netuid", type=int, help="Subnet netuid", default=97)'
+    - claim_field: "/subnet/name"
+      source_path: "README.md"
+      line_ref: "2"
+      quote: "# SN97 - FlameWire: Decentralized Infrastructure"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "168-170"
+      quote: "Validators on FlameWire: - Probe miners for uptime, correctness, and latency - Aggregate scores into weights - Publish weights on-chain using `set_weights`"
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "102-103"
+      quote: "Supported chain: - Bittensor nodes only (Ethereum and Sui support are planned)."
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "flamewire/utils/scoring.py"
+      line_ref: "12-16"
+      quote: 'DEFAULT_METRIC_WEIGHTS = {"correctness": 0.4, "uptime": 0.3, "latency": 0.3,}'
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "flamewire/utils/scoring.py"
+      line_ref: "114-117"
+      quote: "correctness_score = 1.0 if node.data_verified else 0.0 ... if correctness_score <= 0.0: total_score = 0.0"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "flamewire/utils/scoring.py"
+      line_ref: "115"
+      quote: "uptime_score = node.health.success_rate()"
+    - claim_field: "/scoring_signals/2/normalization"
+      source_path: "flamewire/utils/scoring.py"
+      line_ref: "75-91"
+      quote: "Fastest node receives 1.0, slowest receives 0.0, and values in-between are linearly scaled ... relative = (max_latency - float(node.avg_latency_ms)) / (max_latency - min_latency)"
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "flamewire/utils/helpers.py"
+      line_ref: "143-148"
+      quote: "events_hash = hashlib.sha256(raw_data.encode()).hexdigest() ... if events_hash != ref_block.events_hash:"
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "flamewire/utils/config.py"
+      line_ref: "297-302"
+      quote: 'reference_rpc_url = (os.getenv("REFERENCE_RPC_URL") or os.getenv("VALIDATOR_REFERENCE_RPC_URL") or "")'
+    - claim_field: "/aggregation/notes"
+      source_path: "flamewire/utils/scoring.py"
+      line_ref: "146-152"
+      quote: "multiplier = clamp(target_share / actual_share, 0.5, 2.0) ... contribution = score_1/1 + score_2/2 + score_3/3 + ... Raw miner score = (sum regional scores) * diversity_bonus"
+    - claim_field: "/aggregation/method"
+      source_path: "flamewire/utils/scoring.py"
+      line_ref: "228-244"
+      quote: "Convert miner scores into pro-rata distribution weights ... return raw_scores / score_sum"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "README.md"
+      line_ref: "68"
+      quote: "with default buyback-and-burn of ALPHA unless governance decides otherwise."
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "flamewire/base/validator.py"
+      line_ref: "236-247"
+      quote: "weights = self.scores / (self.scores.sum() + 1e-8) ... result, msg = self.subtensor.set_weights(wallet=self.wallet, netuid=self.config.netuid, uids=uids, weights=weights,"
+    - claim_field: "/weight_setting/method"
+      source_path: "neurons/validator.py"
+      line_ref: "266-269"
+      quote: "if not self.config.neuron.disable_set_weights: self.set_weights() ... Set weights after full verification cycle"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "flamewire/utils/config.py"
+      line_ref: "29"
+      quote: "DEFAULT_VALIDATOR_VERIFICATION_INTERVAL = 480"
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "flamewire/utils/config.py"
+      line_ref: "28"
+      quote: "DEFAULT_VALIDATOR_EMA_ALPHA = 0.1"
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "63-66"
+      quote: "smoothed[idx] = (((1.0 - ema_alpha) * float(previous_scores[idx])) + (ema_alpha * float(rewards[idx])))"
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "flamewire/utils/helpers.py"
+      line_ref: "120-122"
+      quote: "if (not is_syncing) and (node_head is not None) and (node_head >= network_head): health_passed += 1"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "flamewire/utils/scoring.py"
+      line_ref: "22-28"
+      quote: "REGIONAL_MULTIPLIER_MIN = 0.5; REGIONAL_MULTIPLIER_MAX = 2.0; DIVERSITY_BONUS_BY_COVERAGE = {1: 1.0, 2: 1.1, 3: 1.2,}"
+    - claim_field: "/sub_competitions/notes"
+      source_path: "flamewire/utils/scoring.py"
+      line_ref: "11"
+      quote: 'SUPPORTED_REGIONS = ("us", "eu", "as")'
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "neurons/validator.py"
+      line_ref: "151-162"
+      quote: "Merge cycle health checks into persistent validator-local uptime history ... merged = CheckStats(total=previous.total + cycle.total, passed=previous.passed + cycle.passed,)"
+    - claim_field: "/mechanism_status"
+      source_path: "README.md"
+      line_ref: "260-261"
+      quote: "Final chain weights are distributed pro-rata to miner scores and set after each full verification cycle."
+  unresolved:
+    - "Whether the 'buyback-and-burn of ALPHA' economic policy is enforced anywhere (no on-chain burn or emission-recycling code exists in this repo)."
+    - "Live netuid: config default is 97 and README says SN97, but corpus dir is named for owner; no on-chain confirmation available."
+    - "Miner-side code is absent from this repo (node registration is dashboard-based per README), so miner submission specifics are inferred from validator probes only."
+
+extensions:
+  diminishing_returns:
+    rule: "per miner+region, sorted node scores; node N contributes node_score * (1/N)"
+    source: "flamewire/utils/scoring.py:200-202"
+  diversity_bonus_by_coverage:
+    "1": 1.0
+    "2": 1.1
+    "3": 1.2
+  regional_multiplier:
+    formula: "clamp(target_share / actual_share, 0.5, 2.0), target_share = 1/3 per region"
+    source: "flamewire/utils/scoring.py:166-180"

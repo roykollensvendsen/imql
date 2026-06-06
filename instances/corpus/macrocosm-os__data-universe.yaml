@@ -1,0 +1,312 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  A fixed 70% of emission is redirected to the subnet owner UID
+  (constants.EMISSION_CONTROL_PERCENTAGE = 0.70) via utils.apply_burn_to_weights, with the
+  remaining 30% distributed across miners by the documented data-scoring mechanism. The
+  scoring code is live (set_weights runs every ~20 minutes), so this is partial_burn rather
+  than full_burn.
+
+subnet:
+  name: "Data Universe (SN13)"
+  owner_repo: "macrocosm-os__data-universe"
+  netuid: 13
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners scrape and store real-time social-media / web data (X/Twitter, Reddit, YouTube
+    transcripts) into local DataEntityBuckets keyed by source, time bucket and label, and
+    advertise a compressed MinerIndex. Validators periodically sample and verify the data
+    (and S3 uploads / on-demand requests) and reward miners by the volume of scorable bytes,
+    weighted by data desirability, freshness (age), duplication across miners, and a
+    credibility multiplier earned by passing validation.
+  submission_format: [content_link, api_response]
+
+scoring_signals:
+  - name: scorable_bytes
+    metric_kind: volume
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Core raw score: raw_score = data_type_scale_factor * time_scalar * scorable_bytes,
+      summed over a miner's data entity buckets. scorable_bytes already discounts data that is
+      duplicated across many miners. Contributes via the P2P component
+      (score * P2P_REWARD_SCALE * p2p_cred) which is additionally scaled by P2P_REWARD_SCALE =
+      0.05 and capped at the S3+OD service components.
+  - name: data_desirability_scale_factor
+    metric_kind: other
+    metric_kind_other: data_desirability_weight
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Per-(source,label) multiplier from the Dynamic Desirability lookup. Desirable labels
+      score more highly; unspecified labels get the default_scale_factor (0.3). Negative scale
+      factors can penalize undesirable data. Reddit weight 0.6 / X weight 0.4 in the static
+      backup lookup; docs/scoring.md cites Reddit 0.55 / X 0.35 / YouTube 0.10.
+  - name: data_age_time_scalar
+    metric_kind: other
+    metric_kind_other: freshness_decay
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Linear age depreciation: data from now scored 1.0, data at max_age_in_hours scored 0.5,
+      older than max_age scored 0.0. Formula: 1.0 - (age_in_hours / (2 * max_age_in_hours)).
+      max_age = DATA_ENTITY_BUCKET_AGE_LIMIT_DAYS (30) * 24 hours.
+  - name: miner_credibility
+    metric_kind: other
+    metric_kind_other: validation_pass_rate_multiplier
+    direction: higher_is_better
+    weight: null
+    normalization: ema
+    notes: >-
+      Per-miner credibility in [0,1], EMA of the fraction of validated bytes that passed checks
+      (cred_alpha = 0.15). Applied as a multiplier raised to the power _CREDIBILITY_EXP = 2.5:
+      final P2P/S3 components use cred ** 2.5. Starting credibility 0. Separate S3 credibility
+      (s3_cred_alpha 0.30) and on-demand credibility (EMA alpha 0.02) gate the S3 and OD score
+      components.
+
+ground_truth_sources:
+  - kind: real_engagement
+    description: >-
+      Validators verify miner-reported data by re-scraping a sample of each miner's index from
+      the original platforms (X/Twitter, Reddit, YouTube), checking correctness/existence and
+      schema, and tracking pass rate as credibility.
+    source_identifier: "x.com / reddit / youtube scrapers"
+    trust_model: adversarial
+    notes: >-
+      Validators 'remain suspicious of Miners' and periodically sample-verify the MinerIndex
+      against the live source platforms.
+
+aggregation:
+  method: proportional
+  composition: hybrid
+  normalization: l1
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "subnet owner hotkey UID (resolved via get_subnet_owner_hotkey)"
+    fraction: 0.70
+    dynamic: false
+    notes: >-
+      apply_burn_to_weights sets the owner UID weight to burn_percentage (0.70) and rescales
+      all other miners' weights to sum to (1 - 0.70). burn_percentage =
+      constants.EMISSION_CONTROL_PERCENTAGE = 0.70.
+  notes: >-
+    Final score is reward-proportional: miner_reward = (miner_score / total_network_score) *
+    total_reward_pool. get_scores_for_weights combines P2P, S3 and OD components (each gated by
+    its own credibility, with caps: S3 <= 2x OD, P2P <= S3+OD), then raw_weights =
+    normalize(scores, p=1) (L1). 'hybrid' composition because components are additive but each
+    is gated multiplicatively by a credibility and then capped.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    L1-normalized capped scores, then 70% burn applied to owner UID, then
+    process_weights_for_netuid, then subtensor.set_weights. Gated on completing
+    EVALUATION_ON_STARTUP (10) evaluation cycles after startup.
+  on_chain_call: set_weights
+  tempo_or_interval: "every >20 minutes (dt.timedelta(minutes=20)) between weight sets"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA is applied to the final per-miner reward before weight-setting; scores are
+      L1-normalized directly. EMAs exist upstream on credibility (cred_alpha 0.15, s3_cred_alpha
+      0.30, ondemand_alpha 0.3 / ondemand_cred_alpha 0.02), not on the final reward vector.
+
+anti_gaming:
+  - kind: deduplication
+    enforcement: penalty
+    description: >-
+      Duplication Factor: data stored by many miners is worth less; value decreases proportional
+      to the number of miners storing it. Reflected in scorable_bytes (which discounts shared
+      data).
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      Validators periodically re-scrape and verify a sample of each miner's reported data against
+      the live source platforms; failed checks drive credibility (a cred**2.5 multiplier) down,
+      heavily penalizing miners who misrepresent their MinerIndex.
+  - kind: rate_limit
+    enforcement: rejection
+    description: >-
+      MIN_EVALUATION_PERIOD = 60 minutes between re-evaluations of a miner; data entity bucket
+      size limit (128 MB) and per-miner bucket count limits cap reportable index size.
+
+sub_competitions:
+  structure: multi_mechanism
+  stages:
+    - name: "P2P index scoring"
+      role: main
+      advancement_rule: "scorable_bytes * desirability * age, scaled by P2P_REWARD_SCALE=0.05, capped at S3+OD"
+    - name: "S3 upload validation"
+      role: main
+      advancement_rule: "effective_size = total_size_bytes * coverage^2; S3 boost share, capped at 2x OD component"
+    - name: "On-demand (OD) requests"
+      role: main
+      advancement_rule: "EMA of recent on-demand rewards, gated by on-demand credibility"
+  count: 3
+  notes: >-
+    Three parallel reward channels (P2P MinerIndex, S3 upload validation, on-demand request
+    serving), each gated by its own credibility EMA, combined additively with caps in
+    get_scores_for_weights.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [reputation, cumulative_score]
+  status_values: []
+  reset_policy: >-
+    Scores/credibility persisted via save_state/load_state; STATE_VERSION (currently 9) bumps
+    trigger full or partial resets of S3/OD boosts and credibility when exploits are found.
+  notes: >-
+    Per-miner persistent state: scores, miner_credibility, scorable_bytes, s3_boosts,
+    s3_credibility, ondemand_boosts, ondemand_credibility, effective_sizes.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "docs/scoring.md"
+    - "README.md"
+    - "docs/validator.md"
+    - "docs/s3_validation.md"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8"
+  extracted_at: "2026-06-06"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "9"
+      quote: "# **Bittensor Subnet 13: Data Universe**"
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "neurons/validator.py"
+      line_ref: "43-48"
+      quote: "import bittensor as bt"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "120"
+      quote: "data-scraping and sentiment analysis subnet ... scrapes real-time data from X (formerly known as Twitter), Reddit, and YouTube transcripts."
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "docs/scoring.md"
+      line_ref: "24"
+      quote: "raw_score = data_type_scale_factor * time_scalar * scorable_bytes ; final_score = raw_score * (credibility ^ 2.5)"
+      confidence: high
+    - claim_field: "/scoring_signals/0/name"
+      source_path: "rewards/miner_scorer.py"
+      line_ref: "214"
+      quote: "p2p_component = float(self.scorable_bytes[uid]) * MinerScorer.P2P_REWARD_SCALE * p2p_cred"
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "README.md"
+      line_ref: "208"
+      quote: "Unspecified labels get the default_scale_factor of 0.3, meaning they score less than half value"
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "rewards/data_desirability_lookup.py"
+      line_ref: "16-37"
+      quote: "DataSource.REDDIT: DataSourceDesirability(weight=0.6 ... DataSource.X: DataSourceDesirability(weight=0.4"
+      confidence: high
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "rewards/data_value_calculator.py"
+      line_ref: "109-111"
+      quote: "if data_age_in_hours > self.model.max_age_in_hours: return 0.0 ; return 1.0 - (data_age_in_hours / (2 * self.model.max_age_in_hours))"
+      confidence: high
+    - claim_field: "/scoring_signals/3/normalization"
+      source_path: "rewards/miner_scorer.py"
+      line_ref: "652-655"
+      quote: "self.miner_credibility[uid] = (self.cred_alpha * credibility + (1 - self.cred_alpha) * self.miner_credibility[uid])"
+      confidence: high
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "rewards/miner_scorer.py"
+      line_ref: "38-59"
+      quote: "_CREDIBILITY_EXP = 2.5 ... cred_alpha: float = 0.15"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/trust_model"
+      source_path: "README.md"
+      line_ref: "218"
+      quote: "Validators remain suspicious of Miners and so they periodically check a sample of data from each Miner's MinerIndex, to verify the data correctness."
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "docs/scoring.md"
+      line_ref: "33"
+      quote: "miner_reward = (miner_score / total_network_score) * total_reward_pool"
+      confidence: high
+    - claim_field: "/aggregation/normalization"
+      source_path: "neurons/validator.py"
+      line_ref: "629"
+      quote: "raw_weights = torch.nn.functional.normalize(scores, p=1, dim=0)"
+      confidence: high
+    - claim_field: "/aggregation/composition"
+      source_path: "rewards/miner_scorer.py"
+      line_ref: "224-228"
+      quote: "p2p_capped = min(p2p_component, service_component) ... capped_scores[uid] = p2p_capped + s3_component + od_component"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "common/constants.py"
+      line_ref: "55"
+      quote: "EMISSION_CONTROL_PERCENTAGE = 0.70  # 70% of emissions redirected to subnet owner (burn)"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "common/utils.py"
+      line_ref: "399-404"
+      quote: "new_weights[owner_uid] = burn_percentage ... new_weights[other_mask] = raw_weights[other_mask] * (1 - burn_percentage) / other_sum"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "neurons/validator.py"
+      line_ref: "684-691"
+      quote: "success, message = self.subtensor.set_weights(wallet=self.wallet, netuid=self.config.netuid, uids=processed_weight_uids, weights=processed_weights,"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "neurons/validator.py"
+      line_ref: "535-537"
+      quote: "return dt.datetime.utcnow() - self.last_weights_set_time > dt.timedelta(minutes=20)"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "neurons/validator.py"
+      line_ref: "528-532"
+      quote: "if self.evaluation_cycles_since_startup < constants.EVALUATION_ON_STARTUP: ... return False"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "README.md"
+      line_ref: "212-214"
+      quote: "Duplication Factor ... The value of a piece of data is decreases proportional to the number of Miners storing it."
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "common/constants.py"
+      line_ref: "31"
+      quote: "MIN_EVALUATION_PERIOD = dt.timedelta(minutes=60)"
+      confidence: high
+    - claim_field: "/sub_competitions/stages/1/advancement_rule"
+      source_path: "rewards/miner_scorer.py"
+      line_ref: "90-92"
+      quote: "effective_size = total_size_bytes × coverage² (set during S3 validation)"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "rewards/miner_scorer.py"
+      line_ref: "19-29"
+      quote: "STATE_VERSION = 9 ... v9: Reset OD — per-miner endpoint replaces poller"
+      confidence: high
+  unresolved:
+    - "Exact total reward pool / emission accounting beyond the 70% owner burn is chain-side, not in repo."
+    - "docs/scoring.md cites Reddit 0.55 / X 0.35 / YouTube 0.10 data-source weights but the static backup lookup uses Reddit 0.6 / X 0.4 (no YouTube); live weights come from the dynamic desirability API, so the authoritative numeric weights are not fixed in source."
+    - "min_weight_floor: not present (process_weights_for_netuid handles chain min-weight rules)."
+  extractor_notes: >-
+    Three independent scoring channels (P2P / S3 / on-demand), each multiplied by its own
+    credibility and combined additively with caps. A fixed 70% emission burn to the owner UID
+    overlays the live scoring (partial_burn). Many numeric constants (cred_alpha 0.15, exp 2.5,
+    P2P_REWARD_SCALE 0.05, age decay) are literal in source and cited.

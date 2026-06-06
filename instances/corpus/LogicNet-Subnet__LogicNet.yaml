@@ -1,0 +1,276 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Scoring is live: per-response rewards (similarity + correctness - time penalty) feed a
+  rank-based cubic incentive, which is averaged over the last 5 epochs and normalized to set
+  on-chain weights. No burn allocation is present in the code. The on-chain set_weights call is
+  active (gated only by --neuron.disable_set_weights, default False).
+
+subnet:
+  name: "LogicNet"
+  owner_repo: "LogicNet-Subnet__LogicNet"
+  netuid: null
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners receive a mathematical / logical reasoning question and return both a reasoning trace
+    (logic_reasoning) and a final answer (logic_answer). The validator rewards each response by a
+    weighted sum of cosine similarity between the miner's reasoning and a validator-generated
+    ground-truth reasoning, an LLM-judged (or programmatically computed) correctness of the final
+    answer, and a small processing-time penalty. Per-epoch mean rewards are ranked and converted to
+    a cubic rank-based incentive that determines on-chain weights.
+  submission_format: [signals]
+
+scoring_signals:
+  - name: similarity
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 0.3
+    normalization: none
+    notes: >-
+      Cosine similarity (sentence-transformers all-MiniLM-L6-v2) between validator-generated
+      ground-truth text and the miner's logic_reasoning. README documents 0.2, but rewarder.py
+      uses SIMILARITY_WEIGHT = 0.3.
+  - name: correctness
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: 0.7
+    normalization: none
+    notes: >-
+      Final-answer correctness in [0,1]. First attempts programmatic numerical comparison
+      (_compare_numerical_answers); falls back to LLM judgment (CORRECTNESS_TEMPLATE). Cheat words,
+      template responses, and detected trick answers score -1. README documents 0.8, but
+      rewarder.py uses CORRECTNESS_WEIGHT = 0.7.
+  - name: processing_time_penalty
+    metric_kind: latency
+    direction: lower_is_better
+    weight: -0.05
+    normalization: none
+    notes: >-
+      PROCESSING_TIME_WEIGHT = -0.05 multiplied by min(process_time / timeout, 1). README documents
+      -0.1, but rewarder.py uses -0.05.
+
+ground_truth_sources:
+  - kind: llm_judgment
+    description: >-
+      Validator self-generates the reference reasoning/ground-truth text for the similarity signal
+      by calling an LLM (model_selector task_type=create_task) on the raw question. Correctness is
+      judged by an LLM against base_synapse.ground_truth_answer, or computed programmatically for
+      numerical answers.
+    source_identifier: "model_selector / OpenAI-compatible LLM pool; CORRECTNESS_TEMPLATE"
+    trust_model: oracle
+    notes: >-
+      Questions/ground-truth answers are pulled from an external TaskPoolServer (TASK_POOL_URL).
+
+aggregation:
+  method: rank_based
+  composition: weighted_sum
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: "No burn allocation found in the reward or weight-setting code."
+  notes: >-
+    Per-response reward = SIMILARITY_WEIGHT*sim + CORRECTNESS_WEIGHT*correct +
+    PROCESSING_TIME_WEIGHT*min(t/timeout,1), then rescaled reward/2 + 0.5. Per epoch, each UID's mean
+    reward is computed (negatives floored to 0), UIDs ranked descending, and a cubic rank function
+    incentive = -1.038e-7*rank^3 + 6.214e-5*rank^2 - 0.0129*rank - 0.0118 + 1 is applied. Only
+    miners with mean score > 0.3 and rank <= 160 get their true-rank incentive; all others receive
+    incentive_formula(250). These incentives are stored per UID; on-chain weights are the mean of the
+    last 5 stored scores per UID (get_model_specific_weights), clamped to [0,1] and normalized to sum
+    to 1, then scaled by category incentive_weight = 1.0.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    update_scores_on_chain sets validator scores to the per-category normalized mean-of-last-5-scores
+    weights (incentive_weight=1.0). set_weights then L1-normalizes scores, runs
+    process_weights_for_netuid, and calls subtensor.set_weights.
+  on_chain_call: set_weights
+  tempo_or_interval: "50 blocks (neuron.epoch_length, in 12s blocks)"
+  smoothing:
+    kind: sma
+    alpha: null
+    window: 5
+    notes: >-
+      On-chain weight per UID is the simple mean of the last NO_OF_RECENT_SCORES = 5 stored
+      incentive scores (get_model_specific_weights). Note: base/validator.py also defines an EMA
+      update_scores using config.neuron.moving_average_alpha, but the active validator overrides
+      self.scores via update_scores_on_chain, so the live path is the 5-sample SMA, not the EMA.
+
+anti_gaming:
+  - kind: honeypot
+    enforcement: penalty
+    description: >-
+      Cheat-word list fetched from TaskPoolServer (/cheats); any response containing a cheat word
+      returns correctness -1. Responses matching the regex {{ answer }} template also return -1.
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      LLM-based trick detection (DETECT_TRICK_TEMPLATE): if the cleaned response is judged a trick
+      ('yes'), correctness is set to -1.
+  - kind: rate_limit
+    enforcement: barrier
+    description: >-
+      Per-validator request rate limit derived from stake-weighted epoch volume, clamped to
+      [MIN_RATE_LIMIT=2, MAX_RATE_LIMIT=80]. reward_scale = clamp(epoch_volume/512, 0, 1).
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      Only validators with total_stake >= MIN_STAKE (10000) receive query volume; min_stake gates
+      rate-limit allocation.
+
+sub_competitions:
+  structure: single
+  stages: []
+  count: 1
+  notes: >-
+    Single category 'Logic' with incentive_weight 1.0 (init_category). The code is structured to
+    support multiple categories but only one is defined.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, reputation]
+  status_values: []
+  reset_policy: >-
+    Scores and reward_logs are kept as a rolling window of the last NO_OF_RECENT_SCORES = 5 entries.
+    A UID's score is zeroed when its hotkey is replaced (resync_metagraph).
+  notes: >-
+    MinerInfo holds per-UID category, recent scores list, epoch_volume, rate_limit, reward_scale, and
+    reward_logs; refreshed each epoch.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs: ["README.md", "docs/VALIDATOR.md", "docs/MINER.md"]
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "logicnet/validator/rewarder.py"
+      line_ref: "1-8"
+      quote: "import torch\nimport openai\nimport sympy\nimport bittensor as bt"
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "logicnet/validator/rewarder.py"
+      line_ref: "18"
+      quote: "SIMILARITY_WEIGHT = 0.3"
+    - claim_field: "/scoring_signals/1/weight"
+      source_path: "logicnet/validator/rewarder.py"
+      line_ref: "19"
+      quote: "CORRECTNESS_WEIGHT = 0.7"
+    - claim_field: "/scoring_signals/2/weight"
+      source_path: "logicnet/validator/rewarder.py"
+      line_ref: "20"
+      quote: "PROCESSING_TIME_WEIGHT = -0.05"
+    - claim_field: "/aggregation/notes"
+      source_path: "logicnet/validator/rewarder.py"
+      line_ref: "118-127"
+      quote: "reward = (SIMILARITY_WEIGHT * similarities[i] + CORRECTNESS_WEIGHT * correctness[i] + PROCESSING_TIME_WEIGHT * min(process_times[i] / timeout, 1)) ... reward = reward / 2 + 0.5"
+    - claim_field: "/scoring_signals/0/metric_kind"
+      source_path: "logicnet/validator/rewarder.py"
+      line_ref: "415-437"
+      quote: "Calculate cosine similarity between self-generated ground truth and miner responses. ... similarity = torch.nn.functional.cosine_similarity(...)"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "logicnet/validator/rewarder.py"
+      line_ref: "206-218"
+      quote: "score = self._compare_numerical_answers(ground_truth_answer, miner_answer) ... else: # Need LLM evaluation"
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "logicnet/validator/rewarder.py"
+      line_ref: "443-455"
+      quote: "Generate self-generated ground truth based on the question. ... model, base_url, api_key = model_selector(self.model_pool, task_type=\"create_task\")"
+    - claim_field: "/aggregation/method"
+      source_path: "neurons/validator/validator.py"
+      line_ref: "404-408"
+      quote: "def incentive_formula(rank): reward_value = -1.038e-7 * rank**3 + 6.214e-5 * rank**2 - 0.0129 * rank - 0.0118 ... scaled_reward_value = reward_value + 1"
+    - claim_field: "/aggregation/notes"
+      source_path: "neurons/validator/validator.py"
+      line_ref: "379-420"
+      quote: "final_rewards = [sum(uid_rewards) / len(uid_rewards) ...] ... if score > 0.3 and rank <= 160: incentive_rewards.append(incentive_formula(rank)) else: incentive_rewards.append(incentive_formula(250))"
+    - claim_field: "/weight_setting/smoothing/window"
+      source_path: "logicnet/validator/miner_manager.py"
+      line_ref: "11"
+      quote: "NO_OF_RECENT_SCORES = 5"
+    - claim_field: "/weight_setting/method"
+      source_path: "logicnet/validator/miner_manager.py"
+      line_ref: "181-192"
+      quote: "model_specific_weights[int(uid)] = (sum(self.all_uids_info[uid].scores[-NO_OF_RECENT_SCORES:]) / NO_OF_RECENT_SCORES) ... model_specific_weights = model_specific_weights / tensor_sum"
+    - claim_field: "/sub_competitions/notes"
+      source_path: "neurons/validator/validator.py"
+      line_ref: "49-58"
+      quote: "category = {\"Logic\": {\"synapse_type\": ln.protocol.LogicSynapse, \"incentive_weight\": 1.0, ... \"timeout\": 64}}"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "logicnet/base/validator.py"
+      line_ref: "227-234"
+      quote: "self.subtensor.set_weights(wallet=self.wallet, netuid=self.config.netuid, uids=processed_weight_uids, weights=processed_weights, ...)"
+    - claim_field: "/weight_setting/method"
+      source_path: "logicnet/base/validator.py"
+      line_ref: "204"
+      quote: "raw_weights = torch.nn.functional.normalize(self.scores, p=1, dim=0)"
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "neurons/validator/validator.py"
+      line_ref: "488"
+      quote: "self.scores: torch.FloatTensor = weights"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "logicnet/utils/config.py"
+      line_ref: "52-57"
+      quote: "\"--neuron.epoch_length\", type=int, help=\"The default epoch length (how often we set weights, measured in 12 second blocks).\", default=50"
+    - claim_field: "/weight_setting/cadence"
+      source_path: "logicnet/base/neuron.py"
+      line_ref: "152-154"
+      quote: "return (self.block - self.metagraph.last_update[self.uid]) > self.config.neuron.epoch_length"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "logicnet/validator/rewarder.py"
+      line_ref: "280-287"
+      quote: "for cheat_word in self.cheat_words: if cheat_word in response.lower(): ... return -1 ... if re.search(r\"\\{\\{\\s*answer\\s*\\}\\}\", response.lower()): ... return -1"
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "logicnet/validator/rewarder.py"
+      line_ref: "292-307"
+      quote: "DETECT_TRICK_TEMPLATE.format(response=clone_response) ... if \"yes\" in response_str: return -1"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "logicnet/utils/volume_setting.py"
+      line_ref: "4-5"
+      quote: "MIN_RATE_LIMIT = 2\nMAX_RATE_LIMIT = 80"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "neurons/validator/validator.py"
+      line_ref: "314-316"
+      quote: "rewards[i] = rewards[i] * (0.9 + 0.1 * self.miner_manager.all_uids_info[uid].reward_scale)"
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "logicnet/utils/config.py"
+      line_ref: "6"
+      quote: "MIN_STAKE = 10000"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "logicnet/validator/miner_manager.py"
+      line_ref: "152-160"
+      quote: "self.all_uids_info[uid].scores = self.all_uids_info[uid].scores[-NO_OF_RECENT_SCORES:]"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "logicnet/base/validator.py"
+      line_ref: "256-259"
+      quote: "if (hotkey != self.metagraph.hotkeys[uid]): ... self.scores[uid] = 0  # hotkey has been replaced"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "README.md"
+      line_ref: "24-32"
+      quote: "score = (0.2 * similarity_score) + (0.8 * correctness_score) - (0.1 * time_penalty)"
+    - claim_field: "/aggregation/method"
+      source_path: "README.md"
+      line_ref: "37-43"
+      quote: "incentive_reward = [-1.038e-7 * (rank^3)] + [6.214e-5 * (rank^2)] - (0.0129 * rank) - 0.0118 + 1"
+    - claim_field: "/mechanism_status"
+      source_path: "logicnet/base/neuron.py"
+      line_ref: "148-149"
+      quote: "if self.config.neuron.disable_set_weights: return False"
+  unresolved:
+    - "subnet.netuid — config default --netuid is 1, which is a placeholder default, not the real LogicNet netuid; not asserted."
+    - "aggregation.min_weight_floor — get_on_chain_weights adds 1e-6, but the active path get_model_specific_weights has no floor; ambiguous, left null."
+    - "moving_average_alpha (EMA alpha) — referenced in base/validator.py update_scores but not used on the live weight path; no literal default found, left null."
+    - "The 0.3 score cutoff and rank<=160 / rank-250 fallback thresholds are documented in aggregation.notes but have no dedicated schema field."

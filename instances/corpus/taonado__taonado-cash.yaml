@@ -1,0 +1,211 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: mixed
+mechanism_status_notes: >-
+  Scoring is fully on-chain and active: weights are the sum of WTAO balance plus
+  lifetime deposits of each hotkey's associated depositor addresses, normalized to
+  uint16. When total allocated deposits fall below the owner-set depositGoal, the
+  shortfall (depositGoal - totalAllocated) is assigned to burn_uid, dynamically
+  burning the excess emissions. So a proportional-to-deposit reward and a dynamic
+  burn coexist.
+
+subnet:
+  name: "Taonado Cash"
+  owner_repo: "taonado__taonado-cash"
+  netuid: 113
+  implementation_lang: typescript
+
+task:
+  summary: >-
+    Miners deposit/lock TAO (as WTAO and into the Taonado zk-mixer pools) and associate
+    their depositing EVM (H160) address with their Bittensor ss58 hotkey via the
+    DepositTracker contract. A miner's score is the total WTAO balance plus lifetime
+    mixer deposits across all EVM addresses associated with their hotkey. Larger / more
+    persistent deposits earn proportionally more emission. There is no off-chain model
+    or content submission; "mining" is supplying liquidity to the privacy pools.
+  submission_format: [other]
+  submission_format_other: "on-chain TAO/WTAO deposit + EVM-to-hotkey association"
+
+scoring_signals:
+  - name: associated_deposit_balance
+    metric_kind: volume
+    direction: higher_is_better
+    weight: 1.0
+    normalization: other
+    normalization_other: "L1 / sum-to-denominator scaling to uint16 at aggregation"
+    notes: >-
+      Per-hotkey weight = sum over up to MAX_ASSOCIATIONS_PER_HOTKEY (100) associated
+      depositor addresses of (wtao.balanceOf(depositer) + taonado.totalLifetimeDeposits(depositer)).
+      Computed entirely on-chain in WeightsV3.getWeights().
+
+ground_truth_sources:
+  - kind: other
+    kind_other: on_chain_token_balance
+    description: >-
+      On-chain WTAO ERC20 balances and the totalLifetimeDeposits ledger of the Taonado
+      mixer contract, joined to hotkeys through the DepositTracker associations and the
+      metagraph hotkey table. No external oracle; the chain state is authoritative.
+    source_identifier: "WTAO / Taonado / DepositTracker / Metagraph precompile (0x0802)"
+    trust_model: trusted
+    notes: ""
+
+aggregation:
+  method: proportional
+  composition: weighted_sum
+  normalization: other
+  normalization_other: >-
+    scaled to uint16: weight_i = unnormalizedWeight_i * type(uint16).max / denominator,
+    where denominator = max(totalAllocated, depositGoal)
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "burn_uid (uint16, commented as *should* be 0)"
+    fraction: null
+    dynamic: true
+    notes: >-
+      When totalAllocated < depositGoal, weights[burn_uid] = depositGoal - totalAllocated,
+      so the residual below the deposit goal is burned. burn_uid value is a contract
+      state variable (no literal initializer in source); comment notes it *should* be 0.
+  notes: >-
+    Weights summed per uid then divided by denominator = max(totalAllocated, depositGoal)
+    and multiplied by uint16 max. uid 0 is skipped in the per-uid loops (loops start at 1).
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    On-chain. EvmValidator.setWeights()/operatorSetWeights() reads WeightsV3.getNormalizedWeights()
+    and calls the Neuron precompile (0x0804) setWeights. Any EVM wallet may call setWeights() and is
+    paid a TAO bounty (gas refund + setWeightsBounty); if the caller's hotkey is in the metagraph it
+    receives metagraph_boost_value added to its weight. operatorSetWeights() is owner-only.
+  on_chain_call: set_weights
+  tempo_or_interval: "113 blocks"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA. Off-chain scripts re-set weights every ~113 blocks; contract enforces a
+      minimum setWeightsBlockInterval between calls (value is owner-set state, no literal in source).
+
+anti_gaming:
+  - kind: rate_limit
+    enforcement: barrier
+    description: >-
+      setWeightsIntervalPassed modifier requires block.number >= lastSetWeightsBlock +
+      setWeightsBlockInterval; nonReentrant guard on setWeights.
+  - kind: other
+    kind_other: per_hotkey_association_cap
+    enforcement: barrier
+    description: >-
+      MAX_ASSOCIATIONS_PER_HOTKEY = 100 caps how many depositor addresses contribute to a
+      single hotkey's weight, limiting unbounded association farming.
+  - kind: other
+    kind_other: dynamic_burn_to_goal
+    enforcement: penalty
+    description: >-
+      If total associated deposits are below the owner-set depositGoal, the shortfall is
+      routed to burn_uid, reducing emissions until the network meets the liquidity goal.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, other]
+  status_values: []
+  reset_policy: >-
+    totalLifetimeDeposits is monotonic (incremented by denomination on each deposit, never
+    decremented). An EVM address, once associated to a hotkey, cannot be reassigned.
+  notes: >-
+    Per-depositor totalLifetimeDeposits ledger lives in the Taonado mixer contract; current
+    WTAO balance is live ERC20 state; associations are stored in DepositTracker.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs: ["README.md", "ARCHITECTURE.md"]
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "config-example.ts"
+      line_ref: "10"
+      quote: 'const netuid: BigNumberish = "0x71"; //local = 0x2, testnet = 0x15B, mainnet = 0x71 (SN113)'
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "package.json"
+      line_ref: "1"
+      quote: "(locate.py: implementation_lang typescript; contracts in Solidity, scripts/tests in TypeScript)"
+    - claim_field: "/task/summary"
+      source_path: "ARCHITECTURE.md"
+      line_ref: "105-108"
+      quote: "Earn emissions based on deposited TAO; Scoring logic is completely isolated from funds; Weights are calculated on-chain"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "contracts/weights.sol"
+      line_ref: "65-71"
+      quote: "uint256 depositerBalance = wtao.balanceOf(depositer) + taonado.totalLifetimeDeposits(depositer); weights[uid] += depositerBalance; totalAllocated += depositerBalance;"
+    - claim_field: "/scoring_signals/0/metric_kind"
+      source_path: "contracts/weights.sol"
+      line_ref: "44-48"
+      quote: "Array of corresponding weights based on WTAO balances. These weights need to be normalized."
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "contracts/weights.sol"
+      line_ref: "18"
+      quote: "uint256 public constant MAX_ASSOCIATIONS_PER_HOTKEY = 100;"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "contracts/weights.sol"
+      line_ref: "74-77"
+      quote: "// if the total supply is less than the deposit goal, burn excess miner emissions\n        if (totalAllocated < depositGoal) {\n            weights[burn_uid] = depositGoal - totalAllocated;"
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "contracts/weights.sol"
+      line_ref: "20-21"
+      quote: "// *should* be 0 as this sn is registered after dTAO\n    uint16 public burn_uid;"
+    - claim_field: "/aggregation/normalization_other"
+      source_path: "contracts/weights.sol"
+      line_ref: "93-103"
+      quote: "if (totalAllocated < depositGoal) { denominator = depositGoal; } else { denominator = totalAllocated; } ... weights[i] = uint16((((unnormalizedWeights[i]) * type(uint16).max) / denominator));"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "contracts/EvmValidator.sol"
+      line_ref: "126-134"
+      quote: "abi.encodeWithSelector(INeuron.setWeights.selector, netuid, dests, weightsArray, versionKey); ... INeuron_ADDRESS.call{gas: fg}(data);"
+    - claim_field: "/weight_setting/method"
+      source_path: "contracts/EvmValidator.sol"
+      line_ref: "65-78"
+      quote: "function setWeights(bytes32 hotkey) public setWeightsIntervalPassed nonReentrant refundGas { ... if (metagraph_boost_value > 0 && hotkey != bytes32(0)) { ... weightsArray[i] += metagraph_boost_value;"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "scripts/vali.ts"
+      line_ref: "93"
+      quote: "setInterval(setWeights_loop, 113 * 12 * 1000); // every 113 blocks or so"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "contracts/EvmValidator.sol"
+      line_ref: "177-182"
+      quote: 'require(block.number >= lastSetWeightsBlock + setWeightsBlockInterval, "Weight set interval has not passed");'
+    - claim_field: "/weight_setting/method/bounty"
+      source_path: "contracts/EvmValidator.sol"
+      line_ref: "90-99"
+      quote: "uint256 refundAmount = (gasUsed + refundOverhead) * tx.gasprice + setWeightsBounty; ... (bool ok, ) = msg.sender.call{value: refundAmount}(\"\");"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "contracts/core/Taonado.sol"
+      line_ref: "39-40, 85"
+      quote: "// deposit lifetime for each address, for scoring\n    mapping(address => uint256) public totalLifetimeDeposits; ... totalLifetimeDeposits[msg.sender] += denomination;"
+    - claim_field: "/mechanism_status"
+      source_path: "ARCHITECTURE.md"
+      line_ref: "69-70"
+      quote: "Burn mechanism for excess emissions; Validators directly apply the weights, leading to high trust in their scoring."
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "ARCHITECTURE.md"
+      line_ref: "23-25"
+      quote: "DepositTracker -->|Query Associations| WeightsV2; WTAO -->|Query Balances| WeightsV2; Metagraph[Metagraph] -->|Query Hotkeys| WeightsV2"
+  unresolved:
+    - "depositGoal literal value (owner-set via setDepositGoal; no on-chain default in source; test uses 1000 TAO)"
+    - "setWeightsBlockInterval, setWeightsBounty, metagraph_boost_value, versionKey, refundOverhead default values (owner-set state; only refundOverhead has a literal initializer 15_000 for gas refund, not a scoring constant)"
+    - "burn_uid concrete value (state variable, only a comment that it *should* be 0; no initializer)"
+    - "Whether validators are live on mainnet and actually calling setWeights at the documented cadence"

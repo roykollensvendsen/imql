@@ -1,0 +1,254 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  The validator's prepare_weights() applies an emission burn when burn_uid and burn_ratio are
+  configured; the config defaults are burn_uid=0 and burn_ratio=0.79, i.e. 79% of emissions are
+  allocated to UID 0 by default and the remaining 21% are distributed by the Kappa/PnL scoring.
+  The documented scoring mechanism (Kappa-3 + PnL) is fully implemented and active on the residual.
+
+subnet:
+  name: "taos ☯ Intelligent Markets"
+  owner_repo: "taos-im__sn-79"
+  netuid: 79
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners run trading agents in a large-scale agent-based simulation of automated trading. Each
+    miner submits order/instruction responses to market-simulation state updates across multiple
+    order books. Miners are rewarded for risk-adjusted trading quality (intraday Kappa-3 ratio)
+    weighted by trading activity (round-trip volume) and realized P&L, aggregated per-book.
+  submission_format: [signals]
+
+scoring_signals:
+  - name: kappa_score
+    metric_kind: risk_adjusted_ratio
+    direction: higher_is_better
+    weight: 0.79
+    normalization: min_max
+    notes: >-
+      Per-book Kappa-3 ratio normalized to [0,1] using normalization_min=-2.5 / normalization_max=2.5,
+      weighted by per-book activity and P&L factors, aggregated by median across books with an
+      outlier penalty. config default scoring.kappa.weight=0.79.
+  - name: pnl_score
+    metric_kind: pnl
+    direction: higher_is_better
+    weight: 0.21
+    normalization: min_max
+    notes: >-
+      Per-book realized daily-return, clipped to [min_daily_return=-1.0, max_daily_return=1.0],
+      median across scored books, mapped to [-0.5,0.5]. config default scoring.pnl.weight=0.21.
+  - name: activity_factor
+    metric_kind: volume
+    direction: higher_is_better
+    weight: null
+    normalization: other
+    normalization_other: "volume / (capital_turnover_cap * miner_wealth), with exponential inactivity decay"
+    notes: >-
+      Multiplicative per-book factor in [0,2.0] applied to normalized Kappa; boosts active books and
+      exponentially decays inactive books. Not an additive signal (weight null).
+  - name: pnl_factor
+    metric_kind: pnl
+    direction: higher_is_better
+    weight: null
+    normalization: other
+    normalization_other: "1 + (realized_pnl / pnl_reference) scaled by kappa.pnl.impact, capped at 2.0"
+    notes: >-
+      Multiplicative per-book P&L factor combined with the activity factor and applied to normalized
+      Kappa. Controlled by scoring.kappa.pnl.impact (config default 0.0, i.e. disabled by default).
+
+ground_truth_sources:
+  - kind: market_data
+    description: >-
+      Outputs of the in-house C++/Pybind agent-based market simulator (the τaos.im simulator).
+      Miner trades and realized P&L are computed from simulated order-book fills; fundamental prices
+      are seeded from external exchange data (Coinbase/Binance symbols, default BTC-USD/btcusdt).
+    source_identifier: "taos.im simulator; seed symbols BTC-USD / btcusdt"
+    trust_model: trusted
+    notes: "Simulation is run and observed by the validator; not an external oracle."
+
+aggregation:
+  method: weighted_average
+  composition: hybrid
+  normalization: other
+  normalization_other: "L1 normalize (torch.nn.functional.normalize p=1) at weight-setting time"
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: 0.79
+    dynamic: false
+    notes: >-
+      config defaults neuron.burn_uid=0, neuron.burn_ratio=0.79. When configured, raw_weights are
+      scaled by (1 - burn_ratio) and burn_ratio is assigned to burn_uid, then re-normalized.
+  notes: >-
+    final_score = (kappa_weight * kappa_score) + (pnl_weight * pnl_score), clamped to [0,1]. Raw
+    rewards are then passed through distribute_rewards() which multiplies sorted scores by a sorted
+    Pareto-distributed vector (shape=1.42, scale=1.0, seed=898746039182) to add variance, before
+    L1-normalization and burn at weight-setting.
+
+weight_setting:
+  cadence: undocumented
+  method: >-
+    Scores are L1-normalized (normalize p=1); if any score is negative the vector is shifted by its
+    minimum first. Burn allocation applied, then process_weights_for_netuid and
+    convert_weights_and_uids_for_emit before set_weights.
+  on_chain_call: set_weights
+  tempo_or_interval: null
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA/SMA smoothing of the final reward was found; self.scores is assigned from computed
+      scores rather than an exponential moving average at the weight-setting site read.
+
+anti_gaming:
+  - kind: risk_limit
+    enforcement: penalty
+    description: >-
+      Outlier penalty: per-book activity-weighted Kappas are checked with the 1.5×IQR rule; left-hand
+      outliers below 0.5 incur a penalty (base_penalty = (0.5 - median(outliers)) / 1.5 scaled by a
+      consistency bonus) subtracted from the median score, penalizing inconsistent cross-book performance.
+  - kind: liveness_check
+    enforcement: penalty
+    description: >-
+      Inactive books beyond max_inactive_books (max_inactive_books_ratio default 0.375 of books)
+      contribute 0.0 to the median; activity factors for inactive books exponentially decay over time.
+  - kind: rate_limit
+    enforcement: barrier
+    description: >-
+      set_delays() applies an exponential base delay based on miner process_time plus per-book Gaussian
+      instruction delays, so slower responses incur added latency in the simulation.
+
+sub_competitions:
+  structure: multi_asset
+  stages: []
+  count: null
+  notes: >-
+    Scoring is computed per order book ("book") and aggregated (median) across books; book_count comes
+    from the simulation config. Multiple asset symbols can be seeded (e.g. BTC-USD, TAO-PERP-INTX).
+
+per_miner_state:
+  tracked: true
+  state_kinds: [performance_ledger]
+  status_values: []
+  reset_policy: >-
+    On simulation start (onStart) timestamps for trade volumes, inventory, realized P&L and round-trip
+    volumes are shifted/pruned to the new simulation window; deregistered_uids are reset.
+  notes: >-
+    Validator maintains per-UID per-book activity_factors, pnl_factors, kappa_values, roundtrip_volumes
+    and realized_pnl_history over a lookback window (kappa.lookback default 10800e9 ns).
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "https://simulate.trading/taos-im-paper (whitepaper, external)"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "10"
+      quote: "operates as a Bittensor subnet at netuid 79"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "README.md"
+      line_ref: "148"
+      quote: "τaos : The Python component of the apparatus, containing the base validator and miner logic"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "116"
+      quote: >-
+        Currently assessment is based on an intraday Kappa-3 ratio in conjunction with a requirement
+        to maintain a certain level of cumulative round-trip volume
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "taos/im/config/__init__.py"
+      line_ref: "146-149"
+      quote: "\"--scoring.kappa.weight\", ... default=0.79"
+    - claim_field: "/scoring_signals/0/normalization"
+      source_path: "taos/im/config/__init__.py"
+      line_ref: "188-198"
+      quote: "\"--scoring.kappa.normalization_min\", ... default=-2.5 ... normalization_max ... default=2.5"
+    - claim_field: "/scoring_signals/1/weight"
+      source_path: "taos/im/config/__init__.py"
+      line_ref: "209-212"
+      quote: "\"--scoring.pnl.weight\", ... default=0.21"
+    - claim_field: "/scoring_signals/1/normalization_other"
+      source_path: "taos/im/validator/reward.py"
+      line_ref: "527-573"
+      quote: >-
+        daily_return_ratio = book_pnl / pnl_reference_per_book ... daily_return_ratio = max(min_daily,
+        min(max_daily, daily_return_ratio)) ... pnl_score = median_daily_return / 2.0
+    - claim_field: "/scoring_signals/2/normalization_other"
+      source_path: "taos/im/validator/reward.py"
+      line_ref: "209-212"
+      quote: "activity_factors_uid[book_id] = min(1 + ((roundtrip_volume * volume_cap_inv) * activity_impact), 2.0)"
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "taos/im/config/__init__.py"
+      line_ref: "201-205"
+      quote: "\"--scoring.kappa.pnl.impact\", ... default=0.0"
+    - claim_field: "/aggregation/notes"
+      source_path: "taos/im/validator/reward.py"
+      line_ref: "692-695"
+      quote: "final_score = (kappa_weight * kappa_score) + (pnl_score_weight * pnl_score) ... final_score = max(0.0, min(1.0, final_score))"
+    - claim_field: "/aggregation/normalization_other"
+      source_path: "taos/common/neurons/validator.py"
+      line_ref: "193"
+      quote: "raw_weights = torch.nn.functional.normalize(weight_scores, p=1, dim=0)"
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "taos/common/config/__init__.py"
+      line_ref: "229-233"
+      quote: "\"--neuron.burn_ratio\", ... help=\"Ratio of miner emissions to burn.\", default=0.79"
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "taos/common/config/__init__.py"
+      line_ref: "222-226"
+      quote: "\"--neuron.burn_uid\", ... help=\"Uid to assign weights to in order to burn emissions.\", default=0"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "taos/common/neurons/validator.py"
+      line_ref: "211-218"
+      quote: "raw_weights = raw_weights * (1.0 - burn_ratio) ... raw_weights[burn_uid] = burn_ratio ... raw_weights = torch.nn.functional.normalize(raw_weights, p=1, dim=0)"
+    - claim_field: "/aggregation/notes/pareto"
+      source_path: "taos/im/config/__init__.py"
+      line_ref: "334-338"
+      quote: "\"--rewarding.pareto.shape\", ... default=1.42"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "taos/common/neurons/validator.py"
+      line_ref: "259-267"
+      quote: "result, msg = self.subtensor.set_weights(wallet=self.wallet, netuid=self.config.netuid, uids=uint_uids, weights=uint_weights, ...)"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "taos/im/validator/reward.py"
+      line_ref: "403-406"
+      quote: "base_penalty = (0.5 - np.median(outliers)) / 1.5 ; consistency_bonus = 1.0 - np.exp(-5 * iqr) ; outlier_penalty = base_penalty * consistency_bonus"
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "taos/im/config/__init__.py"
+      line_ref: "139-142"
+      quote: "\"--scoring.max_inactive_books\", ... default=0.375"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "taos/im/validator/reward.py"
+      line_ref: "951-957"
+      quote: "delay_frac = (np.exp(exp_scale * t) - 1) / (np.exp(exp_scale) - 1) ; delay = min_delay + delay_frac * (max_delay - min_delay)"
+    - claim_field: "/sub_competitions/structure"
+      source_path: "taos/im/validator/reward.py"
+      line_ref: "413-416"
+      quote: "activity_weighted_normalized_median = np.median(data) ... kappa_score = max(activity_weighted_normalized_median - abs(outlier_penalty), 0.0)"
+    - claim_field: "/per_miner_state/notes"
+      source_path: "taos/im/config/__init__.py"
+      line_ref: "166-170"
+      quote: "\"--scoring.kappa.lookback\", ... default=10800_000_000_000"
+    - claim_field: "/mechanism_status"
+      source_path: "taos/common/neurons/validator.py"
+      line_ref: "199-215"
+      quote: "if burn_uid is not None and burn_ratio > 0: ... raw_weights = raw_weights * (1.0 - burn_ratio) ; raw_weights[burn_uid] = burn_ratio"
+  unresolved:
+    - "weight_setting.cadence / tempo_or_interval: no explicit epoch length or blocks-since-update gate found at the weight-setting call site read."
+    - "Whether burn is actually enabled on the live validator (config defaults enable it, but operators can override burn_ratio)."
+    - "scoring.interval (5e9 ns) reward-calc cadence is in config but not a chain weight-setting tempo."

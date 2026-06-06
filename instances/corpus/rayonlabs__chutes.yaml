@@ -1,0 +1,168 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+# This repo is the chutes SDK / CLI for developers (the "command line interface and
+# development kit"). The actual validator/API scoring and the miner code live in
+# SEPARATE repos (chutes-api, chutes-miner), which are NOT present here. As a result no
+# reward/scoring/weight-setting code is in this tree; the README only describes the
+# platform conceptually (GraVal GPU validation, compute-as-a-service, GPU hourly pricing).
+mechanism_status: unknown
+mechanism_status_notes: >-
+  No validator weight-setting or emission code is present in this SDK/CLI repo; the
+  README states the validator/API code and miner code are hosted in separate
+  repositories (chutes-api, chutes-miner). The operative on-chain reward/burn behaviour
+  cannot be determined from this tree.
+
+subnet:
+  name: "Chutes"
+  owner_repo: "rayonlabs__chutes"
+  netuid: null
+  implementation_lang: python
+
+task:
+  summary: >-
+    Chutes is a serverless GPU compute platform on Bittensor. Miners provide GPU
+    hardware that runs "chutes" (FastAPI-style applications built on docker images);
+    each "cord" is a single function/route executed on the miners' GPUs. Miners are
+    validated for authentic GPU hardware (via the GraVal library) and serve user
+    invocations of deployed applications. The reward/scoring logic itself is not in
+    this SDK repo. Inferred from the README description of the platform.
+  submission_format: [compute_service]
+
+scoring_signals: []
+
+ground_truth_sources:
+  - kind: hardware_probe
+    description: >-
+      GraVal ("graphics card validation library") is used to help ensure the GPUs
+      miners claim to be running are authentic/correct: VRAM capacity checks, matrix
+      multiplications seeded by device information, filesystem checks, device-info
+      challenges and pings, run as middleware within the chute.
+    source_identifier: "graval"
+    trust_model: adversarial
+    notes: >-
+      Described in the README glossary only; the validation runs against miner-claimed
+      GPUs to detect spoofing. No scoring formula is given in this repo.
+
+aggregation:
+  method: undocumented
+  composition: other
+  composition_other: "not present in this repo (validator/API code is in a separate repo)"
+  normalization: none
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: "No emission/burn logic present in this SDK/CLI repo."
+  notes: >-
+    No aggregation/scoring code exists in this tree; the README points to chutes-api
+    for the validator/API code.
+
+weight_setting:
+  cadence: undocumented
+  method: ""
+  on_chain_call: unknown
+  tempo_or_interval: null
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: "No weight-setting call site exists in this SDK/CLI repo."
+
+anti_gaming:
+  - kind: hardware_validation
+    enforcement: other
+    enforcement_other: "authenticity validation of miner GPUs (consequence not specified in this repo)"
+    description: >-
+      GraVal middleware performs VRAM capacity checks, device-information-seeded matrix
+      multiplications, filesystem checks, device-info challenges and pings to verify
+      that miners are running the GPUs they claim. Described in README glossary; the
+      enforcement consequence is not specified in this repo.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: false
+  state_kinds: []
+  status_values: []
+  reset_policy: ""
+  notes: ""
+
+documentation:
+  status: docs_only
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/dev.md"
+  completeness: low
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: low
+  evidence:
+    - claim_field: "/subnet/name"
+      source_path: "README.md"
+      line_ref: "1-3"
+      quote: >-
+        # Chutes!  This package provides the command line interface and development kit
+        for use with the chutes.ai platform.
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "setup.py"
+      line_ref: "1-1"
+      quote: "from setuptools import setup, find_packages"
+    - claim_field: "/mechanism_status"
+      source_path: "README.md"
+      line_ref: "5-5"
+      quote: >-
+        The miner code is available [here](https://github.com/rayonlabs/chutes-miner),
+        and validator/API code [here](https://github.com/rayonlabs/chutes-api).
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "24-28"
+      quote: >-
+        A chute is essentially an application that runs on top of an image, within the
+        platform. Think of a chute as a single FastAPI application. ... A cord is a
+        single function within the chute. In the FastAPI analogy, this would be a
+        single route & method.
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "343-343"
+      quote: >-
+        Any function that you decorate with `@chute.cord()` becomes a function that
+        runs within the chute, i.e. not locally - it's executed on the miners' hardware.
+    - claim_field: "/ground_truth_sources/0/kind"
+      source_path: "README.md"
+      line_ref: "30-32"
+      quote: >-
+        ### ✅ graval  GraVal is the graphics card validation library used to help
+        ensure the GPUs that miners claim to be running are authentic/correct. The
+        library performs VRAM capacity checks, matrix multiplications seeded by device
+        information, etc.
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "README.md"
+      line_ref: "35-35"
+      quote: >-
+        it runs as middleware within the chute to decrypt traffic from the validator
+        and perform additional validation steps (filesystem checks, device info
+        challenges, pings, etc.)
+    - claim_field: "/documentation/status"
+      source_path: "README.md"
+      line_ref: "5-5"
+      quote: >-
+        The miner code is available [here] ... and validator/API code [here].
+  unresolved:
+    - "No scoring_signals: this repo contains no reward/scoring function (validator code is in the separate chutes-api repo)."
+    - "aggregation.method/composition/normalization unknown: no aggregation code in this tree."
+    - "weight_setting.cadence/method/on_chain_call/tempo_or_interval unknown: no set_weights call site in this repo."
+    - "Emission/burn allocation unknown: no on-chain emission logic present."
+    - "netuid unknown: not declared anywhere in this SDK/CLI repo."
+    - "GraVal anti_gaming enforcement consequence (elimination/penalty/rejection) not specified in this repo."
+    - "Whether GPU hourly pricing (README pricing section) feeds miner emissions is not determinable from this repo."

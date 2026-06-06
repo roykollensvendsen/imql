@@ -1,0 +1,392 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+# The live _set_weights path fetches a pre-computed weight snapshot from the
+# off-repo BeamCore V2 service (get_recommended_weights). The in-repo SLAScorer
+# is an explicit stub returning effective_multiplier=1.0, and the in-repo
+# exposure formula (weight_calculator.py) is a "validator-side port" that is only
+# invoked in the README's optional custom-scoring example, not the main loop.
+# So the documented in-repo scoring is dormant; authoritative scoring is off-repo.
+mechanism_status: dormant
+mechanism_status_notes: >-
+  Validator main loop computes local SLA scores via SLAScorer, but SLAScorer is a
+  stub (score_orchestrator returns SLAScore(effective_multiplier=1.0)). The actual
+  on-chain weight vector is taken from BeamCore's persisted snapshot via
+  subnet_core_client.get_recommended_weights(epoch); local scores are only submitted
+  to BeamCore, not used to set weights. The detailed exposure*quality*confidence*penalty
+  formula in services/weight_calculator.py is a port of BeamCore's formula and is only
+  exercised in the README's optional custom-scoring path, not the running validator.
+  No emission burn is present; SLA-failing orchestrators have rewards redirected to
+  Orchestrator UID #1 (subnet-owned treasury), not a null/burn UID.
+
+subnet:
+  name: "BEAM"
+  owner_repo: "Beam-Network__beam"
+  netuid: 105
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners run "orchestrators" (and the workers they coordinate) that relay/transfer
+    data chunks across a decentralized bandwidth network. Workers move object bytes
+    directly between storage connectors and submit Proof-of-Bandwidth (PoB) evidence
+    (signed timing, bytes relayed, claimed bandwidth, canary proof) to the off-repo
+    BeamCore service. Validators fetch unverified proofs from BeamCore, verify
+    signature/timing/bandwidth/canary, and orchestrators are rewarded based on
+    measured delivery performance (throughput, success rate, uptime, latency) rather
+    than promises.
+  submission_format: [compute_service]
+
+scoring_signals:
+  # Signals below are from services/weight_calculator.py (the in-repo exposure-formula
+  # port) and the validator README's documented SLA formula. These describe the
+  # DOCUMENTED scoring; the live validator defers weight values to BeamCore.
+  - name: bandwidth_score
+    metric_kind: throughput
+    direction: higher_is_better
+    weight: 0.40
+    normalization: none
+    notes: >-
+      Quality component, coefficient BANDWIDTH_WEIGHT=0.40 in weight_calculator.py.
+      Validator README documents the SLA-formula bandwidth coefficient as 0.30
+      (a different, simpler formula); the two in-repo formulas disagree.
+  - name: compliance_score
+    metric_kind: other
+    metric_kind_other: payment_compliance
+    direction: higher_is_better
+    weight: 0.25
+    normalization: none
+    notes: >-
+      COMPLIANCE_WEIGHT=0.25. Also acts as a hard gate: below
+      MIN_COMPLIANCE_FOR_EMISSIONS=0.5 the orchestrator receives zero weight.
+  - name: verification_rate
+    metric_kind: other
+    metric_kind_other: proof_verification_rate
+    direction: higher_is_better
+    weight: 0.20
+    normalization: none
+    notes: >-
+      VERIFICATION_WEIGHT=0.20. Also scales exposure (effective work =
+      claimed * verification_rate, clamped to [0,1]).
+  - name: spot_check_rate
+    metric_kind: other
+    metric_kind_other: spot_check_pass_rate
+    direction: higher_is_better
+    weight: 0.15
+    normalization: none
+    notes: "SPOT_CHECK_WEIGHT=0.15."
+  - name: exposure
+    metric_kind: volume
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Multiplicative factor (not additive). Blended routing share of verified work:
+      EXPOSURE_BYTES_WEIGHT=0.70 * bytes_share + EXPOSURE_PROOFS_WEIGHT=0.30 *
+      proofs_share, over verification-rate-discounted effective values.
+  - name: confidence
+    metric_kind: other
+    metric_kind_other: work_volume_confidence_ramp
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Multiplicative sqrt ramp on verified work: 0.70*min(sqrt(eff_proofs/10),1) +
+      0.30*min(sqrt(eff_bytes/1e9),1). Thresholds CONFIDENCE_PROOF_THRESHOLD=10,
+      CONFIDENCE_BYTES_THRESHOLD=1_000_000_000.
+
+ground_truth_sources:
+  - kind: hardware_probe
+    description: >-
+      Proof-of-Bandwidth: workers sign timing/bytes/canary evidence of an actual
+      chunk relay. Validator independently recomputes bandwidth from timing
+      (bytes*8 / duration), checks timing sanity (>1ms, end>start), canary format,
+      and worker hotkey signature.
+    source_identifier: "proof_of_bandwidth"
+    trust_model: adversarial
+    notes: >-
+      Proofs are fetched from the off-repo BeamCore service
+      (subnet_core_client.get_unverified_proofs); BeamCore (PostgreSQL) holds
+      authoritative execution state.
+  - kind: other
+    kind_other: offchain_coordination_service
+    description: >-
+      BeamCore V2 (separate repo, github.com/Beam-Network/beamcore_v2) is the
+      authoritative coordination service. The live validator fetches the recommended
+      weight vector and orchestrator scores from BeamCore rather than computing them
+      locally.
+    source_identifier: "beamcore_v2"
+    trust_model: trusted
+
+aggregation:
+  method: weighted_average
+  composition: hybrid
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: >-
+      No emission burn. SLA-violating orchestrators have a fraction of reward
+      redirected to Orchestrator UID #1 (subnet-owned treasury), governed by
+      sla_score.penalty_redirect_percent (a stub returns 0.0 in-repo).
+  notes: >-
+    Documented in-repo formula (weight_calculator.compute_weights):
+    raw = exposure * quality_final * confidence * penalty * effective_compliance,
+    then normalized to sum 1 across orchestrators and converted to uint16
+    (MAX_WEIGHT_UINT16=65535). quality_final = quality_raw * trust_multiplier, where
+    trust_multiplier multiplies by TRUST_PENALTY=0.5 per failed gate
+    (compliance<0.5 or verification<0.5; both -> 0.25). It is a weighted_sum of the
+    four quality signals, gated by trust and compliance, then multiplied by exposure
+    and confidence — i.e. hybrid additive+multiplicative. The LIVE validator instead
+    normalizes a vector pulled from BeamCore (get_recommended_weights).
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    Async main loop. _maybe_set_weights sets weights only after
+    blocks_between_weights (default 100, ~20 min) have passed since last set. The
+    weight vector is the BeamCore persisted snapshot (uids, weights) from
+    get_recommended_weights for the current/latest data epoch; on-chain via
+    bittensor/Fiber set_weights, or timelocked commit-reveal when
+    CommitRevealWeightsEnabled is true for the netuid.
+  on_chain_call: set_weights
+  tempo_or_interval: "100 blocks (blocks_between_weights, ~20 min)"
+  smoothing:
+    kind: ema
+    alpha: 0.3
+    window: null
+    notes: >-
+      config.weight_alpha=0.3 ("EMA smoothing factor") and BANDWIDTH_EMA_ALPHA=0.3
+      are defined. The EMA at validator.py:2123 (score = alpha*score + (1-alpha)*old)
+      applies only to legacy per-connection scores, NOT to the BeamCore weight vector
+      actually set on chain. Recorded as the configured smoother; effectively unused
+      on the live path.
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Validator re-verifies each PoB: recomputed bandwidth must be within 50% of
+      claimed (ratio in [0.5,2.0]) and below physical 100 Gbps limit; transfer
+      duration must be >1ms and end>start; canary proof must be 64 hex chars / valid
+      hex. Failing proofs are rejected.
+  - kind: commit_reveal
+    enforcement: barrier
+    description: >-
+      When CommitRevealWeightsEnabled is set for the subnet, weights are committed via
+      time-locked commit-reveal (subtensor.set_weights with wait_for_revealed_execution).
+  - kind: other
+    kind_other: signature_authentication
+    enforcement: rejection
+    description: >-
+      Worker PoB submissions must carry a valid hotkey signature over
+      "{task_id}:{worker_hotkey}:{start}:{end}:{bytes}"; PoB main path verifies the
+      orchestrator/miner signature via verify_hotkey_signature before scoring.
+  - kind: rate_limit
+    enforcement: barrier
+    description: >-
+      Weight setting is rate-limited to once per blocks_between_weights (default 100
+      blocks) per validator.
+  - kind: other
+    kind_other: outflow_traffic_selling_penalty
+    enforcement: penalty
+    description: >-
+      Outflow penalty deters traffic-selling: top 25% sellers
+      (OUTFLOW_PENALTY_PERCENTILE=0.75) are penalized down to a 0.25 multiplier
+      (OUTFLOW_MAX_PENALTY=0.25, i.e. up to 75% traffic reduction). Defined as
+      tunable defaults in weight_calculator.py (part of the dormant in-repo formula).
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: >-
+    README mentions BeamCore PRISM tracks orchestrators in "qualifying" vs "qualified"
+    pools with prism_final_score, but that logic lives in the off-repo BeamCore service
+    and is not implemented in this repository.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cooldown, performance_ledger]
+  status_values: []
+  reset_policy: >-
+    New orchestrators get a NEW_ORCHESTRATOR_GRACE_PERIOD_HOURS=24 grace window and
+    default compliance=1.0 (no penalty) before their first epoch; PoB verification
+    stats reset each epoch.
+  notes: >-
+    Validator keeps rolling 24h SLA metrics, per-orchestrator PoB verification stats
+    (reset per epoch), payment/fraud penalty multipliers, and a grace period for new
+    orchestrators. Authoritative orchestrator state lives in BeamCore PostgreSQL.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "neurons/validator/README.md"
+    - "docs/validator.md"
+    - "neurons/validator/services/weight_calculator.py"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8"
+  extracted_at: "2026-06-06"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "139-142"
+      quote: "| Mainnet | 105 | `finney` | https://beamcore.b1m.ai |"
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "neurons/validator/core/validator.py"
+      line_ref: "1-22"
+      quote: "import bittensor as bt"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "31-36"
+      quote: "Nodes contribute bandwidth and participate in executing transfers ... Proof-of-Bandwidth measures and validates bandwidth performance during transfers"
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "102-104"
+      quote: "object bytes do not flow through BeamCore (workers read/write storage directly). Pipeline: transfers -> ... -> proofs_of_bandwidth -> payments."
+      confidence: medium
+    - claim_field: "/mechanism_status"
+      source_path: "neurons/validator/core/_beam_stubs.py"
+      line_ref: "418-438"
+      quote: "class SLAScorer: \"\"\"SLA scorer (stub - scoring done by BeamCore).\"\"\" ... def score_orchestrator(...): return SLAScore(raw_score=1.0, ... effective_multiplier=1.0, ...)"
+      confidence: high
+    - claim_field: "/mechanism_status"
+      source_path: "neurons/validator/core/validator.py"
+      line_ref: "2209-2220"
+      quote: "async def _set_weights(self): \"\"\"Set weights using BeamCore's persisted epoch snapshot.\"\"\" ... weight_snapshot = await self._get_persisted_weight_snapshot()"
+      confidence: high
+    - claim_field: "/mechanism_status"
+      source_path: "neurons/validator/core/validator.py"
+      line_ref: "2338-2352"
+      quote: "snapshot = await self.subnet_core_client.get_recommended_weights(epoch) ... return (list(uids), list(weights), snapshot.get(\"formula_version\", \"beamcore_v2\"), ...)"
+      confidence: high
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "neurons/validator/services/weight_calculator.py"
+      line_ref: "31-34"
+      quote: "BANDWIDTH_WEIGHT = 0.40\nCOMPLIANCE_WEIGHT = 0.25\nVERIFICATION_WEIGHT = 0.20\nSPOT_CHECK_WEIGHT = 0.15"
+      confidence: high
+    - claim_field: "/scoring_signals/4/notes"
+      source_path: "neurons/validator/services/weight_calculator.py"
+      line_ref: "37-39"
+      quote: "EXPOSURE_BYTES_WEIGHT = 0.70\nEXPOSURE_PROOFS_WEIGHT = 0.30"
+      confidence: high
+    - claim_field: "/scoring_signals/5/notes"
+      source_path: "neurons/validator/services/weight_calculator.py"
+      line_ref: "51-54"
+      quote: "CONFIDENCE_PROOF_THRESHOLD = 10\nCONFIDENCE_BYTES_THRESHOLD = 1_000_000_000  # 1 GB\nCONFIDENCE_PROOFS_WEIGHT = 0.70\nCONFIDENCE_BYTES_WEIGHT = 0.30"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "neurons/validator/services/weight_calculator.py"
+      line_ref: "366-371"
+      quote: "effective_comp = comp if comp >= MIN_COMPLIANCE_FOR_EMISSIONS else 0.0\nraw = exposure_val * quality_final * confidence_val * penalty * effective_comp"
+      confidence: high
+    - claim_field: "/aggregation/composition"
+      source_path: "neurons/validator/services/weight_calculator.py"
+      line_ref: "270-283"
+      quote: "quality_raw = (BANDWIDTH_WEIGHT * bandwidth_score + ...) ... if compliance_score < TRUST_THRESHOLD_COMPLIANCE: trust_multiplier *= TRUST_PENALTY ... return quality_raw * trust_multiplier"
+      confidence: high
+    - claim_field: "/aggregation/normalization"
+      source_path: "neurons/validator/services/weight_calculator.py"
+      line_ref: "410-414"
+      quote: "total = sum(d.raw_score for d in details)\n    if total > 0:\n        for d in details:\n            d.normalized_weight = d.raw_score / total"
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "neurons/validator/services/weight_calculator.py"
+      line_ref: "45-48"
+      quote: "MIN_COMPLIANCE_FOR_EMISSIONS = 0.5 ... Orchestrators below this threshold receive zero weight regardless of activity."
+      confidence: high
+    - claim_field: "/anti_gaming/4/description"
+      source_path: "neurons/validator/services/weight_calculator.py"
+      line_ref: "56-59"
+      quote: "_OUTFLOW_PENALTY_PERCENTILE_DEFAULT = 0.75  # Top 25% sellers get penalized\n_OUTFLOW_MAX_PENALTY_DEFAULT = 0.25  # Worst offender multiplier (0.25 = 75% traffic reduction)"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "neurons/validator/core/validator.py"
+      line_ref: "8-8"
+      quote: "Orchestrators failing SLA have rewards redirected to Orchestrator #1 (subnet treasury)."
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "neurons/validator/core/config.py"
+      line_ref: "79-80"
+      quote: "blocks_between_weights: int = 100  # ~20 minutes\n    weight_alpha: float = 0.3  # EMA smoothing factor"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "neurons/validator/core/validator.py"
+      line_ref: "2196-2207"
+      quote: "if current_block - self.last_weight_block < self.settings.blocks_between_weights: return\n        await self._set_weights()"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "neurons/validator/core/validator.py"
+      line_ref: "2266-2274"
+      quote: "success, message = self.subtensor.set_weights(wallet=self.wallet, netuid=self.settings.netuid, uids=uids, weights=weights, ...)"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "neurons/validator/core/_beam_stubs.py"
+      line_ref: "54-54"
+      quote: "BANDWIDTH_EMA_ALPHA: float = 0.3"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "neurons/validator/core/validator.py"
+      line_ref: "2121-2125"
+      quote: "if uid in self.connection_scores: old_score = self.connection_scores[uid]\n                score = BANDWIDTH_EMA_ALPHA * score + (1 - BANDWIDTH_EMA_ALPHA) * old_score"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "neurons/validator/core/validator.py"
+      line_ref: "921-930"
+      quote: "ratio = calculated_bw / bandwidth_mbps\n                    if ratio < 0.5 or ratio > 2.0:  # 50% tolerance ... if calculated_bw > 100_000:  ... \"Bandwidth exceeds physical limits\""
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "neurons/validator/core/validator.py"
+      line_ref: "2240-2252"
+      quote: "if commit_reveal_enabled ... logger.info(\"Using set_weights with time-locked commit-reveal\") ... wait_for_revealed_execution=True"
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "neurons/validator/core/validator.py"
+      line_ref: "951-961"
+      quote: "message = f\"{task_id}:{worker_hotkey}:{start_time_us}:{end_time_us}:{bytes_relayed}\" ... is_valid = verify_hotkey_signature(message.encode(), bytes.fromhex(worker_signature), worker_hotkey)"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "neurons/validator/core/_beam_stubs.py"
+      line_ref: "300-300"
+      quote: "NEW_ORCHESTRATOR_GRACE_PERIOD_HOURS = 24"
+      confidence: high
+    - claim_field: "/ground_truth_sources/1/description"
+      source_path: "README.md"
+      line_ref: "70-72"
+      quote: "This repository is off-chain node software (orchestrator, worker, validator) that connects to BeamCore. The coordination service itself is BeamCore V2"
+      confidence: high
+    - claim_field: "/sub_competitions/notes"
+      source_path: "README.md"
+      line_ref: "106-106"
+      quote: "PRISM: orchestrators are tracked in qualifying vs qualified pools; production routing uses prism_final_score"
+      confidence: medium
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "neurons/validator/README.md"
+      line_ref: "146-149"
+      quote: "| Bandwidth | 0.30 | ... | Success Rate | 0.25 | ... | Uptime | 0.20 | ... | Latency | 0.15 |"
+      confidence: medium
+  unresolved:
+    - "Authoritative scoring formula and exact weight values are computed off-repo by BeamCore V2 (get_recommended_weights); cannot be cited from this repository."
+    - "penalty_redirect_percent / treasury-redirect fraction: SLAScorer is a stub returning 0.0; the real redirect percentage lives in BeamCore."
+    - "Two in-repo formulas disagree (weight_calculator.py 0.40/0.25/0.20/0.15 vs validator README SLA table 0.30/0.25/0.20/0.15); which BeamCore uses is undetermined."
+    - "Aggregation method enum: in-repo formula is a hybrid (weighted_sum gated by trust/compliance, multiplied by exposure and confidence); no single enum captures it, chose weighted_average."
+    - "Whether commit-reveal is actually enabled on netuid 105 is read from chain at runtime, not fixed in source."
+  extractor_notes: >-
+    This repo is the off-chain node software; the authoritative incentive computation
+    is in the separate BeamCore V2 service. The in-repo SLAScorer is a stub and the
+    live _set_weights path uses a BeamCore-provided weight snapshot, so the documented
+    in-repo exposure/SLA formulas are dormant. No emission burn exists; SLA penalties
+    are redirected to subnet-owned Orchestrator UID #1 (SUBNET_ORCHESTRATOR_UID=1).

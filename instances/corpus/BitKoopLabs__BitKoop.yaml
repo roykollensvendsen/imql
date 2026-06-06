@@ -1,0 +1,242 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Live scoring is active: valid coupons award flat points, scores are normalized
+  by the max, and weights are set on-chain hourly. Container scoring is stubbed
+  (returns empty dict). When no miner weights are available the validator falls
+  back to a single hardcoded weight (uid 207 = 1.0, the subnet owner), but this
+  is a degenerate fallback, not a standing burn.
+
+subnet:
+  name: "BitKoop"
+  owner_repo: "BitKoopLabs__BitKoop"
+  netuid: 16
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners find and submit working discount coupon codes for online stores. Each
+    submitted coupon is validated (via first-party coupon APIs / TLS Notary proofs)
+    and, if it works, marked VALID. A miner is rewarded a flat amount of points per
+    valid coupon; the normalized share of points across miners becomes the on-chain
+    weight.
+  submission_format: [content_link]
+  submission_format_other: ""
+
+scoring_signals:
+  - name: valid_coupon_points
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.8
+    normalization: min_max
+    notes: >-
+      Each valid coupon awards a flat 100 points (calculate_coupon_points returns 100).
+      Per-miner coupon points are multiplied by coupon_weight (0.8). Coupons must have
+      status VALID and not be deleted to count.
+  - name: container_points
+    metric_kind: composite
+    direction: higher_is_better
+    weight: 0.2
+    normalization: min_max
+    notes: >-
+      Container scoring is multiplied by container_weight (0.2) in the combined score,
+      but get_container_points() is stubbed and returns {} (TODO: implement actual
+      container scoring logic), so this signal currently contributes nothing.
+
+ground_truth_sources:
+  - kind: other
+    kind_other: "first_party_coupon_api"
+    description: >-
+      Coupon validity is determined by calling first-party coupon-check APIs
+      (e.g. Shopify store coupon-check endpoints); a coupon is treated as valid
+      only if the API reports it applicable (ok=true and applicable=true).
+    source_identifier: "store coupon-check API (api_url)"
+    trust_model: oracle
+    notes: >-
+      Schema enum has no value for a live first-party API check; used 'other'
+      with kind_other.
+  - kind: commit_reveal
+    description: >-
+      TLS Notary (TLSN) cryptographic proofs of real HTTP exchanges, judged by a
+      local verifier, substantiate coupon claims without a browser.
+    source_identifier: "tlsn-http-verifier (tlsn_verifier_url default http://127.0.0.1:8080/verify)"
+    trust_model: oracle
+    notes: >-
+      Used as proof-of-claim rather than a classic commit-reveal; mapped to nearest
+      enum value.
+
+aggregation:
+  method: proportional
+  composition: weighted_sum
+  normalization: min_max
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: >-
+      No standing burn. Degenerate fallback only: if there are no node weights to
+      set, the validator assigns weight 1.0 to hardcoded uid 207 (subnet owner).
+  notes: >-
+    total_points[miner] = coupon_weight * coupon_pts + container_weight * container_pts.
+    score = min(1.0, round(total_points / max_points, 4)) where max_points is the
+    highest total over all miners. If max_points == 0 all scores are 0.0.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    set_weights computes normalized scores via WeightCalculatorService.calculate_weights(),
+    maps miner hotkeys to metagraph node ids, and calls weights.set_node_weights. Runs
+    at most once per set_weights_interval (skips if last set was within the interval).
+  on_chain_call: set_weights
+  tempo_or_interval: "1 hour"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA/SMA smoothing of the final weights; each cycle recomputes scores from the
+      current set of valid coupons.
+
+anti_gaming:
+  - kind: deduplication
+    enforcement: rejection
+    description: >-
+      deduplicate_coupons_by_site groups coupons by (site_id, code) and keeps only the
+      earliest one for each duplicate, so the same code on the same site cannot be
+      double-counted across miners.
+  - kind: rate_limit
+    enforcement: rejection
+    description: >-
+      max_coupons_per_site_per_miner = 8 caps active codes per miner per site; each
+      website has a limited number of shared coupon slots (typically 15), first come
+      first served. A submit_window (2 minutes) gates submissions.
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Coupons are validated against first-party coupon APIs and/or TLSN proofs; only
+      coupons the validator confirms working become VALID and earn points. Stale VALID
+      coupons are rechecked (recheck_interval / delta_points 7 days) and flipped to
+      INVALID if they stop working.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: true
+  state_kinds: [status_enum, cumulative_score, cooldown]
+  status_values: ["INVALID", "VALID", "PENDING", "EXPIRED", "USED", "DELETED", "DUPLICATE"]
+  reset_policy: >-
+    Coupon points are recomputed each cycle from current VALID coupons (no persistent
+    cumulative ledger of weight). INVALID coupons can be rechecked after recheck_interval
+    (1 day) cooldown, moving them back to PENDING.
+  notes: >-
+    State is per-coupon (CouponStatus enum) rather than per-miner; miner score is the
+    aggregate over their currently-VALID coupons.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs: ["README.md", "docs/validating.md", "docs/mining.md"]
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "subnet_validator/constants.py"
+      line_ref: "29-32"
+      quote: "NETWORK_TO_NETUID = { constants.FINNEY_NETWORK: 16, constants.FINNEY_TEST_NETWORK: 368, }"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "subnet_validator/services/weight_calculator_service.py"
+      line_ref: "29"
+      quote: "class WeightCalculatorService:"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "14"
+      quote: "BitKoop's discount codes are sourced directly from its network of incentivized miners ... Every coupon is tested, verified, and scored by independent validators"
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "subnet_validator/settings.py"
+      line_ref: "32"
+      quote: "coupon_weight: float = 0.8"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "subnet_validator/services/weight_calculator_service.py"
+      line_ref: "53-57"
+      quote: "def calculate_coupon_points(self, coupon: Coupon) -> int: \"\"\"Award a flat 100 points per valid coupon.\"\"\" return 100"
+    - claim_field: "/scoring_signals/1/weight"
+      source_path: "subnet_validator/settings.py"
+      line_ref: "33"
+      quote: "container_weight: float = 0.2"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "subnet_validator/services/weight_calculator_service.py"
+      line_ref: "136-142"
+      quote: "Stubbed container points calculation. TODO: Implement actual container scoring logic ... return {}"
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "docs/validating.md"
+      line_ref: "159-161"
+      quote: "A coupon is treated as valid only if the API reports it as applicable (e.g., ok=true and applicable=true)."
+    - claim_field: "/ground_truth_sources/1/description"
+      source_path: "docs/validating.md"
+      line_ref: "167-171"
+      quote: "TLS Notary (TLSN) provides cryptographic proofs of HTTP exchanges without running a browser."
+    - claim_field: "/aggregation/notes"
+      source_path: "subnet_validator/services/weight_calculator_service.py"
+      line_ref: "150-178"
+      quote: "score = min(1.0, round((0.8 * coupon_points + 0.2 * container_points) / MAX_POINTS, 4)) ... score = min(1.0, round(total_points[miner] / max_points, 4))"
+    - claim_field: "/aggregation/method"
+      source_path: "subnet_validator/services/weight_calculator_service.py"
+      line_ref: "164-178"
+      quote: "total_points[miner] = ( self.coupon_weight * coupon_pts + self.container_weight * container_pts ) ... score = min(1.0, round(total_points[miner] / max_points, 4))"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "subnet_validator/tasks/set_weights.py"
+      line_ref: "131-138"
+      quote: "No node weights to set, fallback to hardcoded weights to subnet owner ... node_id_to_weight = { 207: 1.0, }"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "subnet_validator/tasks/set_weights.py"
+      line_ref: "140-150"
+      quote: "result = weights.set_node_weights( substrate=metagraph.substrate, keypair=keypair, node_ids=..., node_weights=..., netuid=settings.netuid, ... )"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "subnet_validator/settings.py"
+      line_ref: "29"
+      quote: "set_weights_interval: timedelta = timedelta(hours=1)  # Run every hour"
+    - claim_field: "/weight_setting/cadence"
+      source_path: "subnet_validator/tasks/set_weights.py"
+      line_ref: "60-68"
+      quote: "if ( last_set_weights_time > time.time() - settings.set_weights_interval.total_seconds() ): logger.debug(\"Skipping weight calculation because it was already run recently\")"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "subnet_validator/services/weight_calculator_service.py"
+      line_ref: "78-79"
+      quote: "Group coupons by site and code, keeping only the earliest one for each duplicate."
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "subnet_validator/settings.py"
+      line_ref: "18-20"
+      quote: "max_coupons_per_site_per_miner: int = ( 8  # Maximum coupons per miner per site )"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "README.md"
+      line_ref: "75-76"
+      quote: "Success sets status to VALID; failure sets to INVALID ... Another task rechecks VALID coupons whose last_checked_at is older than ~1 day, potentially flipping them to INVALID"
+    - claim_field: "/per_miner_state/status_values"
+      source_path: "subnet_validator/constants.py"
+      line_ref: "7-14"
+      quote: "class CouponStatus(enum.IntEnum): INVALID = 0 VALID = 1 PENDING = 2 EXPIRED = 3 USED = 4 DELETED = 5 DUPLICATE = 6"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "subnet_validator/settings.py"
+      line_ref: "21"
+      quote: "recheck_interval: timedelta = timedelta(days=1)"
+    - claim_field: "/documentation/primary_docs"
+      source_path: "README.md"
+      line_ref: "65-69"
+      quote: "## Scoring Formula - Points: - Each valid coupon: 100 points - Combined score = coupon_weight * coupon_points - Normalization: min(1.0, round(points / MAX, 4))"
+  unresolved:
+    - "Exact container scoring logic (signal stubbed, not implemented)."
+    - "min_weight_stake (1000.0) role in weight setting not traced to a use site."
+    - "Whether the hardcoded fallback uid 207 corresponds to a sustained burn in practice."

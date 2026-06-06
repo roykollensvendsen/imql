@@ -1,0 +1,267 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: full_burn
+mechanism_status_notes: >-
+  The documented mechanism (peer scoring + cluster-based metagraph scoring) is fully
+  implemented and computed/stored by the validator tasks (PeerScoring, MetagraphScoringAlternative).
+  However, the active SetWeights.run() ignores all computed miner scores and hardcodes a single
+  weight of 1.0 to the subnet owner UID, so ~all emission is burned to the owner. The miner-based
+  weight path (filter_last_scores / renormalize_weights / subtensor_set_weights using
+  alternative_metagraph_score) exists in the same file but is not called from run().
+
+subnet:
+  name: "Infinite Games"
+  owner_repo: "amedeo-gigaver__infinite_games"
+  netuid: 6
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners forecast binary future events (e.g. Polymarket-style questions), submitting a
+    probability p in (0,1) that each event occurs, as a time series of submissions before a
+    cutoff (typically 24h before resolution). After an event resolves, validators score each
+    miner via a peer score comparing the miner's log-probability against the mean of the other
+    miners' log-probabilities, aggregate over time intervals with parabolic (power-decay) weights,
+    take a moving average over recent events, extremise (max(.,0)^2) and normalize across miners.
+  submission_format: [signals]
+
+scoring_signals:
+  - name: peer_score
+    metric_kind: predictive_contribution
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      Per interval, peer_score = log_score(miner) - mean log_score of other miners, where
+      log_score = log(p) if outcome==1 else log(1-p). Predictions clipped to [CLIP_EPS, 1-CLIP_EPS]
+      with CLIP_EPS=1e-2. Computed in PeerScoring.peer_score_intervals.
+  - name: probabilistic_forecast
+    metric_kind: probabilistic_forecast
+    direction: target_band
+    weight: null
+    normalization: none
+    notes: >-
+      Raw miner probability p in (0,1) for a binary event. Legacy Brier scoring documented in README
+      ("Brier Score (Legacy)") replaced by peer scoring.
+
+ground_truth_sources:
+  - kind: market_data
+    description: >-
+      Binary future events sourced from prediction-market-style providers (Polymarket referenced),
+      processed by an LLM event-generation pipeline; resolution via central/UMA/news mechanisms per
+      README roadmap. Validators record the binary outcome o_q in {0,1} per event.
+    source_identifier: "ifgames"
+    trust_model: oracle
+    notes: >-
+      unique_event_id prefix 'ifgames-' (metagraph_scoring_alternative.get_internal_forecasts).
+      Outcome stored as text in DB and cast to float in peer_score_event.
+
+aggregation:
+  method: weighted_average
+  composition: weighted_sum
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "subnet_owner_uid (metagraph.owner_hotkey)"
+    fraction: 1.0
+    dynamic: false
+    notes: >-
+      SetWeights.run() builds scores = DataFrame({miner_uid:[owner uid], raw_weights:[1.0]}) and
+      sets weights only to the owner UID, burning ~all emission. In the (currently uncalled) miner
+      path of MetagraphScoringAlternative, owner_credits_to_burn = 1 - sum_round_credits is also
+      allocated to the owner as a dynamic residual.
+  notes: >-
+    Documented per-event aggregation: weighted average of interval peer scores using power-decay
+    weights w(i) = 1 - (i/(n_intervals-1))**exponent with exponent=2 (parabolic). Intervals are
+    4-hour blocks (AGGREGATION_INTERVAL_LENGTH_MINUTES = 60*4). Per-event scores enter a moving
+    average over the last EVENTS_MOVING_WINDOW=150 events, then extremised max(M,0)^2 and normalized
+    across miners (README "Peer Scoring"). These computed scores are NOT used by the active run().
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    Active path: SetWeights.run() syncs the metagraph, checks the on-chain weights rate limit
+    (time_to_set_weights), then sets a single weight of 1.0 to the owner UID via
+    subtensor.set_weights. Documented miner path (renormalize_weights) would normalize
+    alternative_metagraph_score to sum 1 and set per-miner weights, but is not invoked in run().
+  on_chain_call: set_weights
+  tempo_or_interval: "subtensor.weights_rate_limit(netuid)"
+  smoothing:
+    kind: ema
+    alpha: null
+    window: 150
+    notes: >-
+      Documented mechanism keeps a moving average (rema) of peer scores over the last 150 events
+      (EVENTS_MOVING_WINDOW). Reverse exponential / power-decay MA weights applied within an event.
+      alpha is not a literal constant in the source. This smoothing is dormant under full_burn.
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Predictions clipped to (CLIP_EPS, 1-CLIP_EPS) = (0.01, 0.99) to avoid infinite log scores;
+      out-of-bound predictions are clipped (PeerScoring.prepare_predictions_df, CLIP_EPS=1e-2).
+  - kind: liveness_check
+    enforcement: penalty
+    description: >-
+      Unresponsive miners (registered before an interval but no submission) get an imputed
+      prediction at 1/3 the distance from the mean toward the worst prediction
+      (UPTIME_PENALTY_DISTANCE = 1/3), penalising non-submission (fill_unresponsive_miners).
+  - kind: deduplication
+    enforcement: penalty
+    description: >-
+      Cluster-based metagraph scoring clusters correlated miners and applies a copy-miner penalty
+      (COPY_MINER_PENALTY_POW = 2) to limit credit to copied/correlated predictions
+      (ClusterSelector). Part of the documented/dormant miner path.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, registration_age]
+  status_values: []
+  reset_policy: >-
+    New miners registering after an event/interval opened are given a score of 0 (baseline) for
+    questions opened before registration; miners registered after effective cutoff minus one
+    interval are excluded from scoring for that event.
+  notes: >-
+    miner_registered_minutes derived from registered_date; peer_score_event filters miners by
+    registration time relative to the event cutoff. Moving average over last 150 events per miner.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/peer-scoring.md"
+    - "docs/validator.md"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/mechanism_status"
+      source_path: "neurons/validator/tasks/set_weights.py"
+      line_ref: "361-367"
+      quote: >-
+        owner = self.get_owner_neuron() ; scores = pd.DataFrame({SWNames.miner_uid: [owner["uid"]],
+        SWNames.raw_weights: [1.0]}) ; uids, weights = await self.preprocess_weights(normalized_scores=scores) ;
+        await self.subtensor_set_weights(processed_uids=uids, processed_weights=weights)
+    - claim_field: "/subnet/netuid"
+      source_path: "neurons/validator/utils/config.py"
+      line_ref: "14-21"
+      quote: '{"subtensor.network": "finney", "netuid": 6, "ifgames.env": None}'
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "neurons/validator/tasks/peer_scoring.py"
+      line_ref: "1-8"
+      quote: "import numpy as np ; import pandas as pd ; from bittensor.core.metagraph import AsyncMetagraph"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "56-70"
+      quote: >-
+        Miners compete by sending to the validators for each binary event E their estimation of the
+        probability p that E is realized. ... We implement a cutoff for the submission time of a
+        prediction. The cutoff is set at 24 hours before the resolution date for most events.
+    - claim_field: "/scoring_signals/0"
+      source_path: "neurons/validator/tasks/peer_scoring.py"
+      line_ref: "418-421"
+      quote: >-
+        interval_scores_df[PSNames.peer_score] = (interval_scores_df[PSNames.log_score]
+        - interval_scores_df[PSNames.mean_log_score_others])
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "neurons/validator/tasks/peer_scoring.py"
+      line_ref: "25-26"
+      quote: "# controls the clipping of predictions [CLIP_EPS, 1 - CLIP_EPS] ; CLIP_EPS = 1e-2"
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "neurons/validator/tasks/metagraph_scoring_alternative.py"
+      line_ref: "167"
+      quote: 'unique_event_ids = [f"ifgames-{event_id}" for event_id in event_ids]'
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "neurons/validator/tasks/set_weights.py"
+      line_ref: "363"
+      quote: 'scores = pd.DataFrame({SWNames.miner_uid: [owner["uid"]], SWNames.raw_weights: [1.0]})'
+    - claim_field: "/aggregation/burn_allocation/dynamic"
+      source_path: "neurons/validator/tasks/metagraph_scoring_alternative.py"
+      line_ref: "213-214"
+      quote: "# Calculate credits to burn ; sum_round_credits = selected_clusters_credits[\"round_credit_per_miner\"].sum() ; owner_credits_to_burn = 1 - sum_round_credits"
+    - claim_field: "/aggregation/notes"
+      source_path: "neurons/validator/tasks/peer_scoring.py"
+      line_ref: "170-183"
+      quote: >-
+        def power_decay_weight(idx, n_intervals, exponent=DEFAULT_POWER_DECAY_WEIGHT_EXPONENT):
+        ... w (i) = 1 - (i / (n_intervals - 1)) ** exponent ... x = idx / (n_intervals - 1) ; return 1 - x**exponent
+    - claim_field: "/aggregation/method"
+      source_path: "neurons/validator/tasks/peer_scoring.py"
+      line_ref: "442-447"
+      quote: >-
+        scores_df[PSNames.rema_peer_score] = (scores_df[PSNames.weighted_peer_score_sum]
+        / scores_df[PSNames.weight_sum])
+    - claim_field: "/weight_setting/method"
+      source_path: "neurons/validator/tasks/set_weights.py"
+      line_ref: "353-367"
+      quote: >-
+        async def run(self): await self.metagraph_lite_sync() ; can_set_weights = await
+        self.time_to_set_weights() ; if not can_set_weights: return ; owner = self.get_owner_neuron()
+    - claim_field: "/weight_setting/cadence"
+      source_path: "neurons/validator/tasks/set_weights.py"
+      line_ref: "101-113"
+      quote: >-
+        weights_rate_limit = await self.subtensor.weights_rate_limit(netuid=self.netuid) ...
+        if blocks_since_last_attempt < weights_rate_limit:
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "neurons/validator/tasks/set_weights.py"
+      line_ref: "304-313"
+      quote: >-
+        successful, sw_msg = await self.subtensor.set_weights(wallet=self.wallet,
+        netuid=self.netuid, uids=processed_uids, weights=processed_weights, version_key=self.spec_version, ...)
+    - claim_field: "/weight_setting/smoothing/window"
+      source_path: "neurons/validator/tasks/metagraph_scoring_alternative.py"
+      line_ref: "18-19"
+      quote: "# how many previous events to consider for the moving average ; EVENTS_MOVING_WINDOW = 150"
+    - claim_field: "/anti_gaming/0"
+      source_path: "neurons/validator/tasks/peer_scoring.py"
+      line_ref: "242-244"
+      quote: >-
+        predictions_df[PSNames.interval_agg_prediction] = predictions_df[PSNames.interval_agg_prediction].clip(CLIP_EPS, 1 - CLIP_EPS)
+    - claim_field: "/anti_gaming/1"
+      source_path: "neurons/validator/tasks/peer_scoring.py"
+      line_ref: "27-28"
+      quote: "# controls the distance mean-min answer penalty for miners which are unresponsive ; UPTIME_PENALTY_DISTANCE = 1 / 3"
+    - claim_field: "/anti_gaming/2"
+      source_path: "neurons/validator/utils/cluster_selector/cluster_selector.py"
+      line_ref: "14"
+      quote: "COPY_MINER_PENALTY_POW = 2"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "neurons/validator/tasks/peer_scoring.py"
+      line_ref: "483-487"
+      quote: >-
+        # do not score miners which registered after the effective cutoff - 1 interval ; miners =
+        self.miners_last_reg[self.miners_last_reg[PSNames.miner_registered_minutes]
+        <= event_cutoff_start_minutes - AGGREGATION_INTERVAL_LENGTH_MINUTES].copy()
+    - claim_field: "/aggregation/notes/intervals"
+      source_path: "neurons/validator/utils/common/interval.py"
+      line_ref: "7"
+      quote: "# Intervals are grouped in 4-hour blocks (240 minutes). ; AGGREGATION_INTERVAL_LENGTH_MINUTES = 60 * 4"
+    - claim_field: "/documentation/status"
+      source_path: "docs/peer-scoring.md"
+      line_ref: "81-91"
+      quote: >-
+        $$R_m = \max\bigl(L_m, 0\bigr)^2$$ ... Finally, each miner's weight is determined by
+        normalizing these extremised scores: $$W_m = \frac{R_m}{\sum_{m' \neq m} R_{m'}}$$
+  unresolved:
+    - >-
+      /weight_setting/smoothing/alpha: documentation describes a "reverse exponential MA" but the
+      implemented weights are power-decay (parabolic); no literal EMA alpha constant exists in the source.
+    - "/aggregation/temperature: no softmax/temperature constant; aggregation is a weighted average, not softmax."
+    - >-
+      /weight_setting/tempo_or_interval: rate limit is read dynamically from chain
+      (subtensor.weights_rate_limit); no literal block tempo constant in the source.

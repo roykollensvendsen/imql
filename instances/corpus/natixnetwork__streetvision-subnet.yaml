@@ -1,0 +1,252 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: full_burn
+mechanism_status_notes: >-
+  The live validator is halted. forward() early-returns ("Subnet halted: skipping
+  challenge forward pass.") so no miners are queried or scored, and set_weights()
+  bypasses all (commented-out) score normalization to direct 100% weight (uint16
+  65535) to the subnet owner's UID, burning all miner emissions. The documented
+  classification scoring (MCC + accuracy with reward-curve exponent) still exists
+  in the code but is dead/dormant.
+
+subnet:
+  name: "Natix StreetVision (SN72)"
+  owner_repo: "natixnetwork__streetvision-subnet"
+  netuid: 72
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners run an image-classification model that predicts whether an image
+    contains roadwork / construction-site elements (label 1.0 = roadwork,
+    0.0 = no roadwork), returning a probability in [0,1]. Validators score the
+    classification quality over a sliding window. (Currently the subnet is halted
+    and this task is not executed.)
+  submission_format: [signals]
+
+scoring_signals:
+  - name: mcc_window_100
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.5
+    normalization: none
+    notes: >-
+      Matthews correlation coefficient over the last 100 predictions (clamped to
+      >=0). Half of the per-step reward: reward = 0.5*metrics_100["mcc"] +
+      0.5*metrics_10["accuracy"]. Dormant (forward() halted).
+  - name: accuracy_window_10
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.5
+    normalization: none
+    notes: >-
+      Accuracy over the last 10 predictions. Other half of the per-step reward.
+      Dormant.
+  - name: validity_penalty
+    metric_kind: other
+    metric_kind_other: validity_gate
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Multiplicative gate: compute_penalty(y_pred) returns 0.0 if prediction is
+      outside [0,1] else 1.0, multiplied into the reward. A prediction of -1
+      (no response) yields reward 0.0 directly. Dormant.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Labeled roadwork image dataset; the true label (1.0 roadwork / 0.0 not) is
+      known to the validator and compared against miner predictions. Challenges
+      also sourced from an API and synthetic image caches.
+    source_identifier: "natix-network-org/roadwork (HuggingFace)"
+    trust_model: trusted
+    notes: >-
+      IMAGE_DATASETS["Roadwork"] = [{"path": "natix-network-org/roadwork"}].
+      Synthetic t2i/i2i caches also used. Ground-truth path is dormant while halted.
+
+aggregation:
+  method: exponential_decay_ema
+  composition: hybrid
+  normalization: none
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "subnet owner UID (owner_hotkey index in metagraph)"
+    fraction: 1.0
+    dynamic: false
+    notes: >-
+      set_weights() directs the full weight vector (uids=[owner_uid],
+      weights=[65535]) to the owner UID, burning all miner emissions. Owner's 18%
+      cut and validator dividends are chain-level and unaffected.
+  notes: >-
+    Documented (dormant) aggregation: per-step reward = (0.5*MCC100 +
+    0.5*accuracy10) * validity_penalty, then raised to REWARD_CURVE_EXPONENT (3.0);
+    scores updated via EMA (alpha 0.05). Live aggregation is full burn.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    Halted/burn: 100% weight to owner UID. Documented path (commented out) would
+    normalize EMA scores (L1 norm) and call process_weights_for_netuid.
+  on_chain_call: set_weights
+  tempo_or_interval: null
+  smoothing:
+    kind: ema
+    alpha: 0.05
+    window: null
+    notes: >-
+      update_scores applies scores = alpha*scattered_rewards + (1-alpha)*scores
+      with moving_average_alpha default 0.05. Dormant while halted.
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      compute_penalty rejects out-of-range predictions (y_pred<0 or >1 -> 0.0);
+      a -1 (non-response) yields reward 0.0.
+  - kind: other
+    kind_other: hotkey_change_reset
+    enforcement: penalty
+    description: >-
+      If a UID's hotkey changes, its performance history is reset
+      (reset_miner_history), wiping accumulated MCC/accuracy windows.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      vpermit_tao_limit (default 40096) gates which validators may query; in
+      update_scores validator UIDs above the limit are zeroed from rewards.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: true
+  state_kinds: [performance_ledger]
+  status_values: []
+  reset_policy: >-
+    Per-UID sliding deques of last 100 predictions/labels (MinerPerformanceTracker),
+    persisted to image_miner_performance_tracker.pkl. Reset on hotkey change.
+  notes: >-
+    Metrics computed over window 100 (MCC) and window 10 (accuracy). Dormant while
+    forward() is halted.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "docs/incentive.md"
+    - "docs/architecture.md"
+    - "README.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/mechanism_status"
+      source_path: "natix/base/validator.py"
+      line_ref: "335-353"
+      quote: >-
+        # Subnet is halted: burn all miner rewards by directing 100% weight to the
+        subnet owner's UID. ... result, msg = self.subtensor.set_weights(...,
+        uids=[owner_uid], weights=[65535], ...)
+    - claim_field: "/task/summary"
+      source_path: "natix/validator/scoring/reward.py"
+      line_ref: "41-55"
+      quote: >-
+        label: The true label (1.0 for roadwork, 0.0 for no roadwork) ...
+        responses: List of responses from the miners
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "natix/validator/scoring/reward.py"
+      line_ref: "87-90"
+      quote: >-
+        reward = 0.5 * metrics_100["mcc"] + 0.5 * metrics_10["accuracy"]
+        reward *= compute_penalty(pred_prob)
+        reward = reward ** REWARD_CURVE_EXPONENT
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "natix/validator/scoring/performance_tracker.py"
+      line_ref: "78-80"
+      quote: >-
+        mcc = max(0, matthews_corrcoef(labels, predictions)) ... metrics_100 =
+        tracker[modality].get_metrics(uid, window=100)
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "natix/validator/scoring/reward.py"
+      line_ref: "80-81"
+      quote: >-
+        metrics_100 = tracker[modality].get_metrics(uid, window=100)
+        metrics_10 = tracker[modality].get_metrics(uid, window=10)
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "natix/validator/scoring/reward.py"
+      line_ref: "37-38"
+      quote: >-
+        bad = (y_pred < 0.0) or (y_pred > 1.0); return 0.0 if bad else 1.0
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "natix/validator/scoring/reward.py"
+      line_ref: "84-85"
+      quote: 'if pred_prob == -1: reward = 0.0'
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "natix/constants.py"
+      line_ref: "41-45"
+      quote: '"Roadwork": [ {"path": f"{HUGGINGFACE_REPO}/roadwork"} ]'
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "natix/base/validator.py"
+      line_ref: "345-353"
+      quote: >-
+        self.subtensor.set_weights(... uids=[owner_uid], weights=[65535], ...)
+    - claim_field: "/aggregation/notes"
+      source_path: "natix/constants.py"
+      line_ref: "36"
+      quote: "REWARD_CURVE_EXPONENT = 3.0  # >1.0 steepens the reward curve"
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "natix/utils/config.py"
+      line_ref: "288-293"
+      quote: >-
+        "--neuron.moving_average_alpha", ... default=0.05
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "natix/base/validator.py"
+      line_ref: "447-448"
+      quote: >-
+        alpha: float = self.config.neuron.moving_average_alpha; self.scores =
+        alpha * scattered_rewards + (1 - alpha) * self.scores
+    - claim_field: "/weight_setting/method"
+      source_path: "natix/validator/forward.py"
+      line_ref: "13-16"
+      quote: >-
+        # Subnet is halted: skip all miner queries and scoring. bt.logging.info(
+        "Subnet halted: skipping challenge forward pass."); return
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "natix/validator/scoring/performance_tracker.py"
+      line_ref: "32-34"
+      quote: >-
+        # Reset histories if miner is new or miner address has changed; if uid not
+        in self.prediction_history or self.miner_hotkeys.get(uid) != miner_hotkey:
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "natix/utils/config.py"
+      line_ref: "305-309"
+      quote: '"--neuron.vpermit_tao_limit", ... default=40096'
+    - claim_field: "/per_miner_state/notes"
+      source_path: "natix/validator/scoring/performance_tracker.py"
+      line_ref: "14-18"
+      quote: >-
+        def __init__(self, store_last_n_predictions: int = 100): self.prediction_history
+        ... self.label_history ... self.miner_hotkeys
+    - claim_field: "/subnet/netuid"
+      source_path: "natix/validator/config.py"
+      line_ref: "6"
+      quote: "MAINNET_UID = 72"
+    - claim_field: "/documentation/primary_docs"
+      source_path: "docs/incentive.md"
+      line_ref: "13-16"
+      quote: >-
+        The network employs a dynamic reward system to incentivize miners ...
+        Miners are rewarded based on their performance in classfiying construction sites.
+  unresolved:
+    - "decay_rate / temperature: no softmax or rank decay in the (dormant) aggregation."
+    - "weight_setting cadence/tempo: SLEEP_TIME derived from MAX_TASKS_PER_DAY but the halted loop never sets weights on a real tempo; exact block tempo not in repo."

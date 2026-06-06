@@ -1,0 +1,273 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  The validator burns 90% of emissions to the subnet owner UID (burn_rate = 0.9 in
+  base/validator.py) and distributes the remaining 10% across non-zero-scoring miners by
+  rank via a transposed-cubic distribution. The documented tag-similarity scoring is live
+  and feeds the per-miner EMA, but only ~10% of emission is allocated to it. Note: the
+  conversationgenome/validator/reward.py module is dead OCR-template code (reward() returns
+  0.5 on line 172); the real scoring lives in conversationgenome/validator/evaluator.py.
+
+subnet:
+  name: "ReadyAI / Conversation Genome Project"
+  owner_repo: "afterpartyai__bittensor-conversation-genome-project"
+  netuid: null
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners receive a masked "Data Window" pulled from a larger raw conversation/data source
+    and must generate a set of semantic tags for that window. Validators embed each
+    miner-submitted tag and score it by cosine similarity to the vector neighborhood of the
+    ground-truth tags for the full data source. The miner tag set is rewarded by a weighted
+    combination of its top-3 unique-tag mean, overall mean, median, and max tag scores, with
+    penalties for too few / non-unique / low-quality tags.
+  submission_format: [signals]
+
+scoring_signals:
+  - name: top_3_mean
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 0.55
+    normalization: none
+    notes: >-
+      Mean of the top-3 unique-tag cosine-similarity scores; dominant component of the
+      adjusted score (scoring_factors['top_3_mean'] = 0.55).
+  - name: mean_score
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 0.25
+    normalization: none
+    notes: "Overall mean of all tag cosine-similarity scores (scoring_factors['mean_score'] = 0.25)."
+  - name: median_score
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 0.1
+    normalization: none
+    notes: "Median tag cosine-similarity score (scoring_factors['median_score'] = 0.1)."
+  - name: max_score
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: 0.1
+    normalization: none
+    notes: "Single highest tag cosine-similarity score (scoring_factors['max_score'] = 0.1)."
+
+ground_truth_sources:
+  - kind: llm_judgment
+    description: >-
+      The validator generates ground-truth tags and embeddings for the full conversation/data
+      source via an LLM + embedding pipeline, then forms a semantic neighborhood vector (mean
+      of all ground-truth tag vectors). Miner tags are scored by cosine similarity to this
+      neighborhood.
+    source_identifier: "Evaluator.calculate_semantic_neighborhood / score_vector_similarity"
+    trust_model: trusted
+    notes: >-
+      Ground truth is the validator's own full-conversation tag set / embedding neighborhood,
+      produced from an OpenAI/Claude/local LLM (configurable). The diff between miner tags and
+      ground-truth tags partitions tags into 'both' and 'unique' sets.
+
+aggregation:
+  method: weighted_average
+  composition: weighted_sum
+  normalization: none
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "subnet owner UID (SubnetOwnerHotkey)"
+    fraction: 0.9
+    dynamic: false
+    notes: >-
+      burn_rate = 0.9 set in BaseValidatorNeuron.__init__; get_burn_uid() resolves the
+      subnet owner hotkey to a UID. In get_raw_weights, raw_weights[burn_uid] = burn_rate
+      and the remaining distributed_weights = 1.0 - burn_rate is spread across ranked
+      non-zero miners.
+  notes: >-
+    Per-response adjusted_score = 0.55*top_3_mean + 0.25*mean + 0.1*median + 0.1*max, then
+    multiplicative penalties applied in calculate_penalty (final_miner_score). The 10%
+    distributed share is allocated by rank, NOT proportional to score: get_raw_weights orders
+    miners by score and assigns weights via transposed_cubic_distribution(i, num_uids) which
+    maps rank to a value in [0.001, 0.003], then scales them to sum to (1 - burn_rate).
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    On each sync where should_set_weights() is true (block - last_update > epoch_length),
+    set_weights() builds raw_weights via ValidatorLib.get_raw_weights(scores, burn_uid,
+    burn_rate=0.9), then process_weights_for_netuid + convert_weights_and_uids_for_emit, then
+    subtensor.set_weights with version_key = spec_version.
+  on_chain_call: set_weights
+  tempo_or_interval: "epoch_length blocks"
+  smoothing:
+    kind: ema
+    alpha: 0.1
+    window: null
+    notes: >-
+      update_scores applies an EMA on per-miner rewards with default moving_average_alpha=0.1;
+      for miners with reward 0 a dampening low_alpha = alpha/2 is used. EMA scores are then
+      normalized, raised to nonlinear_power = 3.0, and renormalized to produce self.scores.
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      calculate_penalty multiplies the score by fixed factors: *0.9 if no 'both' tags (no
+      overlap with ground truth), *0.5 if max_score < 0.2 (all junk tags), *0.2 if total tags
+      < 2, and *0.85 / *0.9 / *0.95 for fewer than 1 / 2 / 3 unique tags respectively.
+  - kind: deduplication
+    enforcement: penalty
+    description: >-
+      Duplicate miner tags are removed (tag_set = list(set(tags))) before scoring; only unique
+      tags contribute, and at most max_scored_tags (20) are scored. Responses with fewer than
+      min_tags (3) tags receive a zero score.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      90% of emissions are burned to the subnet owner UID (burn_rate = 0.9), capping the total
+      incentive available to gaming miners to ~10% of emission distributed by rank.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score]
+  status_values: []
+  reset_policy: >-
+    On resync_metagraph, scores and ema_scores for a UID are zeroed when its hotkey changes
+    (deregistration / replacement).
+  notes: >-
+    self.scores and self.ema_scores (float32 arrays over metagraph.n) persist across epochs in
+    state.npz; ema_scores is the moving-average store updated each epoch with alpha=0.1.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: /subnet/name
+      source_path: README.md
+      line_ref: "1"
+      quote: "# **ReadyAI**"
+    - claim_field: /task/summary
+      source_path: README.md
+      line_ref: "929"
+      quote: >-
+        Three miners are selected by a validator to receive the same Data Window, which is
+        pulled from a larger raw data source. After they generate a set of tags for their
+        assigned window, miners are rewarded based on the quality and relevance of their tags
+    - claim_field: /scoring_signals/0/weight
+      source_path: conversationgenome/validator/evaluator.py
+      line_ref: "30-35"
+      quote: 'scoring_factors = { "top_3_mean": 0.55, "median_score": 0.1, "mean_score": 0.25, "max_score": 0.1, }'
+    - claim_field: /aggregation/notes
+      source_path: conversationgenome/validator/evaluator.py
+      line_ref: "213-218"
+      quote: >-
+        adjusted_score = ( (scoring_factors['top_3_mean'] * top_3_mean) +
+        (scoring_factors['median_score'] * median_score) + (scoring_factors['mean_score'] *
+        mean_score) + (scoring_factors['max_score'] * max_score) )
+    - claim_field: /scoring_signals/0/notes
+      source_path: README.md
+      line_ref: "931"
+      quote: >-
+        the mean of their top 3 unique tag scores (55% weight), the overall mean score of the
+        set of tags submitted (25% weight), the median score of the tags submitted (10% weight)
+        and their single top score (10% weight)
+    - claim_field: /ground_truth_sources/0/description
+      source_path: conversationgenome/validator/evaluator.py
+      line_ref: "59-68"
+      quote: >-
+        similarity_score = np.dot(neighborhood_vectors, individual_vectors) /
+        (np.linalg.norm(neighborhood_vectors) * np.linalg.norm(individual_vectors))
+    - claim_field: /ground_truth_sources/0/notes
+      source_path: README.md
+      line_ref: "931"
+      quote: >-
+        A score for each miner-submitted tag is derived by a cosine distance calculation from
+        the embedding of that tag to the vector neighborhood of the ground truth tags
+    - claim_field: /aggregation/burn_allocation/fraction
+      source_path: conversationgenome/base/validator.py
+      line_ref: "73-74"
+      quote: "# Burn rate -> burns 90% of the emissions.\n        self.burn_rate = 0.9"
+    - claim_field: /aggregation/burn_allocation/address_or_uid
+      source_path: conversationgenome/base/validator.py
+      line_ref: "231-246"
+      quote: >-
+        sn_owner_hotkey = self.subtensor.query_subtensor("SubnetOwnerHotkey", ...)
+        ... sn_owner_uid = self.subtensor.get_uid_for_hotkey_on_subnet(...) ... return sn_owner_uid
+    - claim_field: /aggregation/burn_allocation/enabled
+      source_path: conversationgenome/validator/ValidatorLib.py
+      line_ref: "243-245"
+      quote: >-
+        if burn_uid is not None and burn_rate > 0: bt.logging.debug(f"Burning {burn_rate} to
+        UID {burn_uid}") raw_weights[int(burn_uid)] = burn_rate
+    - claim_field: /aggregation/method
+      source_path: conversationgenome/validator/ValidatorLib.py
+      line_ref: "224-238"
+      quote: >-
+        for i, uid in enumerate(ordered_uids_no_zeros): w = self.transposed_cubic_distribution(i,
+        num_uids) ... scale = distributed_weights / sum_temp; raw_weights += temp_weights * scale
+    - claim_field: /weight_setting/smoothing/alpha
+      source_path: conversationgenome/utils/config.py
+      line_ref: "208-213"
+      quote: '"--neuron.moving_average_alpha", type=float, ... default=0.1,'
+    - claim_field: /weight_setting/smoothing/notes
+      source_path: conversationgenome/validator/ValidatorLib.py
+      line_ref: "128-146"
+      quote: >-
+        default_alpha: float = moving_average_alpha; low_alpha: float = moving_average_alpha / 2
+        ... transformed_scores = np.power(normalized_scores, nonlinear_power)
+    - claim_field: /weight_setting/method
+      source_path: conversationgenome/base/validator.py
+      line_ref: "266-313"
+      quote: >-
+        burn_uid = self.get_burn_uid(); burn_rate = self.burn_rate; raw_weights =
+        vl.get_raw_weights(self.scores, burn_uid=burn_uid, burn_rate=burn_rate) ...
+        result, msg = self.subtensor.set_weights(...)
+    - claim_field: /weight_setting/cadence
+      source_path: conversationgenome/base/neuron.py
+      line_ref: "168-172"
+      quote: "(self.block - self.metagraph.last_update[self.uid]) > self.config.neuron.epoch_length and self.neuron_type != \"MinerNeuron\""
+    - claim_field: /anti_gaming/0/description
+      source_path: conversationgenome/validator/evaluator.py
+      line_ref: "82-105"
+      quote: >-
+        if num_both_tags == 0: final_score *= 0.9 ... if max_score < 0.2: final_score *= 0.5 ...
+        if num_tags < 2: final_score *= 0.2 ... if num_unique_tags < 1: final_score *= 0.85
+    - claim_field: /anti_gaming/1/description
+      source_path: conversationgenome/validator/evaluator.py
+      line_ref: "253-262"
+      quote: >-
+        tag_set = list(set(tags)) ... if idx > self.max_scored_tags: ... break  (max_scored_tags = 20,
+        min_tags = 3)
+    - claim_field: /per_miner_state/notes
+      source_path: conversationgenome/base/validator.py
+      line_ref: "400-406"
+      quote: "np.savez(self.config.neuron.full_path + \"/state.npz\", step=self.step, scores=self.scores, hotkeys=self.hotkeys, ema_scores=self.ema_scores,)"
+    - claim_field: /per_miner_state/reset_policy
+      source_path: conversationgenome/base/validator.py
+      line_ref: "338-341"
+      quote: >-
+        if hotkey != self.metagraph.hotkeys[uid]: self.scores[uid] = 0  # hotkey has been replaced
+        self.ema_scores[uid] = 0  # hotkey has been replaced
+    - claim_field: /mechanism_status_notes
+      source_path: conversationgenome/validator/reward.py
+      line_ref: "171-172"
+      quote: "time.sleep(5)\n    return 0.5"
+  unresolved:
+    - "subnet.netuid: not stated in source (netuid is a runtime config arg, no literal default in repo)."
+    - "weight_setting.tempo_or_interval: epoch_length has no literal default visible in the read config/neuron sections; left as symbolic string."
+    - "transposed_cubic_distribution range [0.001, 0.003] is a rank-mapping internal, not a schema field; captured in aggregation.notes only."

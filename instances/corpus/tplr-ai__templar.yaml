@@ -1,0 +1,312 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: dormant
+mechanism_status_notes: >-
+  The main README states "Templar is dormant ... Templar's decentralized training protocol is not
+  currently active". docs/README.md states "100% Burn Period Active: Miners are not being evaluated
+  and no emissions are being distributed." A dedicated neurons/burn.py sets 100% weight to the burn
+  UID (UID 1) every 360 blocks. Subnet 3 now runs a different mechanism (Crusades). The documented
+  scoring pipeline below (validator.py, burn_rate=0.5) is the designed-but-dormant mechanism; the live
+  reality is full burn to UID 1. netuid is ambiguous: validator.py/burn.py default to --netuid 268,
+  while README states the subnet is netuid 3.
+
+subnet:
+  name: "templar (τemplar)"
+  owner_repo: "tplr-ai__templar"
+  netuid: 3
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners perform distributed pre-training of a shared language model: each miner trains on assigned
+    data shards and submits compressed (TopK/DCT-quantized) pseudo-gradients each window. Validators
+    gather peer gradients, and for each evaluated miner apply that miner's gradient to the model and
+    measure the loss reduction on a random data batch. The per-miner gradient score is the relative
+    loss improvement (L_before - L_after)/L_before on random data. Scores feed an OpenSkill
+    (PlackettLuce) skill rating; the final per-miner score multiplies the OpenSkill ordinal by a
+    binary-overfitting moving average and a model-sync score. Weights are then split (designed)
+    between a burn UID and the top "gather"/"reserve" peers. As of the captured source the mechanism
+    is dormant / in full-burn mode.
+  submission_format: [signals]
+  submission_format_other: ""
+
+scoring_signals:
+  - name: gradient_loss_improvement
+    metric_kind: loss
+    direction: higher_is_better
+    weight: 1.0
+    normalization: rank
+    notes: >-
+      gradient_scores[uid] = (loss_before_random - loss_after_random) / loss_before_random, i.e. the
+      relative reduction in model loss on a random batch after applying the miner's gradient. This
+      raw score is fed (as scores, higher-is-better) into an OpenSkill PlackettLuce rate() call which
+      produces per-miner mu/sigma; the OpenSkill ordinal is what enters the final score, so the
+      effective normalization is rank/skill-rating based.
+  - name: binary_overfitting_indicator
+    metric_kind: other
+    metric_kind_other: "binary overfitting indicator: +1 if relative improvement on the miner's own data exceeds that on random data, else -1; EMA-smoothed into a binary moving average"
+    direction: higher_is_better
+    weight: null
+    normalization: ema
+    notes: >-
+      binary_indicator_scores[uid] = 1 if improvement_own > improvement_random else -1. Smoothed:
+      binary_moving_averages = (1 - binary_score_ma_alpha)*old + binary_score_ma_alpha*indicator,
+      with binary_score_ma_alpha = 0.05. In the final score the BMA is clamped to max(0, bma); after
+      bma_warmup_windows (10) a bma_threshold (0.10) gate zeroes BMAs below threshold. Multiplicative
+      gate on the final score (no additive weight).
+  - name: model_sync_score
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: null
+    normalization: other
+    normalization_other: "sync_score = max(0, (1 - x/3)^2.5) where x = min(avg_steps_behind, 3)"
+    notes: >-
+      Measures how well-synchronized a miner's model is with the validator's. sync_score =
+      max(0.0, (1.0 - x / 3.0) ** 2.5) where x is the average number of steps the miner is behind,
+      capped at 3. Multiplicative factor in the final score (no additive weight).
+
+ground_truth_sources:
+  - kind: reference_model
+    description: >-
+      The validator's own copy of the collaboratively-trained model is the reference. A miner's
+      gradient quality is judged by the change in this model's cross-entropy loss on data batches
+      before vs. after applying the miner's submitted gradient (own-data and random-data batches).
+    source_identifier: "neurons/validator.py gradient evaluation (loss_before/after_random)"
+    trust_model: trusted
+    notes: >-
+      Data comes from sharded pre-training corpora (DCLM / FineWeb-edu per docs) managed by
+      ShardedDatasetManager; loss is computed deterministically by the validator on its model.
+
+aggregation:
+  method: rank_based
+  composition: multiplicative
+  normalization: sum_to_one
+  normalization_other: ""
+  temperature: null
+  decay_rate: 0.5
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "1"
+    fraction: 0.5
+    dynamic: false
+    notes: >-
+      Designed mechanism (validator.py update_weights): self.weights[self.burn_uid] = burn_rate with
+      hparams burn_rate = 0.5 and burn_uid = 1; non-burn weights are rescaled so they sum to
+      (1 - burn_rate). LIVE reality is fuller: docs declare a "100% Burn Period" and neurons/burn.py
+      sets weights=[1.0] to UID 1, i.e. effective fraction 1.0 while dormant. decay_rate 0.5 is the
+      reserve_decay_ratio geometric base used to taper reserve-peer weights (k=0.5 per rank).
+  notes: >-
+    Final per-miner score = openskill_ordinal * bma * sync_score (multiplicative composition of the
+    three signals). update_weights then allocates (1-burn_rate)*gather_share (0.75) to the top
+    gather_peer_count (20) positive-scored peers on a linear profile (w1 = gather_top_ratio=2.0 x
+    wn), and (1-burn_rate)*(1-gather_share) to the next reserve_peer_count (10) peers on a geometric
+    decay (reserve_decay_ratio=0.5). burn_rate (0.5) to burn_uid; final vector rescaled to sum to 1.
+
+weight_setting:
+  cadence: per_round
+  method: >-
+    Designed: validator sets weights every windows_per_weights (3) sync windows via
+    self.comms.subtensor.set_weights over positive-weighted UIDs (plus burn UID). Live/dormant:
+    neurons/burn.py independently sets weights=[1.0] to burn UID 1 every 360 blocks.
+  on_chain_call: set_weights
+  tempo_or_interval: "every 3 sync windows (windows_per_weights); blocks_per_window=115; burn.py every 360 blocks"
+  smoothing:
+    kind: ema
+    alpha: 0.05
+    window: null
+    notes: >-
+      The binary overfitting indicator is EMA-smoothed with binary_score_ma_alpha = 0.05
+      (new_avg = (1-alpha)*old + alpha*new). OpenSkill ratings provide additional temporal smoothing
+      of skill across windows. There is no single EMA over the final reward vector itself.
+
+anti_gaming:
+  - kind: deduplication
+    enforcement: penalty
+    description: >-
+      Index-similarity slashing: instantiate_slashing_multiplier() returns multipliers applied to
+      final_score by gradient index overlap — 0.5 when similarity high, 0.0 when similarity >= 95%
+      ("max"), 0.0 when similarity == 100% ("mega"). Catches miners copying others' sparse gradient
+      indices.
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      Overfitting detection via the binary indicator: a miner scoring better on its own data than on
+      random data gets indicator -1, dragging down its binary moving average (a multiplicative gate
+      on the final score).
+  - kind: liveness_check
+    enforcement: penalty
+    description: >-
+      Inactivity / missing-gradient slashing. inactivity_slash_rate = 0.25 per window for inactive
+      peers; missing_gradient_slash_rate = 0.75 (final_score *= 0.75) for missing gradients;
+      missing_gradient_penalty_score = -99.0. Consecutive negative evaluations (>= 3, exclude_negative
+      _peers) exclude a peer from gathering; >50% negative in last 8 evals slashes final_score by 75%.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      Only the highest-stake validator (S.argmax) posts the canonical start_window; weights are set
+      via standard Bittensor stake-weighted set_weights consensus.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: >-
+    Single collaborative pre-training task. Weight schedule distinguishes "gather" peers (top 20) and
+    "reserve" peers (next 10) but this is a ranking tier within one mechanism, not separate
+    competitions. An optional anneal_mode switches dataset shards but not the scoring rule.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [reputation, performance_ledger, cooldown, status_enum]
+  status_values: []
+  reset_policy: >-
+    reset_peer(uid) zeroes final/gradient/sync/binary scores, OpenSkill rating and history. Positive
+    evaluation resets consecutive_negative_count and can re-include an excluded peer.
+  notes: >-
+    Per-miner persistent state includes: OpenSkill ratings (mu/sigma), binary_moving_averages,
+    final_scores, peer_eval_history (last 20 negative/positive evals), consecutive_negative_count,
+    missing_gradient_history (last 8), excluded_from_gather set with exclusion_start_window, and
+    naughty_peers (timeout 20). Inactive peers tracked in inactive_scores. State persisted to
+    validator-state-<version>.pt.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs: ["README.md", "docs/README.md", "docs/validator.md", "docs/miner.md"]
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8 1M)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/mechanism_status"
+      source_path: "README.md"
+      line_ref: "22-26"
+      quote: "> **⚠️ Templar is dormant**\n>\n> The Covenant-72B training run is complete ... Templar's decentralized training protocol is not currently active, but may return in the future.\n>\n> Subnet 3 is now running **Crusades**, an MFU optimization competition on the same subnet (netuid 3) but with a different mechanism."
+      confidence: high
+    - claim_field: "/mechanism_status_notes"
+      source_path: "docs/README.md"
+      line_ref: "3"
+      quote: "> **⚠️ 100% Burn Period Active**: Miners are not being evaluated and no emissions are being distributed. See the main [README](../README.md) for current status and information about Templar: Crusades."
+      confidence: high
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "26"
+      quote: "Subnet 3 is now running **Crusades**, an MFU optimization competition on the same subnet (netuid 3)"
+      confidence: medium
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "neurons/validator.py"
+      line_ref: "35-42"
+      quote: "import bittensor as bt\nimport numpy as np\n\n# Third party\nimport torch\nimport torch.distributed as dist\nimport uvloop\nfrom openskill.models import PlackettLuce"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "221-223"
+      quote: "**Compute Loss Improvement**:\n   - Validators measure the effectiveness of a miner's update by the reduction in loss on the assigned dataset.\n   - The score $s_i = L_{\\text{before}} - L_{\\text{after}}$ quantifies this improvement."
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "2239-2241"
+      quote: "self.gradient_scores[eval_uid] = (\n                    loss_before_random - loss_after_random\n                ) / loss_before_random"
+      confidence: high
+    - claim_field: "/scoring_signals/0/normalization"
+      source_path: "neurons/validator.py"
+      line_ref: "947-948"
+      quote: "# Rate the teams using scores (higher score is better in OpenSkill)\n            rated_teams = self.openskill_model.rate(teams, scores=scores)"
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "2280-2298"
+      quote: "self.binary_indicator_scores[eval_uid] = (\n                        1 if improvement_own > improvement_random else -1\n                    ) ... self.binary_moving_averages[eval_uid] = (\n                        (1 - self.hparams.binary_score_ma_alpha)\n                        * self.binary_moving_averages[eval_uid]\n                        + self.hparams.binary_score_ma_alpha\n                        * self.binary_indicator_scores[eval_uid]\n                    )"
+      confidence: high
+    - claim_field: "/scoring_signals/2/normalization_other"
+      source_path: "neurons/validator.py"
+      line_ref: "3195-3199"
+      quote: "# Calculate sync score using the formula: score = (1-x/3)^2.5\n        # where x is the average steps behind, capped at 3\n        avg_steps_behind = comparison_metrics[\"avg_steps_behind\"]\n        x = min(avg_steps_behind, 3.0)\n        sync_score = max(0.0, (1.0 - x / 3.0) ** 2.5)"
+      confidence: high
+    - claim_field: "/aggregation/composition"
+      source_path: "neurons/validator.py"
+      line_ref: "973"
+      quote: "self.final_scores[uid] = openskill_ordinal * bma * sync_score"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "hparams/hparams.json"
+      line_ref: "61"
+      quote: "\"burn_rate\": 0.5,"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "neurons/validator.py"
+      line_ref: "545,1153"
+      quote: "self.burn_uid = 1 ... self.weights[self.burn_uid] = burn_rate"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "neurons/burn.py"
+      line_ref: "11,54-58"
+      quote: "BURN_UID = 1  # Same as validator.py ... success, msg = subtensor.set_weights(\n                    wallet=wallet,\n                    netuid=config.netuid,\n                    uids=[BURN_UID],\n                    weights=[1.0],"
+      confidence: high
+    - claim_field: "/aggregation/decay_rate"
+      source_path: "hparams/hparams.json"
+      line_ref: "40"
+      quote: "\"reserve_decay_ratio\": 0.5,"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "1097-1142"
+      quote: "burn_rate = max(0.0, min(1.0, self.hparams.burn_rate))\n        gather_share = getattr(self.hparams, \"gather_share\", 0.75) ... gather_total = (1.0 - burn_rate) * gather_share ... reserve_total = (1.0 - burn_rate) * (1.0 - gather_share)"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "neurons/validator.py"
+      line_ref: "2393-2397"
+      quote: "self.comms.subtensor.set_weights(\n                        wallet=self.wallet,\n                        netuid=cast(int, self.config.netuid),\n                        uids=positive_weighted_uids,\n                        weights=self.weights[positive_weighted_uids],"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "neurons/validator.py"
+      line_ref: "2380"
+      quote: "if self.sync_window % self.hparams.windows_per_weights == 0:"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "hparams/hparams.json"
+      line_ref: "28"
+      quote: "\"binary_score_ma_alpha\": 0.05,"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "src/tplr/neurons.py"
+      line_ref: "1475-1479"
+      quote: "return {\n        \"high\": 0.5,  # case when similarity high\n        \"max\": 0.0,  # case when similarity >= 95%\n        \"mega\": 0.0,  # case when similarity = 100%\n    }"
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "neurons/validator.py"
+      line_ref: "500-504,3364"
+      quote: "self.inactivity_slash_rate = 0.25  # 25% slash per window\n        self.missing_gradient_slash_rate = 0.75 ... self.missing_gradient_penalty_score = getattr(\n            self.hparams, \"missing_gradient_penalty_score\", -99.0\n        ) ... self.final_scores[eval_uid] *= self.missing_gradient_slash_rate"
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "neurons/validator.py"
+      line_ref: "1191"
+      quote: "if self.uid == self.comms.metagraph.S.argmax().item():"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "neurons/validator.py"
+      line_ref: "570-585"
+      quote: "self.final_scores[uid] = 0.0\n        self.weights[uid] = 0.0\n        self.gradient_scores[uid] = 0.0 ... self.openskill_ratings.pop(uid, None) ... self.excluded_from_gather.discard(uid)"
+      confidence: high
+    - claim_field: "/per_miner_state/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "547-561"
+      quote: "self.peer_eval_history: dict[int, Deque[bool]] = {}\n        self.eval_history_limit = 20 ... self.consecutive_negative_count: dict[int, int] = {} ... self.missing_gradient_history: dict[int, Deque[bool]] = {}\n        self.missing_gradient_history_limit = 8"
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "neurons/validator.py"
+      line_ref: "1108-1113"
+      quote: "ranked = sorted(\n            positive_uids, key=lambda u: self.final_scores[u].item(), reverse=True\n        )\n\n        gather_uids = ranked[:gather_count]\n        reserve_uids = ranked[gather_count : gather_count + reserve_count]"
+      confidence: high
+    - claim_field: "/documentation/primary_docs"
+      source_path: "docs/README.md"
+      line_ref: "10-11"
+      quote: "- **[Miner Setup](./miner.md)** - Complete guide for setting up and running a miner\n- **[Validator Setup](./validator.md)** - Instructions for deploying and operating a validator"
+      confidence: high
+  unresolved:
+    - "netuid ambiguity: validator.py and burn.py default to --netuid 268; README states the subnet is netuid 3. Used 3 (the live subnet per README); 268 is likely a dev/test default."
+    - "source_version: no git tag / version constant captured (tplr.__version__ is referenced but its literal value was not read)."
+    - "Live burn fraction is effectively 1.0 (full-burn period per docs / burn.py weights=[1.0]); the designed validator burn_rate is 0.5. burn_allocation.fraction records the designed 0.5 with the full-burn reality noted."

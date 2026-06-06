@@ -1,0 +1,205 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: mixed
+mechanism_status_notes: >-
+  The wired validator (validator/validator.py -> forward.py) scores miners by time-decayed
+  betting volume and sets weights from those scores. However a separate standalone burn validator
+  (burn_code.py / TempValidator) is shipped that sets 100% weight to the subnet owner burn UID, and
+  the wired forward() itself routes 100% of reward to UID 0 whenever no miner has betting volume.
+  Both burn paths coexist with the documented volume-share scoring, so status is mixed.
+
+subnet:
+  name: "TAO Colosseum"
+  owner_repo: "TAO-Colosseum__tao-colosseum-subnet"
+  netuid: 79
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners place bets in native TAO on the TAO Colosseum P2P betting smart contract deployed on
+    Bittensor EVM, after linking their Bittensor coldkey to an EVM address. Validators query the
+    contract for each miner's betting volume over the last 7 days, apply recency time-decay weights,
+    and reward miners proportionally to their share of total weighted betting volume.
+  submission_format: [other]
+  submission_format_other: "on-chain EVM betting transactions (betting volume) on the TAO Colosseum smart contract"
+
+scoring_signals:
+  - name: time_decayed_betting_volume
+    metric_kind: volume
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      weighted_volume = sum(daily_volume[d] * TIME_DECAY_WEIGHTS[d]) over 7 days
+      (today=1.0, yesterday=0.85, ..., 6 days ago=0.10). Reward per miner = raw_volume / total_volume.
+
+ground_truth_sources:
+  - kind: market_data
+    description: >-
+      Per-miner betting volume read from the TAO Colosseum EVM smart contract (bet events over the
+      last 7 days), keyed by the miner's coldkey-to-EVM address mapping.
+    source_identifier: "TAO_COLOSSEUM_CONTRACT_ADDRESS default 0x2866c1f38629E3391614E54d1b63A7D0d3Ec2cDB on Bittensor EVM"
+    trust_model: oracle
+    notes: "Volume fetched via client.get_bets_last_7_days(evm_address); EVM mapping registered via POST /api/wallet-mapping with coldkey signature verification."
+
+aggregation:
+  method: proportional
+  composition: weighted_sum
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "UID 0 (forward.py fallback); subnet owner hotkey UID (burn_code.py)"
+    fraction: 1.0
+    dynamic: false
+    notes: >-
+      forward.py: when active_count==0, reward_array[0]=1.0 routes all weight to UID 0.
+      burn_code.py TempValidator: always sets uids=[burn_uid], weights=[1.0] to the subnet owner hotkey UID.
+  notes: >-
+    Reward proportional to volume share: rewards = raw_volumes / total_volume (calculate_volume_rewards).
+    The single time-decayed-volume signal is the only additive component.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    raw_weights = scores / L1-norm(scores), processed via process_weights_for_netuid, emitted as
+    uint16 weights+uids through subtensor.set_weights.
+  on_chain_call: set_weights
+  tempo_or_interval: "360 blocks"
+  smoothing:
+    kind: ema
+    alpha: 0.1
+    window: null
+    notes: >-
+      update_scores applies scores = alpha*scattered_rewards + (1-alpha)*scores with
+      neuron.moving_average_alpha default 0.1.
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Wallet mappings require cryptographic proof of coldkey ownership (signature verification on
+      POST /api/wallet-mapping); on EVM mapping change a UID's stored volume is reset to 0.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      Validator permit / vpermit_tao_limit gating in base config (neuron.vpermit_tao_limit default 4096);
+      validators require a validator permit to set weights (see burn_code.py ValidatorPermit check).
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, performance_ledger]
+  status_values: []
+  reset_policy: >-
+    EMA scores persisted to state.npz and SQLite snapshots; scores and volume data zeroed when a
+    hotkey is replaced (resync_metagraph) or when a miner's EVM mapping changes (forward.py).
+  notes: >-
+    Per-UID weighted_volume, 7-day daily_volumes, EVM address, and EMA score tracked in memory and
+    SQLite (update_miner_data / save_snapshot).
+
+documentation:
+  status: docs_and_code
+  source_version: "2.0.0"
+  primary_docs: ["README.md", "docs/validator.md", "docs/miner.md"]
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "burn_code.py"
+      line_ref: "7"
+      quote: "MAINNET_NETUID = 79"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "taocolosseum/validator/reward.py"
+      line_ref: "24-26"
+      quote: "import numpy as np\nfrom typing import Dict, List\nimport bittensor as bt"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "20"
+      quote: "Miners earn rewards by placing bets on the TAO Colosseum smart contract, with rewards distributed based on time-decayed betting volume over a 7-day window."
+    - claim_field: "/scoring_signals/0/metric_kind"
+      source_path: "taocolosseum/validator/reward.py"
+      line_ref: "61-62"
+      quote: "# Reward proportional to volume share\n    rewards = raw_volumes / total_volume"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "taocolosseum/core/const.py"
+      line_ref: "44-46"
+      quote: "# Time decay weights for 7 days (index 0 = today, index 6 = 6 days ago)\n# Most recent activity gets highest weight\nTIME_DECAY_WEIGHTS = [1.0, 0.85, 0.70, 0.55, 0.40, 0.25, 0.10]"
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "taocolosseum/validator/forward.py"
+      line_ref: "156-159"
+      quote: "# Query betting volume from contract\n            weighted_vol, daily_vols = get_miner_volume(client, evm_address)\n            \n            volumes[uid] = weighted_vol"
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "taocolosseum/core/const.py"
+      line_ref: "21"
+      quote: "_DEFAULT_CONTRACT = \"0x2866c1f38629E3391614E54d1b63A7D0d3Ec2cDB\""
+    - claim_field: "/aggregation/method"
+      source_path: "taocolosseum/validator/reward.py"
+      line_ref: "62"
+      quote: "rewards = raw_volumes / total_volume"
+    - claim_field: "/aggregation/normalization"
+      source_path: "taocolosseum/base/validator.py"
+      line_ref: "283-290"
+      quote: "norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True)\n...\n        raw_weights = self.scores / norm"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "taocolosseum/validator/forward.py"
+      line_ref: "226-229"
+      quote: "reward_array = np.zeros(self.metagraph.n, dtype=np.float32)\n        reward_array[0] = 1.0\n        uids = list(range(self.metagraph.n))\n        self.update_scores(reward_array.tolist(), uids)"
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "burn_code.py"
+      line_ref: "141-143"
+      quote: "# Set weights to burn UID.\n            uids = [burn_uid]\n            weights = [1.0]"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "taocolosseum/base/validator.py"
+      line_ref: "319-327"
+      quote: "result, msg = self.subtensor.set_weights(\n            wallet=self.wallet,\n            netuid=self.config.netuid,\n            uids=uint_uids,\n            weights=uint_weights,"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "taocolosseum/core/const.py"
+      line_ref: "51-52"
+      quote: "# Weight commit interval in blocks (360 blocks = ~72 minutes)\nWEIGHT_COMMIT_INTERVAL = 360"
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "taocolosseum/utils/config.py"
+      line_ref: "204-209"
+      quote: "\"--neuron.moving_average_alpha\",\n        type=float,\n        help=\"Moving average alpha parameter, how much to add of the new observation.\",\n        default=0.1,"
+    - claim_field: "/weight_setting/smoothing/kind"
+      source_path: "taocolosseum/base/validator.py"
+      line_ref: "431-434"
+      quote: "alpha: float = self.config.neuron.moving_average_alpha\n        self.scores: np.ndarray = (\n            alpha * scattered_rewards + (1 - alpha) * self.scores\n        )"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "taocolosseum/validator/forward.py"
+      line_ref: "134-141"
+      quote: "if cached_evm and cached_evm != evm_address:\n...\n            # Clear stale cache entry — this coldkey no longer owns the old EVM"
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "burn_code.py"
+      line_ref: "97-107"
+      quote: "validator_permits = self.subtensor.query_subtensor(\n                \"ValidatorPermit\",\n...\n            if not validator_permits[this_uid]:\n                print(\"No Validator Permit, wait until next epoch...\")"
+    - claim_field: "/per_miner_state/notes"
+      source_path: "taocolosseum/validator/forward.py"
+      line_ref: "176-184"
+      quote: "update_miner_data(\n                uid=uid,\n...\n                daily_volumes=daily_vols,\n                weighted_volume=weighted_vol,\n                score=float(self.scores[uid]) if uid < len(self.scores) else 0.0\n            )"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "taocolosseum/base/validator.py"
+      line_ref: "370-376"
+      quote: "if hotkey != self.metagraph.hotkeys[uid]:\n                self.scores[uid] = 0  # hotkey has been replaced"
+    - claim_field: "/documentation/source_version"
+      source_path: "taocolosseum/core/const.py"
+      line_ref: "17"
+      quote: "VERSION = \"2.0.0\""
+    - claim_field: "/weight_setting/cadence"
+      source_path: "README.md"
+      line_ref: "62"
+      quote: "- **Automatic Weight Setting**: Every 360 blocks (~72 minutes)"
+  unresolved:
+    - "Live on-chain emission split (what fraction of emissions actually flow to burn vs miners) is not determinable from source; burn paths exist but real-time activation depends on whether the volume or temp/burn validator is deployed."
+    - "No explicit min_weight_floor, temperature, or aggregation-internal decay_rate constant present in source."

@@ -1,0 +1,284 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: mixed
+mechanism_status_notes: >-
+  Documented mechanism is winner-takes-all over EDA-evaluated Verilog submissions, but the
+  live validator defaults to burning the bulk of emissions: only --miner_emission_percentage
+  (CLI default 10%) goes to the current winner and the remainder is sent to UID 0, and
+  emissions are fully burned whenever there is no active challenge, no qualifying submission
+  beating the baseline, an emissions ban from the challenge server, or any error/timeout.
+
+subnet:
+  name: "ChipForge"
+  owner_repo: "TatsuProject__ChipForge_SN84"
+  netuid: 84
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners download an on-chain hardware-design challenge spec and submit complete
+    Verilog/SystemVerilog implementations (packaged as a ZIP). Validators download submissions
+    in batches, evaluate them with an external EDA server (Verilator functionality, Openlane
+    synthesis/place-and-route), and reward the single highest-scoring submission that passes
+    functional and overall gates and beats the challenge baseline. Winner-takes-all.
+  submission_format: [source_code]
+
+scoring_signals:
+  - name: overall_score
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      The EDA server's final_score.overall is used as the per-submission score for ranking
+      and winner selection. README states Functionality is the only currently active component
+      (100% weight); area/delay/power are documented as TBD/future.
+  - name: functional_gate
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Boolean gate from final_score.functional_gate. Must be True or the submission is dropped
+      from weight calculation and winner comparison.
+  - name: overall_gate
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Boolean gate from final_score.overall_gate. Must be True or the submission is dropped.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Challenge test cases / testbenches downloaded from the ChipForge Challenge Server, plus
+      a server-provided winner_baseline_score that a submission must beat to qualify for reward.
+    source_identifier: "ChipForge Challenge Server API (/api/v1/challenges)"
+    trust_model: trusted
+    notes: >-
+      Functionality verified via Verilator testbench pass/fail; synthesis metrics via Openlane.
+      Baseline score and ban_emissions flag are controlled by the challenge server.
+
+aggregation:
+  method: winner_take_all
+  composition: gated
+  normalization: none
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: null
+    dynamic: true
+    notes: >-
+      When a winner is rewarded via set_winner_weights, miner gets miner_emission_percentage/100
+      and burn UID 0 gets the remainder (1 - miner_fraction). In all burn paths set_burn_weights
+      gives UID 0 weight 1.0 and every other UID 0.0.
+  notes: >-
+    Per batch, gated submissions are sorted by overall_score and the top one gets weight 1.0,
+    others 0.0 (calculate_weights_from_hotkeys). At the validator level rewards are routed
+    through the EmissionManager phase machine and the miner/burn split.
+
+weight_setting:
+  cadence: continuous
+  method: >-
+    Validator loop runs every 10s. set_weights_with_ban_check chooses between set_burn_weights
+    (burn to UID 0) and set_winner_weights (split between winner UID and UID 0 by
+    miner_emission_percentage). A new champion that beats the baseline snapshot is set to
+    weight 1.0 directly. Burn occurs on ban, no challenge, no qualifying winner, or errors.
+  on_chain_call: set_weights
+  tempo_or_interval: "10s loop"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA/SMA smoothing of final weights; weights are set directly each cycle. A winner
+      retains reward for TOTAL_HOURS_FOR_WINNER_REWARD (env/server, local default 0.5h)
+      after challenge end via the EmissionManager reward timer.
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      functional_gate and overall_gate (both must be True) gate submissions out of weight
+      calculation and winner comparison; submissions are also re-checked against the
+      winner_baseline_score snapshot before being crowned champion.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      Banned coldkeys list synced from the challenge server; a banned winner's coldkey causes
+      all emissions to be burned (set_burn_weights) instead of rewarding that UID.
+  - kind: rate_limit
+    enforcement: rejection
+    description: >-
+      README: challenge server accepts 5 requests per IP per hour; one hotkey may submit a
+      maximum of 5 solutions per challenge; max ZIP size 10MB.
+
+sub_competitions:
+  structure: single
+  stages: []
+  count: null
+  notes: >-
+    One active challenge at a time (rotated periodically); challenge categories include RISC-V
+    processors and AI accelerators, but only one challenge is scored per period.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, status_enum]
+  status_values: ["initial_burn", "normal", "winner_reward", "burn_until_submission"]
+  reset_policy: >-
+    current_challenge_best and emission_manager.current_winner_score reset to 0.0 on a new
+    challenge; winner reward timer resets when a new/improved winner is crowned.
+  notes: >-
+    EmissionManager tracks current_winner, current_winner_score, winner_qualified_baseline and
+    a phase enum; the highest challenge-wide score is retained for comparison across batches.
+
+documentation:
+  status: docs_and_code
+  source_version: "v1.0.0"
+  primary_docs: ["README.md", "docs/Technical_Guide.md"]
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/name"
+      source_path: "README.md"
+      line_ref: "1"
+      quote: "# ChipForge"
+      confidence: high
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "52"
+      quote: "git clone https://github.com/TatsuProject/ChipForge_SN84"
+      confidence: medium
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "neurons/validator.py"
+      line_ref: "1-7"
+      quote: "#!/usr/bin/env python3\n# neurons/validator.py"
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "10-11"
+      quote: "**Miners** submit hardware design solutions (Verilog/SystemVerilog)"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "246-248"
+      quote: >-
+        Only submissions that beat the current challenge-wide best score receive rewards.
+        Weights are set to reward the highest-scoring submission. Emission burning occurs when
+        no submissions exceed quality thresholds
+      confidence: high
+    - claim_field: "/scoring_signals/0/name"
+      source_path: "neurons/validator_utils/api_client.py"
+      line_ref: "676"
+      quote: "'overall_score': final_score.get('overall', 0.0),"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "README.md"
+      line_ref: "222"
+      quote: "1. **Functionality Score** (100% weight)"
+      confidence: high
+    - claim_field: "/scoring_signals/1/name"
+      source_path: "neurons/validator_utils/batch_processor.py"
+      line_ref: "70-74"
+      quote: >-
+        functional_gate = eval_data.get('functional_gate', False) ... if not functional_gate or
+        not overall_gate: ... skipping from weight calculation
+      confidence: high
+    - claim_field: "/scoring_signals/2/name"
+      source_path: "neurons/validator_utils/api_client.py"
+      line_ref: "632-633"
+      quote: "functional_gate = final_score.get('functional_gate', False)\n        overall_gate = final_score.get('overall_gate', False)"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "neurons/validator.py"
+      line_ref: "159-161"
+      quote: "if challenge_info and 'winner_baseline_score' in challenge_info: self.state.winner_baseline_score = challenge_info['winner_baseline_score']"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/kind"
+      source_path: "README.md"
+      line_ref: "21"
+      quote: "**Validators** - Download, evaluate, and score miner submissions against provided test benches and test cases"
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "neurons/validator_utils/batch_processor.py"
+      line_ref: "88-94"
+      quote: "# Winner-takes-all approach ... if i == 0:  # Highest score gets weight 1\n                weights[hotkey] = 1.0\n            else:  # All others get weight 0\n                weights[hotkey] = 0.0"
+      confidence: high
+    - claim_field: "/aggregation/composition"
+      source_path: "neurons/validator_utils/batch_processor.py"
+      line_ref: "72-74"
+      quote: "if not functional_gate or not overall_gate: ... continue"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "neurons/validator_utils/weight_manager.py"
+      line_ref: "38-39"
+      quote: "Set weight 1.0 for uid 0 and 0.0 for all others to burn emissions."
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "neurons/validator_utils/weight_manager.py"
+      line_ref: "98-99"
+      quote: "miner_fraction = max(0.0, min(100.0, miner_emission_percentage)) / 100.0\n            burn_fraction = 1.0 - miner_fraction"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "neurons/validator_utils/weight_manager.py"
+      line_ref: "69-75"
+      quote: "success = self.subtensor.set_weights(\n                wallet=self.wallet,\n                netuid=self.config.netuid,\n                uids=uids_tensor,\n                weights=weights_tensor,\n                wait_for_inclusion=True,\n            )"
+      confidence: high
+    - claim_field: "/weight_setting/cadence"
+      source_path: "neurons/validator.py"
+      line_ref: "793-794"
+      quote: "# Sleep for 10 seconds before next check\n                await asyncio.sleep(10)"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "neurons/validator.py"
+      line_ref: "85-98"
+      quote: "if self.state.ban_emissions: ... self.weight_manager.set_burn_weights(banned_coldkeys=banned)\n        elif winner_hotkey: self.weight_manager.set_winner_weights(winner_hotkey, self.emission_manager.miner_emission_percentage, ...)\n        else: self.weight_manager.set_burn_weights(banned_coldkeys=banned)"
+      confidence: high
+    - claim_field: "/mechanism_status"
+      source_path: "neurons/validator.py"
+      line_ref: "818-819"
+      quote: "parser.add_argument(\"--miner_emission_percentage\", type=float, default=10.0, help=\"Percentage of emissions given to the winner miner (0-100). Remainder is burned. Default: 10\")"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "neurons/validator_utils/weight_manager.py"
+      line_ref: "107-113"
+      quote: "if winner_coldkey and winner_coldkey in banned_coldkeys: ... is banned - burning all emissions ... self.set_burn_weights(banned_coldkeys=banned_coldkeys)"
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "README.md"
+      line_ref: "159-161"
+      quote: "Challenge server accepts 5 requests per IP per hour. One hotkey is allowed to submit a maximum 5 solutions for a specific challenge."
+      confidence: high
+    - claim_field: "/per_miner_state/status_values"
+      source_path: "neurons/validator_utils/emission_manager.py"
+      line_ref: "29"
+      quote: "self.current_phase = \"initial_burn\""
+      confidence: high
+    - claim_field: "/per_miner_state/notes"
+      source_path: "neurons/validator_utils/emission_manager.py"
+      line_ref: "30-32"
+      quote: "self.current_winner = None  # Add persistence for current winner\n        self.current_winner_score = 0.0  # Track winner's score\n        self.winner_qualified_baseline = 0.0  # Baseline snapshot when winner was crowned"
+      confidence: high
+    - claim_field: "/sub_competitions/structure"
+      source_path: "README.md"
+      line_ref: "284"
+      quote: "Only one batch is exposed to validators at a time"
+      confidence: medium
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "neurons/validator_utils/emission_manager.py"
+      line_ref: "40"
+      quote: "self.local_winner_reward_hours = float(os.getenv('TOTAL_HOURS_FOR_WINNER_REWARD', '0.5'))"
+      confidence: high
+  unresolved:
+    - "Exact composition of final_score.overall (weighting of func/area/delay/power) lives in the external EDA server, not in this repo."
+    - "winner_baseline_score numeric value is server-provided at runtime, not a source constant."
+    - "BURN_AFTER_WINNER_DAYS default 0; its operative effect not fully traced in scoring."
+    - "docs/Technical_Guide.md appears copied from another subnet (references Document_Understanding_Subnet, netuid 54/236) and is unreliable for this subnet's netuid/params."

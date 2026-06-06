@@ -1,0 +1,299 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  100% tournament-based. Base tournament allocations are small (text 0.15, image 0.10,
+  environment 0.10) with the large remaining weight routed to a dedicated burn hotkey
+  (base ~0.65 plus all undistributed tournament weight). Champions can boost their pool
+  up to caps (0.48/0.32/0.20) on strong performance; weak performance => more burn.
+
+subnet:
+  name: "Gradients on Demand (G.O.D)"
+  owner_repo: "rayonlabs__G.O.D"
+  netuid: null
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners compete in AutoML tournaments to fine-tune models. A miner submits a trained
+    model repo for a given task (instruct-text, DPO, GRPO, chat, image, or environment/RL).
+    The validator downloads each submission and evaluates it on held-out test data; for
+    most task types lower test loss is better, while GRPO and environment tasks reward
+    higher scores. Within a task pool the best submission is ranked 1st; tournament bracket
+    winners advance and the overall champion of each tournament type (text, image,
+    environment) earns the boosted emission pool, with remaining weight burned.
+  submission_format: [model_weights]
+
+scoring_signals:
+  - name: test_loss
+    metric_kind: loss
+    direction: lower_is_better
+    weight: null
+    normalization: rank
+    notes: >-
+      Per-task evaluation metric. calculate_miner_ranking_and_scores ranks miners by
+      test_loss (lower is better for instruct/DPO/chat/image). Top miner gets
+      FIRST_PLACE_SCORE=3, bottom 25% get SCORE_PENALTY=-1 when pool > 8.
+  - name: grpo_environment_score
+    metric_kind: reward
+    direction: higher_is_better
+    weight: null
+    normalization: rank
+    notes: >-
+      For GRPO and ENVIRONMENT tasks, higher value is better; ranked_results sorted in
+      reverse. Stored in the same test_loss field but ranking direction is inverted.
+  - name: tournament_rank_weight
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: other
+    normalization_other: >-
+      exponential rank decay normalized to sum to 1: weight[rank] = 0.3^(rank-1) / sum,
+      via exponential_decline_mapping / tournament_scores_to_weights.
+    notes: >-
+      Within-tournament distribution. Participants ranked, weights distributed by
+      exponential decay base TOURNAMENT_SIMPLE_DECAY_BASE=0.3 (1st=1.0, 2nd=0.3, ...),
+      normalized so they sum to 1.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Held-out test split evaluated in a Docker/Basilica sandbox via
+      run_evaluation_basilica_text / run_evaluation_basilica_image. Loss computed against
+      task.test_data; environment tasks use a proxy dataset with a fetched eval_seed.
+    source_identifier: "validator/evaluation/scoring.py:_evaluate_submissions"
+    trust_model: trusted
+    notes: >-
+      Miner submissions fetched from HF under RAYONLABS_HF_USERNAME='gradients-io-tournaments'.
+      Repos matching the original model_id are flagged non-finetuned (score 0).
+
+aggregation:
+  method: tournament_bracket
+  composition: tournament
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: 0.3
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "5GU4Xkd3dCGTU3s8VLcHGc5wsD5M8XyxDca5yDQhYm1mVXFu"
+    fraction: null
+    dynamic: true
+    notes: >-
+      burn_weight = 1.0 - text_tournament_weight - image_tournament_weight -
+      environment_tournament_weight, plus all undistributed tournament weight added to the
+      burn node. With base allocations 0.15/0.10/0.10 the documented base burn is ~0.65.
+      EMISSION_BURN_HOTKEY is the fixed burn account.
+  notes: >-
+    Each tournament type (text/image/environment) gets a base weight that can be boosted by
+    performance up to a max cap, then capped; champion uses boosted pool, non-champions use
+    base pool, both distributed by exponential rank decay (base 0.3). decay_rate=0.3 is the
+    within-aggregation rank decay (TOURNAMENT_SIMPLE_DECAY_BASE), not an EMA.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    set_weights_periodically loops, checks blocks since LastUpdate against
+    WeightsSetRateLimit; when due, builds tournament audit data, computes per-node weights
+    via get_node_weights_from_tournament_audit_data, and calls set_node_weights. Sleeps
+    25 blocks between successful sets.
+  on_chain_call: set_weights
+  tempo_or_interval: "WeightsSetRateLimit blocks (chain-defined); ~25 block sleep after set"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA/SMA smoothing of the final weight vector found; weights are recomputed each
+      cycle from latest completed tournament data. Time-based decay of champion emission
+      boost exists (EMISSION_DAILY_TIME_DECAY_RATE=0.0033/day) but acts on the boost, not
+      as a reward EMA.
+
+anti_gaming:
+  - kind: deduplication
+    enforcement: penalty
+    description: >-
+      _evaluate_submissions deduplicates identical submission repos; duplicate submissions
+      get score 0 / SCORE_PENALTY. group_by_losses groups identical losses.
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Submissions whose repo equals the original model_id are marked is_finetune=False and
+      scored 0 ("Non-finetuned submission"). NaN/invalid test loss => 0 then penalty.
+  - kind: code_inspection
+    enforcement: barrier
+    description: >-
+      Tournament tasks only evaluate miners with training status SUCCESS; training is run
+      and audited. Winning AutoML scripts are open-sourced after tournaments complete.
+  - kind: other
+    kind_other: "champion emission-boost time decay and per-type max caps"
+    enforcement: penalty
+    description: >-
+      Champion emission boost decays over time (EMISSION_DAILY_TIME_DECAY_RATE=0.0033 per
+      day from EMISSION_TIME_DECAY_START_DATE 2025-11-26) to prevent indefinite reign;
+      MAX caps (0.48/0.32/0.20) prevent a single tournament type from dominating.
+
+sub_competitions:
+  structure: tournament
+  stages:
+    - name: "Text tournament"
+      role: knockout
+      advancement_rule: >-
+        Bracket rounds; per-round winners earn round_number * type_weight points; champion
+        of final round earns the boosted text pool (base 0.15, max 0.48).
+    - name: "Image tournament"
+      role: knockout
+      advancement_rule: >-
+        Separate bracket; champion earns boosted image pool (base 0.10, max 0.32).
+    - name: "Environment tournament"
+      role: knockout
+      advancement_rule: >-
+        Separate bracket; higher score is better; champion earns boosted environment pool
+        (base 0.10, max 0.20).
+  count: 3
+  notes: >-
+    Text, image, and environment tournaments are calculated separately and independently.
+    Tournaments run 4-7 days, new one starts 72h after the previous ends (README).
+
+per_miner_state:
+  tracked: true
+  state_kinds: [status_enum, cumulative_score, performance_ledger]
+  status_values: ["SUCCESS", "PREEVALUATION", "FAILURE"]
+  reset_policy: >-
+    Per-task evaluation status drives whether a miner is scored; consecutive championship
+    wins and first-championship time are tracked across tournaments to compute emission
+    boost decay (count_champion_consecutive_wins, get_tournament_where_champion_first_won).
+  notes: >-
+    Champion reign tracked by first_championship_time; consecutive wins counted; tournament
+    results persisted and used for both weight setting and auditing.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "docs/scoring_system.md"
+    - "README.md"
+    - "docs/tournament_overview.md"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/mechanism_status"
+      source_path: "docs/scoring_system.md"
+      line_ref: "5-9"
+      quote: >-
+        The Gradient subnet is **100% tournament-based**. Emissions are distributed between:
+        1. Tournament champions ... 2. Tournament participants ... 3. Burn address (all remaining weight)
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "1-13"
+      quote: "G.O.D Subnet ... Gradients on Demand ... Tournaments ... Winning AutoML scripts are released when tournaments complete"
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "validator/evaluation/scoring.py"
+      line_ref: "500-501"
+      quote: 'repo = f"{cts.RAYONLABS_HF_USERNAME}/{expected_name}"'
+      confidence: high
+    - claim_field: "/scoring_signals/0/metric_kind"
+      source_path: "validator/evaluation/scoring.py"
+      line_ref: "92-110"
+      quote: "Using test loss for ranking ... For other tasks, sort normally (lower loss is better)"
+      confidence: high
+    - claim_field: "/scoring_signals/1/direction"
+      source_path: "validator/evaluation/scoring.py"
+      line_ref: "99-106"
+      quote: "For GRPO, sort in reverse order (higher value is better) ... For Env taks, sort in reverse order (higher value is better)"
+      confidence: high
+    - claim_field: "/scoring_signals/2/normalization_other"
+      source_path: "validator/evaluation/tournament_scoring.py"
+      line_ref: "97-102"
+      quote: "all_weights = [cts.TOURNAMENT_SIMPLE_DECAY_BASE ** (r - 1) ...] ; raw_weight = cts.TOURNAMENT_SIMPLE_DECAY_BASE ** (rank - 1) ; return raw_weight / total_sum"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "validator/evaluation/scoring.py"
+      line_ref: "279-281"
+      quote: 'if repo == task.model_id: ... results[repo] = EvaluationResultText(is_finetune=False, eval_loss=0.0)'
+      confidence: high
+    - claim_field: "/aggregation/decay_rate"
+      source_path: "validator/core/constants.py"
+      line_ref: "110"
+      quote: "TOURNAMENT_SIMPLE_DECAY_BASE = 0.3  # Base for simple exponential decay (1st=1.0, 2nd=0.2, 3rd=0.04, etc.)"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "validator/core/constants.py"
+      line_ref: "94"
+      quote: 'EMISSION_BURN_HOTKEY = "5GU4Xkd3dCGTU3s8VLcHGc5wsD5M8XyxDca5yDQhYm1mVXFu"'
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/dynamic"
+      source_path: "validator/core/weight_setting.py"
+      line_ref: "378"
+      quote: "burn_weight = 1.0 - text_tournament_weight - image_tournament_weight - environment_tournament_weight"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "validator/core/weight_setting.py"
+      line_ref: "595-597"
+      quote: "burn_node_id ... all_node_weights[burn_node_id] = scaled_burn_weight + undistributed_weight"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "validator/core/weight_setting.py"
+      line_ref: "685-697"
+      quote: "weights.set_node_weights, substrate=config.substrate, ... node_ids=all_node_ids, node_weights=all_node_weights, netuid=config.netuid"
+      confidence: high
+    - claim_field: "/weight_setting/cadence"
+      source_path: "validator/core/weight_setting.py"
+      line_ref: "780-782"
+      quote: "if updated < weights_set_rate_limit: ... await asyncio.sleep((weights_set_rate_limit - updated + 1) * 12)"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "validator/evaluation/scoring.py"
+      line_ref: "271-273"
+      quote: 'unique_repos = list(set(submission_repos)) ; if len(unique_repos) != len(submission_repos): logger.warning("Found duplicate repos. Deduplicating ...")'
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "validator/evaluation/scoring.py"
+      line_ref: "63-65"
+      quote: 'elif not result.is_finetune: result.score_reason = "Non-finetuned submission"'
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "validator/evaluation/scoring.py"
+      line_ref: "653-657"
+      quote: "Filter to only include miners with SUCCESS training status ... if training_statuses.get(node.hotkey) == TrainingStatus.SUCCESS.value"
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "validator/core/constants.py"
+      line_ref: "248-249"
+      quote: "EMISSION_DAILY_TIME_DECAY_RATE = 0.0033  # 0.33%/day ; EMISSION_TIME_DECAY_START_DATE = date(2025, 11, 26)"
+      confidence: high
+    - claim_field: "/sub_competitions/structure"
+      source_path: "docs/scoring_system.md"
+      line_ref: "143"
+      quote: "Tournament Independence: Text, image, and environment tournaments are calculated separately"
+      confidence: high
+    - claim_field: "/sub_competitions/stages/0/advancement_rule"
+      source_path: "validator/evaluation/tournament_scoring.py"
+      line_ref: "80-82"
+      quote: "score_dict[winner] += round_number * type_weight"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "docs/scoring_system.md"
+      line_ref: "62-63"
+      quote: "text_weight = min(0.15 + emission_increase, 0.48)"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "validator/core/constants.py"
+      line_ref: "137-138"
+      quote: "SCORE_PENALTY = -1 ; FIRST_PLACE_SCORE = 3"
+      confidence: high
+    - claim_field: "/per_miner_state/state_kinds"
+      source_path: "validator/core/weight_setting.py"
+      line_ref: "304-308"
+      quote: "text_consecutive_wins = await count_champion_consecutive_wins(...) ; first_win_tournament = await get_tournament_where_champion_first_won(...)"
+      confidence: high
+  unresolved:
+    - "subnet.netuid: not stated in source tree (no netuid literal found in README/constants); G.O.D is publicly SN56/Gradients but not citable from repo."
+    - "weight_setting.tempo_or_interval: exact WeightsSetRateLimit value is chain-defined, not a literal in source."
+    - "Base burn fraction (~0.65) is derived from 1 - (0.15+0.10+0.10) in docs, not a single named constant."

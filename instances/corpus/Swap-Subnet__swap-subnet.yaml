@@ -1,0 +1,226 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  Documented LP-scoring mechanism is live, but set_weights reserves a fixed 50% of total
+  weight for the owner UID 201 (MINER_EMISSIONS_BURN_PCT = 0.5), with the remaining 50%
+  distributed across LP miners by their concentration scores.
+
+subnet:
+  name: "Swap"
+  owner_repo: "Swap-Subnet__swap-subnet"
+  netuid: 10
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners provide liquidity to the TaoFi TAO<>USDC Uniswap V3 pool from an EVM wallet
+    associated to their hotkey. The validator queries the TaoFi subgraph for each miner's
+    on-chain LP positions and scores them by the position's Uniswap V3 liquidity value L
+    (which inherently rewards concentration) when the position is in range. Higher liquidity
+    of in-range positions yields higher reward.
+  submission_format: [signals]
+
+scoring_signals:
+  - name: position_liquidity_in_range
+    metric_kind: volume
+    direction: higher_is_better
+    weight: 1.0
+    normalization: min_max
+    notes: >-
+      Per-position reward_score equals the Uniswap V3 liquidity value L if the pool's current
+      tick is within [tick_lower, tick_upper], else 0. Per-miner score is the sum of their
+      in-range position liquidity. Rewards are then divided by the max score across miners
+      (max-normalization to [0,1]).
+
+ground_truth_sources:
+  - kind: market_data
+    description: >-
+      TaoFi subgraph (GraphQL) reporting Uniswap V3 positions at a given block: owner,
+      tickLower, tickUpper, pool tick, and liquidity.
+    source_identifier: "https://subgraph.taofi.com/graphql"
+    trust_model: oracle
+    notes: >-
+      Positions queried via positionsAtBlock at current_block - BLOCK_BUFFER; on-chain LP
+      state is the source of truth, fetched through the TaoFi subgraph oracle.
+
+aggregation:
+  method: weighted_average
+  composition: weighted_sum
+  normalization: min_max
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "201"
+    fraction: 0.5
+    dynamic: false
+    notes: >-
+      In set_weights, MINER_EMISSIONS_BURN_PCT (0.5) of total weight is reserved for OWNER_UID
+      (201); remaining (1 - burn_pct) is scaled across other miners' processed weights.
+  notes: >-
+    Per-miner reward is the sum of in-range position liquidity, max-normalized to [0,1] in
+    get_rewards_uniswap_v3_lp. At weight time, scores are L1-normalized via normalize_numpy
+    (p=1), then the owner-burn reservation is applied.
+
+weight_setting:
+  cadence: continuous
+  method: >-
+    raw_weights = normalize_numpy(self.scores) (L1 norm); process_weights_for_netuid applies
+    subtensor limits; then 50% of total weight is reserved for OWNER_UID 201 and the rest is
+    scaled across remaining miners; converted to uint16 and emitted via subtensor.set_weights.
+  on_chain_call: set_weights
+  tempo_or_interval: "MAIN_LOOP_FREQUENCY = 300 seconds"
+  smoothing:
+    kind: ema
+    alpha: 1.0
+    window: null
+    notes: >-
+      update_scores does EMA: scores = clip(alpha*rewards + (1-alpha)*scores, 0, 1) with
+      alpha = config.neuron.lp_moving_average_alpha, default LP_MINER_ALPHA = 1.0, i.e. the
+      new observation fully replaces the previous score.
+
+anti_gaming:
+  - kind: deduplication
+    enforcement: rejection
+    description: >-
+      calculate_miner_score skips an owner EVM address already claimed by another miner
+      (claimed_owner_addresses) and skips token_ids already claimed (claimed_token_ids),
+      preventing double-counting of the same on-chain position across miners.
+  - kind: rate_limit
+    enforcement: penalty
+    description: >-
+      If the number of scored LP miners exceeds MINER_GROUP_THRESHOLDS["UNISWAP_V3_LP"] = 200,
+      the lowest-performing miners beyond the top 200 have their reward set to 0.
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      In resync_metagraph, if a miner changes their committed miner_type since last sync,
+      their score is reset to 0.
+
+sub_competitions:
+  structure: single
+  stages: []
+  count: 1
+  notes: >-
+    Only one miner group exists: UNISWAP_V3_LP, which receives 100% of emissions
+    (MINER_GROUP_EMISSIONS["UNISWAP_V3_LP"] = 1).
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, status_enum]
+  status_values: ["UNISWAP_V3_LP"]
+  reset_policy: >-
+    Score reset to 0 when a miner's hotkey is replaced or when the miner changes its committed
+    miner_type; scores persisted to state.npz (save_state/load_state).
+  notes: >-
+    self.scores is an EMA-updated per-UID score array; self.miner_types maps UID to committed
+    MINER_TYPE; both saved/loaded from disk.
+
+documentation:
+  status: docs_and_code
+  source_version: "7.1.2"
+  primary_docs: ["README.md", "docs/taofi_lp.md", "docs/validator.md"]
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "23"
+      quote: "Swap (SN10 on Bittensor) incentivizes miners to provide liquidity to the TAO<>USDC pool on TaoFi."
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "swap/validator/reward.py"
+      line_ref: "18"
+      quote: "import bittensor as bt"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "23"
+      quote: "Miners are scored based on how much fees their positions received in the past 24 hours."
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "swap/utils/taofi_subgraph.py"
+      line_ref: "100-107"
+      quote: "is_in_range = current_tick >= tick_lower and current_tick <= tick_upper\n    if not is_in_range:\n        return 0.0\n    # Return the liquidity value directly\n    return liquidity"
+    - claim_field: "/scoring_signals/0/metric_kind"
+      source_path: "swap/utils/taofi_subgraph.py"
+      line_ref: "69-72"
+      quote: "Calculate reward score for a position based on its liquidity value. In Uniswap V3, the liquidity value L already accounts for concentration."
+    - claim_field: "/aggregation/normalization"
+      source_path: "swap/validator/reward.py"
+      line_ref: "114-116"
+      quote: "max_score = max(rewards.values()) if rewards.values() else 0\n    if max_score > 0:\n        rewards = {uid: score / max_score for uid, score in rewards.items()}"
+    - claim_field: "/aggregation/composition"
+      source_path: "swap/validator/reward.py"
+      line_ref: "148"
+      quote: "miner_score += score"
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "swap/constants.py"
+      line_ref: "22"
+      quote: "MINER_EMISSIONS_BURN_PCT = 0.5  # 50% of miner emissions will be burned"
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "swap/constants.py"
+      line_ref: "19"
+      quote: "OWNER_UID = 201"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "swap/base/validator.py"
+      line_ref: "253-275"
+      quote: "burn_pct = MINER_EMISSIONS_BURN_PCT\n        if 0 < burn_pct < 1:\n            ... scale = (1 - burn_pct) / other_weight_sum ... weight_list[owner_index] = burn_pct"
+    - claim_field: "/weight_setting/method"
+      source_path: "swap/base/validator.py"
+      line_ref: "237"
+      quote: "raw_weights = normalize_numpy(self.scores)"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "swap/base/validator.py"
+      line_ref: "301-309"
+      quote: "result, msg = await self.subtensor.set_weights(\n            wallet=self.wallet,\n            netuid=self.config.netuid,\n            uids=uint_uids,\n            weights=uint_weights,"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "swap/constants.py"
+      line_ref: "3"
+      quote: "MAIN_LOOP_FREQUENCY = 300  # time in seconds between main loop iterations"
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "swap/constants.py"
+      line_ref: "13"
+      quote: "LP_MINER_ALPHA = 1.0"
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "swap/base/validator.py"
+      line_ref: "427"
+      quote: "self.scores[mask] = np.clip(alpha * scattered_rewards[mask] + (1 - alpha) * self.scores[mask], a_min=0, a_max=1)"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "swap/validator/reward.py"
+      line_ref: "136-149"
+      quote: "if evm_address in claimed_owner_addresses:\n        ... return 0.0\n    claimed_owner_addresses.add(evm_address)\n    for token_id, score in owner_positions:\n        if token_id in claimed_token_ids:\n            ... continue\n        miner_score += score\n        claimed_token_ids.add(token_id)"
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "swap/validator/forward.py"
+      line_ref: "76-79"
+      quote: "if len(rewards_dict) > MINER_GROUP_THRESHOLDS[\"UNISWAP_V3_LP\"]:\n        for uid, _ in sorted_rewards[MINER_GROUP_THRESHOLDS[\"UNISWAP_V3_LP\"] :]:\n            rewards_dict[uid] = 0"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "swap/base/validator.py"
+      line_ref: "360-365"
+      quote: "if uid in old_miner_types and old_miner_types[uid] != self.miner_types[uid]:\n                ... resetting score!!!\n                self.scores[uid] = 0"
+    - claim_field: "/sub_competitions/notes"
+      source_path: "swap/constants.py"
+      line_ref: "25-27"
+      quote: "MINER_GROUP_EMISSIONS = {\n    \"UNISWAP_V3_LP\": 1,  # uniswap lp miners will receive 100% of the emissions\n}"
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "swap/constants.py"
+      line_ref: "8-10"
+      quote: "MINER_GROUP_THRESHOLDS = {\n    \"UNISWAP_V3_LP\": 200,  # 200 of the miners will be UniswapV3 liquidity providing miners for TaoFi\n}"
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "swap/constants.py"
+      line_ref: "30"
+      quote: "TAOFI_GQL_URL = \"https://subgraph.taofi.com/graphql\""
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "swap/base/validator.py"
+      line_ref: "430-444"
+      quote: "np.savez(\n                self.config.neuron.full_path + \"/state\",\n                step=self.step,\n                scores=self.scores,\n                hotkeys=self.hotkeys,\n                miner_types=self.miner_types,"
+    - claim_field: "/documentation/source_version"
+      source_path: "swap/__init__.py"
+      line_ref: "20"
+      quote: "__version__ = \"7.1.2\""
+  unresolved:
+    - "README claims scoring is based on fees received in the past 24 hours, but the code (taofi_subgraph.calculate_reward_score) scores by current in-range liquidity L at a single block, not 24h accumulated fees; the documented and implemented metrics diverge."
+    - "Whitelisted LP miner (WHITELISTED_LP_MINER hotkey) is awarded the sum of all unclaimed position scores; the rationale/governance of this special-casing is not documented."

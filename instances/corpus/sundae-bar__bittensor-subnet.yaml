@@ -1,0 +1,244 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: unknown
+mechanism_status_notes: >-
+  Docs-only repo (README only, no validator/reward source code). The README describes a
+  winner-takes-all emissions model with a pre-revenue "controlled low emissions; unused
+  emissions burned" mode and a post-revenue revenue-backed mode, but no on-chain code is
+  present to confirm what the live validator actually does. Status genuinely unknown from
+  the available source.
+
+subnet:
+  name: "SN121 — sundae_bar Generalist Agent"
+  owner_repo: "sundae-bar__bittensor-subnet"
+  netuid: 121
+  implementation_lang: none_docs_only
+
+task:
+  summary: >-
+    Developers (miners) submit fully open-source generalist AI agents to SN121 validators.
+    Validators benchmark each agent with the Agent Eval Test Suite (AETS) — datasets,
+    targets, rubric, and graders derived from structured "Generalist Challenges" across
+    multiple domains. Agents are ranked by an aggregated consensus performance score and
+    emissions are awarded winner-takes-all to the single top-performing agent for the
+    evaluation window.
+  submission_format: [source_code]
+
+scoring_signals:
+  - name: task_completion
+    metric_kind: composite
+    direction: higher_is_better
+    weight: 0.35
+    normalization: none
+    notes: >-
+      Sample rubric metric, weight 35%, evaluated by deterministic graders validating
+      schema-correct, actionable outputs. Rubric weights are described as relative and
+      summing to 100%; this sample is illustrative, not a fixed network constant.
+  - name: reasoning_quality
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: 0.25
+    normalization: none
+    notes: >-
+      Sample rubric metric, weight 25%, LLM judge evaluates coherence, logical steps,
+      and justification.
+  - name: retrieval_accuracy
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 0.20
+    normalization: none
+    notes: >-
+      Sample rubric metric, weight 20%, exact-match + semantic-match scoring against
+      ground-truth datasets.
+  - name: tool_use_efficacy
+    metric_kind: composite
+    direction: higher_is_better
+    weight: 0.20
+    normalization: none
+    notes: >-
+      Sample rubric metric, weight 20%, ability to call tools correctly, avoid errors,
+      and meet constraints.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      AETS specification per Generalist Challenge: datasets + targets + rubric + graders,
+      including business documents, structured tables, web-style passages, and tool-access
+      stubs. Used for exact-match/semantic-match retrieval scoring and deterministic graders.
+    source_identifier: "Agent Eval Test Suite (AETS)"
+    trust_model: trusted
+    notes: >-
+      No dataset URL or repo path is given in the README; AETS specs are said to be
+      published publicly after evaluation.
+  - kind: llm_judgment
+    description: >-
+      LLM-based judges used where appropriate within the rubric (e.g. reasoning-quality
+      coherence and justification scoring).
+    source_identifier: "AETS LLM judge"
+    trust_model: oracle
+    notes: ""
+
+aggregation:
+  method: winner_take_all
+  composition: weighted_sum
+  normalization: none
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: >-
+      Pre-revenue operating mode: "Controlled low emissions; unused emissions burned".
+      No numeric burn fraction is given in the README.
+  notes: >-
+    Per-validator rubric scores are aggregated statistically into a single consensus
+    performance score per agent; agents are ranked and emissions awarded to the top
+    performer only (winner-takes-all). Rubric metrics combine as a weighted sum (weights
+    sum to 100%). No aggregation temperature, decay, or floor constants are documented.
+
+weight_setting:
+  cadence: continuous
+  method: >-
+    Rolling challenge cycle: agents can be submitted at any time; the top-ranked agent
+    for each evaluation window earns emissions. No explicit on-chain weight-setting code
+    or cadence (epoch/tempo) is present in the repo.
+  on_chain_call: unknown
+  tempo_or_interval: null
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: ""
+
+anti_gaming:
+  - kind: code_inspection
+    enforcement: rejection
+    description: >-
+      All agents must be fully open-source; "No closed-source submissions are permitted."
+      Every submission is archived and publicly inspectable.
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      Rubric Pass/Fail Conditions: "minimum qualification thresholds to prevent
+      poor-quality submissions from scoring highly." No threshold value is documented.
+
+sub_competitions:
+  structure: per_task_type
+  stages: []
+  count: null
+  notes: >-
+    Multiple Generalist Challenges across domains (reasoning, retrieval, tool use,
+    information synthesis), each converted into an AETS spec; new challenges added on a
+    rolling basis. Scores aggregate into a single consensus score, so this is multi-domain
+    evaluation rather than separate emission pools.
+
+per_miner_state:
+  tracked: false
+  state_kinds: []
+  status_values: []
+  reset_policy: ""
+  notes: >-
+    No per-miner persistent state (ledger, cooldown, reputation) is documented; evaluation
+    is per-window and winner-takes-all.
+
+documentation:
+  status: docs_only
+  source_version: null
+  primary_docs: ["README.md"]
+  completeness: low
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: low
+  evidence:
+    - claim_field: "/subnet/name"
+      source_path: "README.md"
+      line_ref: "7"
+      quote: "SN121 is an incentivised economy for the creation of a single generalist AI agent."
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "27"
+      quote: "SN121 is owned and operated by Sundae Bar Plc (AIM: SBAR), a London-listed company."
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "57"
+      quote: >-
+        Developers ("miners") submit public generalist agents, with all agent code fully
+        open-source. No closed-source submissions are permitted.
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "15"
+      quote: >-
+        Validators benchmark agents using the Agent Eval Test Suite (AETS), and emissions
+        are awarded to the top-performing generalist agent.
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "README.md"
+      line_ref: "144"
+      quote: "| **Task Completion** | 35% | Deterministic graders validate schema-correct, actionable outputs |"
+    - claim_field: "/scoring_signals/1/weight"
+      source_path: "README.md"
+      line_ref: "145"
+      quote: "| **Reasoning Quality** | 25% | LLM judge evaluates coherence, logical steps, and justification |"
+    - claim_field: "/scoring_signals/2/weight"
+      source_path: "README.md"
+      line_ref: "146"
+      quote: "| **Retrieval Accuracy** | 20% | Exact-match + semantic-match scoring against ground-truth datasets |"
+    - claim_field: "/scoring_signals/3/weight"
+      source_path: "README.md"
+      line_ref: "147"
+      quote: "| **Tool-Use Efficacy** | 20% | Ability to call tools correctly, avoid errors, and meet constraints |"
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "README.md"
+      line_ref: "59"
+      quote: "Each Generalist Challenge is converted into an AETS specification: datasets + targets + rubric + graders."
+    - claim_field: "/aggregation/method"
+      source_path: "README.md"
+      line_ref: "65"
+      quote: >-
+        Generalist agents are ranked by their aggregated performance score, and emissions
+        are awarded to the top-performing agent for that evaluation window. This
+        winner-takes-all structure ensures that miner rewards reflect real improvements.
+    - claim_field: "/aggregation/notes"
+      source_path: "README.md"
+      line_ref: "61"
+      quote: >-
+        Metrics are aggregated statistically into a single consensus performance score for
+        each submitted generalist agent.
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "README.md"
+      line_ref: "49"
+      quote: "Pre-Revenue: Controlled low emissions; unused emissions burned; optional use of sundae_bar reserve for early stability."
+    - claim_field: "/weight_setting/cadence"
+      source_path: "README.md"
+      line_ref: "91"
+      quote: >-
+        SN121 operates on a continuous evaluation cadence ... allowing for iterative,
+        ongoing improvement rather than fixed submission cycles.
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "README.md"
+      line_ref: "57"
+      quote: "No closed-source submissions are permitted. Every agent submitted is archived and available for community inspection."
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "README.md"
+      line_ref: "121"
+      quote: "Pass/Fail Conditions – minimum qualification thresholds to prevent poor-quality submissions from scoring highly."
+    - claim_field: "/sub_competitions/structure"
+      source_path: "README.md"
+      line_ref: "55"
+      quote: >-
+        sundae_bar defines Generalist Challenges: structured, multi-domain datasets that
+        represent the real workflows businesses need automated.
+    - claim_field: "/documentation/status"
+      source_path: "README.md"
+      line_ref: "1"
+      quote: "Incentivizing The Creation and Benchmarking of A Generalist Commercial AI Agent"
+  unresolved:
+    - "No validator/reward source code in repo — aggregation temperature, decay, weight floors, and on-chain set_weights call/tempo unknowable."
+    - "Burn fraction in pre-revenue mode not numerically specified (README says unused emissions are burned but gives no fraction)."
+    - "Live mechanism_status (active/burn/dormant) cannot be confirmed without validator code."
+    - "Rubric metric weights (35/25/20/20) are explicitly an illustrative sample, not a fixed network constant."
+    - "Emission cap '70% of revenue' is a worked dollar example, not a confirmed protocol constant, so not encoded as a numeric field."

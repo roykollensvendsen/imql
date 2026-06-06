@@ -1,0 +1,294 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+# This repo (HS58) is the provider-template + docs + DRAIN-protocol hub for Bittensor
+# Subnet 58. The actual validator / miner / weight-setting code lives in a SEPARATE
+# repo (HS58-subnet, referenced throughout but NOT present here). The incentive
+# mechanism is therefore only DOCUMENTED in this repo's README + docs; there is no
+# scoring or set_weights implementation in this tree. Code-derived fields are left
+# null/unresolved accordingly.
+mechanism_status: unknown
+mechanism_status_notes: >-
+  The README documents a live scoring mechanism (60% DRAIN claims, 40% availability,
+  7-day rolling window) and a fixed Yuma-consensus emission split (41% miners / 41%
+  validators / 18% subnet owner), but the validator implementation that sets weights
+  is in the separate HS58-subnet repo, which is not present in this corpus tree. No
+  burn fraction, alpha, or scoring constant is in-source here, so the operative
+  reality (active vs burning) cannot be confirmed from this repo.
+
+subnet:
+  name: "Handshake58 (HS58)"
+  owner_repo: "Handshake58__HS58"
+  netuid: 58
+  implementation_lang: typescript
+
+task:
+  summary: >-
+    Miners run AI-provider endpoints (LLM / image / audio / code / scraping / VPN /
+    multi-modal services) deployed from the provided templates. Agents pay providers
+    per request via the DRAIN payment-channel protocol (signed USDC vouchers settled
+    on Polygon) or the MPP HTTP-402 per-request protocol. Bittensor Subnet 58
+    validators score providers trustlessly on real on-chain DRAIN ChannelClaimed
+    events (claimed USDC volume) and on availability/health-check responses, then set
+    weights so providers earn TAO incentives.
+  submission_format: [compute_service]
+
+scoring_signals:
+  - name: drain_claims
+    metric_kind: volume
+    direction: higher_is_better
+    weight: 0.6
+    normalization: other
+    normalization_other: >-
+      Scored relative to the top provider over a 7-day rolling window of on-chain
+      ChannelClaimed (USDC) events; exact normalization formula is in the
+      (absent) HS58-subnet validator, not in this repo.
+    notes: >-
+      "60% DRAIN Claims - Real USDC claimed from payment channels (7-day rolling
+      window)". The validator scans Polygon ChannelClaimed events.
+  - name: availability
+    metric_kind: uptime
+    direction: higher_is_better
+    weight: 0.4
+    normalization: other
+    normalization_other: >-
+      Provider must respond to validator health checks with valid wallet proof;
+      exact scoring is in the absent HS58-subnet validator.
+    notes: >-
+      "40% Availability - Provider responds to validator health checks with valid
+      wallet proof".
+
+ground_truth_sources:
+  - kind: market_data
+    description: >-
+      Real on-chain DRAIN ChannelClaimed events (USDC claimed by providers) on the
+      DRAIN Channel V2 contract on Polygon mainnet, over a 7-day rolling window.
+    source_identifier: "polygon:0x0C2B3aA1e80629D572b1f200e6DF3586B3946A8A"
+    trust_model: trusted
+    notes: >-
+      DRAIN Channel V2 contract address per README Contract Addresses table; the
+      validator scans ChannelClaimed events emitted by this contract.
+  - kind: organic_traffic
+    description: >-
+      Validator health checks against the provider endpoint, requiring a valid
+      wallet proof response (availability signal).
+    source_identifier: ""
+    trust_model: adversarial
+    notes: >-
+      Availability is measured by the validator probing providers; provider must
+      prove wallet ownership. Exact probe logic lives in the absent HS58-subnet repo.
+
+aggregation:
+  method: weighted_average
+  composition: weighted_sum
+  normalization: other
+  normalization_other: >-
+    Documented as scored relative to the top provider; the precise normalization
+    and any softmax/sum-to-one step are in the absent HS58-subnet validator.
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: >-
+      No burn is documented or implemented in this repo. Emission split is the fixed
+      Yuma-consensus 41/41/18 (miners/validators/subnet owner), not a burn.
+  notes: >-
+    "60% DRAIN Claims ... 40% Availability". Combined as a weighted sum of the two
+    signals. "The validator scores relative to the top provider." The literal
+    combination/normalization code is not in this repo.
+
+weight_setting:
+  cadence: undocumented
+  method: >-
+    Validator scans Polygon ChannelClaimed events (7-day rolling window) plus
+    availability health checks, computes a per-provider score (60/40), and sets
+    weights on Subnet 58. The implementation is in the separate HS58-subnet repo
+    (NEURON_TYPE=validator), not present here; cadence/tempo are not stated.
+  on_chain_call: set_weights
+  tempo_or_interval: null
+  smoothing:
+    kind: other
+    kind_other: >-
+      7-day rolling window over on-chain claim events (a rolling-volume window, not
+      an EMA of the final reward). Window length stated in days, not blocks/rounds.
+    alpha: null
+    window: null
+    notes: >-
+      "7-day rolling window" is documented for the DRAIN-claims signal; whether the
+      final reward is additionally EMA-smoothed is unknown (validator code absent).
+
+anti_gaming:
+  - kind: liveness_check
+    enforcement: penalty
+    description: >-
+      Availability component (40%): providers must respond to validator health
+      checks with valid wallet proof; failing/unavailable providers lose that
+      portion of score. "Miner auto-registers on handshake58.com, validator scores
+      you."
+  - kind: other
+    kind_other: on_chain_payment_proof
+    enforcement: barrier
+    description: >-
+      The DRAIN-claims signal is grounded in real on-chain USDC ChannelClaimed
+      events: a provider must actually deliver inference and claim a real voucher to
+      score. The DRAIN contract requires distinct consumer and provider addresses,
+      so a single wallet cannot self-pay. Self-test payments are real economic
+      transactions (~$0.13 each), raising the cost of fabricating score.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: >-
+    Three documented provider TYPES (TAO Miners auto-verified, DRAIN Providers, MPP
+    Providers) and provider categories (llm/image/audio/code/scraping/vpn/
+    multi-modal/other), but no tiered/laddered scoring competition is documented.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score]
+  status_values: []
+  reset_policy: >-
+    DRAIN-claims score is a 7-day rolling window: claims older than 7 days drop out,
+    so score decays unless refreshed by new claims ("No payments = no claims = no
+    score").
+  notes: >-
+    A per-provider tao_score is maintained and synced on handshake58.com. The
+    underlying storage/state machine is in the absent marketplace/HS58-subnet code.
+
+documentation:
+  status: docs_only
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/score-keepalive.md"
+    - "docs/thesis.html"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8[1m]"
+  extracted_at: "2026-06-06"
+  confidence_overall: low
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "170"
+      quote: "## For Miners (Bittensor Subnet 58)"
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "providers/hs58-openai/src/config.ts"
+      line_ref: "49"
+      quote: "if (modelId.includes('gpt-4o-mini')) return { inputPerM: 0.15, outputPerM: 0.60 };"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "21"
+      quote: >-
+        Handshake58 is a decentralized AI provider marketplace where agents discover
+        providers, pay per request via DRAIN or MPP protocols, and providers are
+        scored trustlessly through Bittensor Subnet 58.
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "55"
+      quote: "**For Providers:** Deploy template ? Register on marketplace ? Serve AI inference ? Earn USDC"
+      confidence: high
+    - claim_field: "/scoring_signals/0"
+      source_path: "README.md"
+      line_ref: "188"
+      quote: "**60% DRAIN Claims** - Real USDC claimed from payment channels (7-day rolling window)"
+      confidence: high
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "README.md"
+      line_ref: "188"
+      quote: "**60% DRAIN Claims**"
+      confidence: high
+    - claim_field: "/scoring_signals/1"
+      source_path: "README.md"
+      line_ref: "189"
+      quote: "**40% Availability** - Provider responds to validator health checks with valid wallet proof"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0"
+      source_path: "docs/score-keepalive.md"
+      line_ref: "5"
+      quote: >-
+        the Bittensor validator scores miners based on real **DRAIN ChannelClaimed
+        events** on Polygon (7-day rolling window).
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "README.md"
+      line_ref: "276"
+      quote: "| DRAIN Channel V2 | `0x0C2B3aA1e80629D572b1f200e6DF3586B3946A8A` | Polygon Mainnet |"
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "README.md"
+      line_ref: "188-189"
+      quote: "**60% DRAIN Claims** ... **40% Availability**"
+      confidence: medium
+    - claim_field: "/aggregation/normalization_other"
+      source_path: "docs/score-keepalive.md"
+      line_ref: "104"
+      quote: "The validator scores relative to the top provider."
+      confidence: medium
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "README.md"
+      line_ref: "46"
+      quote: "Validator -->|sets weights| BT"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "README.md"
+      line_ref: "181"
+      quote: "6. **Deploy miner neuron** - Fork [HS58-subnet](https://github.com/Handshake58/HS58-subnet), set `NEURON_TYPE=miner`"
+      confidence: medium
+    - claim_field: "/weight_setting/smoothing/kind_other"
+      source_path: "docs/score-keepalive.md"
+      line_ref: "96"
+      quote: "Run once per week to stay in the 7-day rolling window."
+      confidence: high
+    - claim_field: "/anti_gaming/0"
+      source_path: "README.md"
+      line_ref: "189"
+      quote: "**40% Availability** - Provider responds to validator health checks with valid wallet proof"
+      confidence: medium
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "docs/score-keepalive.md"
+      line_ref: "127"
+      quote: >-
+        The DRAIN contract requires different consumer and provider addresses. Use a
+        separate wallet for the agent role.
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "README.md"
+      line_ref: "194-201"
+      quote: "| Miners | 41% | | Validators | 41% | | Subnet Owner | 18% | ... Hardcoded in Yuma Consensus - not configurable."
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "docs/score-keepalive.md"
+      line_ref: "5"
+      quote: "No payments = no claims = no score."
+      confidence: high
+    - claim_field: "/documentation/status"
+      source_path: "README.md"
+      line_ref: "286-289"
+      quote: "| [HS58-subnet](https://github.com/Handshake58/HS58-subnet) | Bittensor Subnet 58 validator + miner |"
+      confidence: high
+  unresolved:
+    - "weight_setting.cadence / tempo_or_interval — no weight-setting interval stated; validator code in absent HS58-subnet repo."
+    - "aggregation.temperature / decay_rate / min_weight_floor — no scoring constants in this repo."
+    - "aggregation.normalization — exact normalization (softmax / sum-to-one / relative-to-top) formula not in source."
+    - "weight_setting.smoothing.alpha/window — whether final reward is EMA/SMA-smoothed beyond the 7-day claim window is unknown."
+    - "mechanism_status — cannot confirm active vs burn; validator (HS58-subnet) not present in this repo."
+    - "scoring_signals normalization — per-signal normalization formulas are in the absent validator."
+    - "availability ground_truth_source.source_identifier — health-check endpoint/probe spec not in this repo."
+  extractor_notes: >-
+    HS58 is the provider-template + DRAIN-protocol + docs hub for SN58. The validator
+    that computes scores and calls set_weights is in the separate HS58-subnet repo
+    (not in this corpus tree), so all numeric scoring constants are unavailable. The
+    60/40 weights and the 41/41/18 Yuma emission split are the only hard numbers in
+    source, and both are documentation, not executable scoring code. README arrows
+    (mojibake '?' chars are corrupted '->' separators in the original UTF-8).
+    Confidence overall is low because the operative mechanism is not implemented here.

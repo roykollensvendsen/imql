@@ -1,0 +1,301 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: full_burn
+mechanism_status_notes: >-
+  The documented scoring mechanism (TSP/mTSP/portfolio/yield benchmark scaling) is fully
+  computed in graphite/validator/reward.py and aggregated into a CompositeScore, but
+  BaseValidatorNeuron.set_weights() discards all of it: after computing processed_weights it
+  hardcodes `processed_weight_uids = np.arange(256)` / `processed_weights = np.zeros(256)` /
+  `processed_weights[20] = 1`, sending 100% of weight to UID 20 every epoch. The described
+  scoring path is therefore dormant; emission is concentrated on a single UID.
+
+subnet:
+  name: Graphite
+  owner_repo: "GraphiteAI__Graphite-Subnet"
+  netuid: null
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners solve graph optimization problems — primarily variants of the Traveling Salesman
+    Problem (Metric/General TSP, mTSP, constrained multi-depot mTSP with time windows) and a
+    PortfolioReallocation problem — sent as synthetic requests by validators. Miners return a
+    route/solution (or list of portfolio swaps), which validators score against a benchmark
+    greedy heuristic and against the best solution in the queried cohort. A separate 'yield'
+    competition ranks copy-trading leaders by performance metrics (Sharpe, PnL, drawdown, etc.).
+  submission_format:
+    - api_response
+  submission_format_other: ""
+
+scoring_signals:
+  - name: tour_cost
+    metric_kind: other
+    metric_kind_other: graph_optimization_objective_cost
+    direction: lower_is_better
+    weight: 0.6
+    normalization: min_max
+    notes: >-
+      Path cost from the problem's cost function (get_tour_distance /
+      get_multi_minmax_tour_distance / _tw). scaled_rewards min-max scales finite scores between
+      0.2 and 1.0 relative to best_score and the benchmark/worst reference; solutions worse than
+      the benchmark get 0, solutions matching it get a 0.2 floor. This 'synthetic_score' carries
+      weight 0.6 in CompositeScore.composite_score.
+  - name: portfolio_distribution_similarity
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: null
+    normalization: min_max
+    notes: >-
+      For PortfolioReallocation, scaled_portfolio_rewards normalizes swap-count (1/swaps) and
+      objective-similarity, combines them as 0.6*swaps + 0.4*objective, then applies the same
+      0.2-floor / min-max gap scaling vs benchmark. Feeds the 'organic_score' channel
+      (weight 0.2 in CompositeScore).
+  - name: yield_composite
+    metric_kind: composite
+    direction: higher_is_better
+    weight: 0.2
+    normalization: rank
+    notes: >-
+      ScoreYieldResponse ranks copy-trade leaders per-field (ordinal rank normalized 0..1) and
+      takes a weighted sum with fixed weights historical_daily_pnl=0.1, sharpe_ratio=0.55,
+      max_drawdown=0.1, num_copy_traders=0.1, notional_value_of_copy_traders=0.05, volume=0.1.
+      Feeds 'yield_score' (weight 0.2). NOTE: yield/organic request flows are commented out in
+      base/validator.run(); only the synthetic flow is launched.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Validator generates synthetic graph-optimization problems and computes a benchmark
+      solution with a greedy/nearest-neighbour solver (BENCHMARK_SOLUTIONS), scoring miners
+      relative to that benchmark and to the best miner in the cohort.
+    source_identifier: graphite.utils.constants.BENCHMARK_SOLUTIONS
+    trust_model: trusted
+    notes: >-
+      Benchmark solver chosen per problem_type (e.g. NearestNeighbourSolver for TSP). The
+      benchmark acts as the reference floor (0.2) that miners must beat to score above it.
+  - kind: market_data
+    description: >-
+      Yield/leaderboard performance data for the copy-trading competition is fetched from an
+      external taotrader API and signed by a trusted yield provider hotkey.
+    source_identifier: api.yield.taotrader.xyz
+    trust_model: trusted
+    notes: >-
+      DEFAULT_YIELD_PROVIDER signer 5GNAzXLXdX749B2ZXPzbromP3rgatDFUpFdHsNxrBKBfA1yi; yield flow
+      is currently disabled in run().
+
+aggregation:
+  method: weighted_average
+  composition: weighted_sum
+  normalization: l1
+  temperature: null
+  decay_rate: null
+  min_weight_floor: 0.2
+  burn_allocation:
+    enabled: true
+    address_or_uid: "20"
+    fraction: 1.0
+    dynamic: false
+    notes: >-
+      set_weights() overrides the computed weight vector with a one-hot vector putting weight 1
+      on UID 20 (processed_weights[20] = 1), so 100% of emission is routed to a single UID
+      regardless of miner scores. Treated here as a full burn of the documented mechanism.
+  notes: >-
+    Documented aggregation: CompositeScore.composite_score = organic*0.2 + synthetic*0.6 +
+    yield*0.2 (with a 0.7 factor applied where yield is NaN); raw_weights = composite /
+    L1-norm(composite). The 0.2 min_weight_floor is the matched-benchmark floor in
+    scaled_rewards. This documented vector is computed but then discarded (see burn_allocation).
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    L1-normalized composite score computed, then overridden to a one-hot vector on UID 20 before
+    convert_weights_and_uids_for_emit and subtensor.set_weights.
+  on_chain_call: set_weights
+  tempo_or_interval: "300 blocks (neuron.epoch_length default 300)"
+  smoothing:
+    kind: ema
+    alpha: 0.01
+    window: null
+    notes: >-
+      update_scores applies EMA per score channel: current = alpha*scattered_rewards +
+      (1-alpha)*current, with neuron.moving_average_alpha default 0.01. (Applied to the scores
+      that are then discarded by the one-hot override.)
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      is_valid_solution validates each miner's submission against the problem; invalid solutions
+      or False (unsolvable claim) are assigned np.inf (TSP) / (1000000, 0) (portfolio), yielding
+      a reward of 0.
+  - kind: other
+    kind_other: benchmark_floor
+    enforcement: penalty
+    description: >-
+      Miners scoring worse than the greedy benchmark reference get reward 0; only those matching
+      or beating it receive >=0.2 via scaled_rewards/scaled_portfolio_rewards.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      get_miner_uids excludes UIDs with validator_permit or stake >= 2000 or invalid (0.0.0.0)
+      IP from being treated as miners; vpermit_tao_limit (default 4096) gates availability.
+
+sub_competitions:
+  structure: multi_mechanism
+  stages: []
+  count: 3
+  notes: >-
+    Three scoring channels combined in CompositeScore: synthetic (graph optimization, 0.6),
+    organic/portfolio (0.2), and yield/copy-trading (0.2). Organic and yield request flows are
+    commented out in run(); only synthetic is active. All three are moot under the UID-20 burn.
+
+per_miner_state:
+  tracked: true
+  state_kinds:
+    - cumulative_score
+  status_values: []
+  reset_policy: >-
+    Scores re-initialized from normalized metagraph incentive on load_state (called every 360*3
+    blocks); per-hotkey scores zeroed when a hotkey is replaced in resync_metagraph.
+  notes: >-
+    CompositeScore holds per-channel EMA score arrays (organic_score, synthetic_score,
+    yield_score) carried across steps.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - README.md
+    - docs/validator.md
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8"
+  extracted_at: "2026-06-06"
+  confidence_overall: high
+  evidence:
+    - claim_field: /mechanism_status
+      source_path: graphite/base/validator.py
+      line_ref: "577-579"
+      quote: "processed_weight_uids = np.arange(256)\n        processed_weights = np.zeros(256, dtype=int)\n        processed_weights[20] = 1"
+      confidence: high
+    - claim_field: /aggregation/burn_allocation
+      source_path: graphite/base/validator.py
+      line_ref: "577-587"
+      quote: "processed_weights[20] = 1 ... convert_weights_and_uids_for_emit(uids=processed_weight_uids, weights=processed_weights)"
+      confidence: high
+    - claim_field: /weight_setting/on_chain_call
+      source_path: graphite/base/validator.py
+      line_ref: "592-600"
+      quote: "result, msg = self.subtensor.set_weights(wallet=self.wallet, netuid=self.config.netuid, uids=uint_uids, weights=uint_weights, ...)"
+      confidence: high
+    - claim_field: /aggregation/method
+      source_path: graphite/base/validator.py
+      line_ref: "70-83"
+      quote: "score = self.organic_score * 0.2 + self.synthetic_score * 0.6 + yield_score_ * 0.2"
+      confidence: high
+    - claim_field: /aggregation/normalization
+      source_path: graphite/base/validator.py
+      line_ref: "556"
+      quote: "raw_weights = self.scores.composite_score / np.linalg.norm(self.scores.composite_score, ord=1, axis=0, keepdims=True)"
+      confidence: high
+    - claim_field: /scoring_signals/0
+      source_path: graphite/validator/reward.py
+      line_ref: "160-169"
+      quote: "return ((1 - abs(best_score-score)/abs(best_score-reference))**2)*0.8 + 0.2"
+      confidence: high
+    - claim_field: /aggregation/min_weight_floor
+      source_path: graphite/validator/reward.py
+      line_ref: "162-164"
+      quote: "if is_approximately_equal(score, reference): return 0.2 # matched the benchmark so assign a floor score"
+      confidence: high
+    - claim_field: /scoring_signals/0/direction
+      source_path: graphite/validator/reward.py
+      line_ref: "44-49"
+      quote: "if objective_function == \"min\": if score > reference: return True"
+      confidence: high
+    - claim_field: /scoring_signals/1
+      source_path: graphite/validator/reward.py
+      line_ref: "216-218"
+      quote: "weighted_scores.append(score[0]*0.6 + score[1]*0.4)"
+      confidence: high
+    - claim_field: /scoring_signals/2/notes
+      source_path: graphite/validator/reward.py
+      line_ref: "322-329"
+      quote: "\"historical_daily_pnl\": 0.1, \"sharpe_ratio\": 0.55, \"max_drawdown\": 0.1, \"num_copy_traders\": 0.1, \"notional_value_of_copy_traders\": 0.05, \"volume\": 0.1"
+      confidence: high
+    - claim_field: /scoring_signals/2/normalization
+      source_path: graphite/validator/reward.py
+      line_ref: "405-408"
+      quote: "scores[field_name] = ranks / (len(ranks) - 1)"
+      confidence: high
+    - claim_field: /ground_truth_sources/0
+      source_path: graphite/utils/constants.py
+      line_ref: "23-33"
+      quote: "BENCHMARK_SOLUTIONS = { 'Metric TSP': NearestNeighbourSolver, ... 'PortfolioReallocation': GreedyPortfolioSolver }"
+      confidence: high
+    - claim_field: /ground_truth_sources/1/source_identifier
+      source_path: graphite/utils/constants.py
+      line_ref: "51-54"
+      quote: "DEFAULT_PERFORMANCE_INFO_ENDPOINT = \"http://api.yield.taotrader.xyz/api/v1/validator/performance_info\""
+      confidence: high
+    - claim_field: /weight_setting/smoothing/alpha
+      source_path: graphite/utils/config.py
+      line_ref: "209-214"
+      quote: "\"--neuron.moving_average_alpha\", ... default=0.01,"
+      confidence: high
+    - claim_field: /weight_setting/smoothing/kind
+      source_path: graphite/base/validator.py
+      line_ref: "677-681"
+      quote: "alpha: float = self.config.neuron.moving_average_alpha ... current_score = alpha * scattered_rewards + (1 - alpha) * current_score"
+      confidence: high
+    - claim_field: /weight_setting/tempo_or_interval
+      source_path: graphite/utils/config.py
+      line_ref: "82-87"
+      quote: "\"--neuron.epoch_length\", ... \"how often we set weights, measured in 12 second blocks\", default=300,"
+      confidence: high
+    - claim_field: /weight_setting/cadence
+      source_path: graphite/base/neuron.py
+      line_ref: "141-142"
+      quote: "if self.should_set_weights(): self.set_weights()"
+      confidence: high
+    - claim_field: /anti_gaming/0
+      source_path: graphite/validator/reward.py
+      line_ref: "104-113"
+      quote: "if is_valid_solution(self.problem, response.solution): ... else: # the miner's response is invalid, return 0 return np.inf"
+      confidence: high
+    - claim_field: /anti_gaming/2
+      source_path: graphite/base/validator.py
+      line_ref: "174-184"
+      quote: "if self.metagraph.validator_permit[uid]: continue elif self.metagraph.stake[uid] >= 2000: continue elif not valid_ip(...)"
+      confidence: high
+    - claim_field: /sub_competitions/notes
+      source_path: graphite/base/validator.py
+      line_ref: "468-472"
+      quote: "# self.yield_task = ... # self.organic_task = ... self.synthetic_task = self.loop.create_task(self.synthetic_request_flow())"
+      confidence: high
+    - claim_field: /per_miner_state/reset_policy
+      source_path: graphite/base/validator.py
+      line_ref: "723-732"
+      quote: "current_incentive = np.array(self.metagraph.I) ... self.scores = CompositeScore(organic_score=metagraph_scores, synthetic_score=metagraph_scores, yield_score=metagraph_scores)"
+      confidence: high
+    - claim_field: /task/summary
+      source_path: README.md
+      line_ref: "118"
+      quote: "Graphite focuses on the Traveling Salesman Problem (TSP), a classic optimization problem that involves finding the shortest possible route that visits a set of cities and returns to the starting point."
+      confidence: high
+    - claim_field: /task/submission_format
+      source_path: README.md
+      line_ref: "130"
+      quote: "Miners are responsible for solving the TSP using the algorithms they have devised and be sent back to the validators to be evaluated."
+      confidence: medium
+  unresolved:
+    - "/subnet/netuid — netuid not pinned in source; config default is 1 (template placeholder), actual mainnet netuid not stated."
+    - "Whether the UID-20 one-hot override is a deliberate burn/dev placeholder or a leftover debug line — code shows it unconditionally; intent not documented."
+  extractor_notes: >-
+    Strong code evidence. Key finding: documented multi-channel scoring (synthetic 0.6 / organic
+    0.2 / yield 0.2 with EMA alpha 0.01 and L1 normalization) is fully implemented but bypassed by
+    a hardcoded one-hot weight vector on UID 20 in set_weights — classified full_burn. Numeric
+    constants (0.2 floor, 0.6/0.4 portfolio split, channel weights, yield field weights, alpha
+    0.01, epoch 300) all taken verbatim from source.

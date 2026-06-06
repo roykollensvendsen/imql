@@ -1,0 +1,309 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Operative scoring runs through coding/finetune (SWE-Bench competition). The
+  template files coding/validator/reward.py and coding/rewards/reward.py contain
+  dummy "response == query*2" logic and are NOT the live mechanism. Live weights
+  come from update_scores() (top-10 finetune trackers) and set_weights()
+  (winner-take-all on top 10 with score_spreading). No explicit emission burn
+  found in source.
+
+subnet:
+  name: "SWE-Rizzo (Gen42 / Code)"
+  owner_repo: "brokespace__code"
+  netuid: null
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners develop SWE (software engineering) pipelines / "logic" — Python code that
+    takes a repository and a GitHub issue and returns a patch. The logic is served
+    by the miner over a LogicSynapse, transferred into a Docker container with the
+    target repo + issue, executed, and the resulting patch is evaluated by the
+    SWE-Bench harness (resolved tests pass/fail). Score is the average resolution
+    rate across SWE-Bench tasks, adjusted down by LLM API cost.
+  submission_format: [source_code]
+
+scoring_signals:
+  - name: swebench_resolution
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      Per-task binary: SWEBenchTask.score returns 1 if the SWE-Bench eval report
+      marks the instance "resolved", else 0 (score_patch). A patch that touches a
+      test file scores 0. tracker.raw_score = mean of per-task scores.
+  - name: llm_cost_penalty
+    metric_kind: other
+    metric_kind_other: api_cost_penalty
+    direction: lower_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      adjust_score_by_cost: if avg LLM cost per task <= ideal_cost (0.5) no penalty;
+      otherwise penalty_factor = 1.0 - min(0.9, (llm_cost - 0.5)/0.5) multiplies the
+      raw score. Multiplicative gate, not an additive signal.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      SWE-Bench tasks generated from SWEFullDataset; each task runs the SWE-Bench
+      eval harness (make_test_spec / get_eval_report) inside a per-instance Docker
+      image to determine whether the miner's patch resolves the issue.
+    source_identifier: "SWEFullDataset / swebench harness; coding/datasets/swefull.py"
+    trust_model: trusted
+    notes: >-
+      Tasks rotate: every ~1.5 days (10800 blocks) 50 of 100 tasks are replaced
+      (FinetunePipeline.update_tasks).
+
+aggregation:
+  method: winner_take_all
+  composition: gated
+  normalization: sum_to_one
+  normalization_other: ""
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: >-
+      No emission-burn allocation found in source. Blacklisted coldkeys are zeroed
+      (set_weights), and all-but-top-10 scores are set to 0, but emissions are not
+      routed to a burn UID in the read code.
+  notes: >-
+    update_scores selects trackers from the latest competition: top 10 by score
+    (rest 0); if more than 10 tie at max_score, distribute across distinct-logic
+    groups. Scores within max_score-0.17 are kept, all below threshold set to 0
+    (finetune_scores[finetune_scores < threshold] = 0). set_weights then normalizes
+    self.scores to sum to 1 (np.divide by sum), applies score_spreading, and keeps
+    only the top-10 uids (all others zeroed) before process_weights_for_netuid.
+
+weight_setting:
+  cadence: continuous
+  method: >-
+    Validator run loop calls forward() each step (with a 5-min sleep), then sync()
+    which may call set_weights(). set_weights normalizes self.scores to sum-to-one,
+    passes through score_spreading(scores, divisions, 0.002, 0.0025,
+    kurtosis_factor=0.5, divisions=randint(2,9)), zeroes all but top-10 uids, then
+    process_weights_for_netuid + convert_weights_and_uids_for_emit.
+  on_chain_call: set_weights
+  tempo_or_interval: null
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      update_scores docstring says "exponential moving average" but the
+      implementation overwrites self.scores = finetune_scores each cycle (no EMA
+      alpha blend); prior scores are reused only via stored tracker state. No EMA
+      alpha constant present in source.
+
+anti_gaming:
+  - kind: code_inspection
+    enforcement: rejection
+    description: >-
+      Miner logic runs in a sandboxed Docker container restricted to an import
+      allowlist (ALLOWED_MODULES, ALLOWED_IMPORTS), a disallowed list
+      (DISALLOWED_IMPORTS = ["zlib"]) and a character cap
+      (NUM_ALLOWED_CHARACTERS = 1000000). Invalid models/logic get score 0.
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Patches that touch any file with "test" in its name score 0
+      (SWEBenchTask.score) — prevents miners from editing the test suite to pass.
+  - kind: deduplication
+    enforcement: penalty
+    description: >-
+      logic_similar dedup: trackers whose logic matches an already-graded logic
+      reuse the previous score rather than being re-evaluated; in update_scores,
+      when >10 trackers tie at max_score, duplicates of the same logic are grouped
+      and only a subset get max_score, the rest get score - 0.01.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      BLACKLISTED_COLDKEYS (one hard-coded coldkey "blacklisted for repeatedly
+      exploiting") are excluded from logic gathering and have their scores set to 0
+      in set_weights.
+  - kind: rate_limit
+    enforcement: rejection
+    description: >-
+      should_evaluate: a tracker is skipped if it already has >=6 evaluations in
+      the last 7 days (blocks_in_7_days = 7*24*60*60//12), limiting re-grading
+      frequency.
+
+sub_competitions:
+  structure: single
+  stages: []
+  count: 1
+  notes: >-
+    Single SWE-Bench competition keyed by COMPETITION_ID = 7 (constants.py), with
+    a COMPETITION_END_DATE = "2025-01-29". Trackers/tasks are namespaced per
+    competition id.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, performance_ledger, status_enum]
+  status_values: ["valid", "invalid", "scoring_in_progress", "scoring_in_queue"]
+  reset_policy: >-
+    Tracker state persisted in trackers_{COMPETITION_ID}.pkl and validator
+    state.npz (scores, finetune_results). Models/trackers cleared every
+    14400*3 blocks (~5 days) in forward(); score=0 forces re-evaluation. On hotkey
+    replacement (resync_metagraph) the uid's score is zeroed.
+  notes: >-
+    TrackingInfo carries hotkey, uid, logic, score, raw_score, avg_cost,
+    score_timestamps, block. ModelStore tracks per-logic validity and scoring
+    status flags.
+
+documentation:
+  status: docs_and_code
+  source_version: "COMPETITION_ID 7; IMAGE_VERSION 2.0; COMPETITION_END_DATE 2025-01-29"
+  primary_docs:
+    - "README.md"
+    - "docs/validators/swe.md"
+    - "docs/validators/quickstart.md"
+  completeness: medium
+
+provenance:
+  confidence_overall: medium
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  extractor_notes: >-
+    Live mechanism is the finetune SWE-Bench competition (coding/finetune/*,
+    coding/validator/forward.py, coding/base/validator.py). The top-ranked
+    locate.py reward anchors (coding/validator/reward.py, coding/rewards/reward.py)
+    are inherited template stubs (dummy query*2) and were intentionally NOT used as
+    the mechanism. score_spreading is imported from an external `scoring_utils`
+    module not present in the repo, so its internal transform is unresolved.
+  evidence:
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "69-71"
+      quote: >-
+        Miners are to develop SWE-Bench pipelines that will be evaluated... The code
+        for their pipeline must be a python script that takes in a repository and a
+        git issue and returns a completed patch for the issue.
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "coding/finetune/tracker.py"
+      line_ref: "37-55"
+      quote: "synapse = LogicSynapse() ... TrackingInfo(logic=synapse.logic, ...)"
+      confidence: high
+    - claim_field: "/scoring_signals/0"
+      source_path: "coding/tasks/swe.py"
+      line_ref: "251-254"
+      quote: 'if result[1][instance["instance_id"]]["resolved"]: return 1 else: return 0'
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "coding/tasks/swe.py"
+      line_ref: "517-519"
+      quote: >-
+        if any("test" in file.file_name for file in changed_files.files): ... return 0
+      confidence: high
+    - claim_field: "/scoring_signals/1"
+      source_path: "coding/finetune/pipeline.py"
+      line_ref: "517-518"
+      quote: "tracker.raw_score = sum(scores) / len(scores); tracker.score = adjust_score_by_cost(tracker.raw_score, tracker.avg_cost)"
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "coding/finetune/pipeline.py"
+      line_ref: "80-91"
+      quote: >-
+        ideal_cost = 0.5 ... penalty_factor = 1.0 - min(0.9, (llm_cost - ideal_cost) / ideal_cost); adjusted_score = score * penalty_factor
+      confidence: high
+    - claim_field: "/ground_truth_sources/0"
+      source_path: "coding/tasks/swe.py"
+      line_ref: "204-211"
+      quote: "report = get_eval_report(test_spec=test_spec, prediction=pred, test_log_path=test_output_path, include_tests_status=True)"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/notes"
+      source_path: "coding/validator/forward.py"
+      line_ref: "30-32"
+      quote: "if self.last_task_update + 10800 < self.block: # every 1.5 days replace 50(half) the tasks  FinetunePipeline.update_tasks(self.config, 50, 100)"
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "coding/base/validator.py"
+      line_ref: "288-292"
+      quote: >-
+        top_10_uids = np.argsort(weighted_scores)[-10:] ... weighted_scores[~np.isin(np.arange(len(weighted_scores)), top_10_uids)] = 0
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "coding/validator/reward.py"
+      line_ref: "446-447"
+      quote: "threshold = max_score - 0.17  # within 0.18 of max score  finetune_scores[finetune_scores < threshold] = 0"
+      confidence: high
+    - claim_field: "/aggregation/normalization"
+      source_path: "coding/base/validator.py"
+      line_ref: "276"
+      quote: "raw_weights = np.divide(self.scores, np.sum(self.scores, axis=0))"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "coding/base/validator.py"
+      line_ref: "280-287"
+      quote: >-
+        weighted_scores = score_spreading(current_scores, divisions, 0.002, 0.0025, kurtosis_factor=0.5, divisions=np.random.randint(2, 9))
+      confidence: medium
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "coding/base/validator.py"
+      line_ref: "317-325"
+      quote: "result, msg = self.subtensor.set_weights(wallet=self.wallet, netuid=self.config.netuid, uids=uint_uids, weights=uint_weights, ... version_key=self.spec_version)"
+      confidence: high
+    - claim_field: "/weight_setting/cadence"
+      source_path: "coding/validator/forward.py"
+      line_ref: "83"
+      quote: "sleep(60*5)"
+      confidence: medium
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "coding/validator/reward.py"
+      line_ref: "456"
+      quote: "self.scores = finetune_scores"
+      confidence: medium
+    - claim_field: "/anti_gaming/0"
+      source_path: "coding/constants.py"
+      line_ref: "67-70"
+      quote: 'DISALLOWED_IMPORTS = ["zlib",]  NUM_ALLOWED_CHARACTERS = 1000000'
+      confidence: high
+    - claim_field: "/anti_gaming/1"
+      source_path: "coding/tasks/swe.py"
+      line_ref: "517-519"
+      quote: 'print("Miner is not allowed to touch test files, returning a score of 0") return 0'
+      confidence: high
+    - claim_field: "/anti_gaming/2"
+      source_path: "coding/validator/reward.py"
+      line_ref: "442-443"
+      quote: "for tracker in not_selected_trackers: finetune_scores[tracker.uid] = tracker.score - 0.01"
+      confidence: high
+    - claim_field: "/anti_gaming/3"
+      source_path: "coding/constants.py"
+      line_ref: "74-76"
+      quote: 'BLACKLISTED_COLDKEYS = ["5HZBQNezW75BozcFzA43a55vNBFZapvrtvRU4CZDPEoa9mWg" # Blacklisted for repeatedly exploiting]'
+      confidence: high
+    - claim_field: "/anti_gaming/4"
+      source_path: "coding/finetune/pipeline.py"
+      line_ref: "102-109"
+      quote: "blocks_in_7_days = 7 * 24 * 60 * 60 // 12 ... return len(recent_evals) < 6"
+      confidence: high
+    - claim_field: "/sub_competitions/notes"
+      source_path: "coding/constants.py"
+      line_ref: "3-5"
+      quote: 'COMPETITION_ID = 7  COMPETITION_END_DATE = "2025-01-29"'
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "coding/validator/forward.py"
+      line_ref: "35-40"
+      quote: "if self.last_model_clear + 14400 * 3 < self.block: self.model_store.clear_all() ... os.remove(f\"{self.config.neuron.full_path}/trackers_{COMPETITION_ID}.pkl\")"
+      confidence: high
+    - claim_field: "/mechanism_status"
+      source_path: "coding/validator/reward.py"
+      line_ref: "26-35"
+      quote: "def reward(query: int, response: int) -> float: ... return 1.0 if response == query * 2 else 0"
+      confidence: high
+  unresolved:
+    - "score_spreading internals (coding/base/validator.py:280) — imported from external `scoring_utils` module not present in repo; the 0.002/0.0025/kurtosis_factor=0.5 args' effect on weights is undocumented."
+    - "netuid not declared in source (config-driven)."
+    - "Whether emissions are effectively burned: no burn UID in code, but only top-10 receive weight so the long tail gets zero emission — not a formal burn_allocation."
+    - "finetune_test_size (number of tasks actually evaluated) is a runtime config value, not a literal in source."

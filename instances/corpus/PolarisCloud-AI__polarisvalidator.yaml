@@ -1,0 +1,245 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+# The documented reward mechanism (PoW-gated compute scoring) is fully implemented in
+# api_utils.reward_mechanism, but the live weight path in validator_utils.process_miners
+# overrides it: a hardcoded UID 44 collects a 90% bonus off the rewarded total plus all
+# CPU scores and penalty losses, then weights are set from that. Scoring is partly real,
+# but a large fraction is redirected to one UID -> mixed.
+mechanism_status: mixed
+mechanism_status_notes: >-
+  Compute/uptime scoring is implemented and gated at PoW >= 0.03, but
+  neurons/utils/validator_utils.py routes a 90% bonus plus all CPU scores and penalty
+  losses to a hardcoded UID '44' before weights are normalized and set, redirecting a
+  large share of emissions to a single owner-controlled UID.
+
+subnet:
+  name: "Polaris Cloud Subnet"
+  owner_repo: "PolarisCloud-AI__polarisvalidator"
+  netuid: 49
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners contribute GPU/CPU compute resources (containers / rented machines) to a
+    decentralized compute network. Validators score each miner's resources by a
+    proof-of-work compute score combined with uptime reliability and active container
+    counts; only resources with PoW >= 0.03 participate at all.
+  submission_format: [compute_service]
+  submission_format_other: ""
+
+scoring_signals:
+  - name: compute_pow_score
+    metric_kind: hardware_spec
+    direction: higher_is_better
+    weight: null
+    normalization: other
+    normalization_other: "75th-percentile log scaling with soft cap (logarithmic normalization to MAX_SCORE)"
+    notes: >-
+      Raw PoW (proof-of-work) compute score is used directly as a multiplier
+      (compute_multiplier = scaled_compute_score). Gated: PoW < SCORE_THRESHOLD (0.03)
+      excludes the resource entirely.
+  - name: uptime_reliability
+    metric_kind: uptime
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      uptime_score = (uptime_percent / 100) * 10 contributes to the additive base score;
+      also drives a tiered uptime multiplier (1.0 / 1.05 / 1.10 / 1.15).
+  - name: container_activity
+    metric_kind: throughput
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      container_score = min(effective_container_count, MAX_CONTAINERS) * 0.5; also drives
+      a rented-machine bonus multiplier (base 1.08, +0.01/container, cap 1.20).
+
+ground_truth_sources:
+  - kind: hardware_probe
+    description: >-
+      Miner compute resources are discovered via Polaris API endpoints and scored by a
+      proof-of-work compute score (CPU/GPU specs) plus measured uptime and active
+      container counts.
+    source_identifier: "neurons/utils/api_utils.py (reward_mechanism, _get_cached_miners_data)"
+    trust_model: unknown
+    notes: >-
+      Scores derive from API-reported miner data and PoW verification; the validator
+      fetches cached miner data and verifies hotkeys before scoring.
+
+aggregation:
+  method: weighted_average
+  composition: multiplicative
+  normalization: sum_to_one
+  normalization_other: ""
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "44"
+    fraction: 0.90
+    dynamic: true
+    notes: >-
+      validator_utils.process_miners adds to UID 44: a 90% bonus computed as
+      total_rewarded_scores * 0.90, PLUS all CPU scores collected from miners, PLUS
+      penalty losses. uid_44_total = penalty_collection + cpu_collection + 0.90*rewarded.
+      The 0.90 fraction is fixed; the absolute amount is a computed residual of the
+      rewarded pool, hence dynamic.
+  notes: >-
+    Final per-resource score = base_score(uptime+container) * (tempo/3600)*10 *
+    compute_multiplier(PoW) * uptime_multiplier * rented_machine_bonus, then 75th/80th
+    percentile logarithmic normalization to MAX_SCORE=500. Per-resource scores are summed
+    per miner_uid in aggregate_rewards, then the UID-44 redirect logic is applied.
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    Scores are decayed by score_decay (0.9), merged via max(old, new) per UID, filtered to
+    non-zero, normalized to sum to 1.0, individual weights capped at 0.1 (10%) and
+    renormalized, then set via subtensor.set_weights.
+  on_chain_call: set_weights
+  tempo_or_interval: "max(tempo, WeightsSetRateLimit)"
+  smoothing:
+    kind: ema
+    alpha: null
+    window: null
+    notes: >-
+      self.scores *= self.score_decay (0.9) each weight update before merging new results
+      via max(); not a standard EMA alpha. After a successful set_weights, scores are reset
+      to zero.
+
+anti_gaming:
+  - kind: proof_of_work
+    enforcement: rejection
+    description: >-
+      Resources with PoW (pog_score) < SCORE_THRESHOLD (0.03) are skipped entirely - no
+      scoring, no bonuses. PoW >= 0.03 is the absolute participation requirement.
+  - kind: stake_weighting
+    enforcement: penalty
+    description: >-
+      Alpha over-selling detector (AlphaOverSellingDetector) flags UIDs whose stake/emission
+      ratio breaches thresholds and applies tiered score reductions (low 0.2 / moderate 0.4 /
+      high 0.6 / extreme 0.8) for a duration; penalty losses are redirected to UID 44.
+  - kind: rate_limit
+    enforcement: barrier
+    description: >-
+      Weights are only set when blocks since last update >= max(tempo, WeightsSetRateLimit);
+      per-UID weight capped at 0.1 then renormalized.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, cooldown, status_enum]
+  status_values: ["active", "inactive", "verified", "rejected"]
+  reset_policy: >-
+    self.scores reset to zeros after a successful set_weights; per-UID score zeroed on
+    hotkey change during metagraph resync. Alpha penalties expire after a duration
+    (base 12h moderate, scaled) tracked in active_penalties by end_block.
+  notes: >-
+    Validator maintains self.scores (np.float32 array), decayed by 0.9 each cycle and
+    merged via max(). Alpha penalties carry per-UID end_block cooldowns.
+
+documentation:
+  status: docs_and_code
+  source_version: "Documentation Version 2.1 (Last Updated 2025-08-12)"
+  primary_docs:
+    - "REWARD_MECHANISM_README.md"
+    - "README.md"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "1"
+      quote: "# 🚀 **Polaris Cloud Subnet (NETUID 49)**"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "neurons/utils/api_utils.py"
+      line_ref: "34-39"
+      quote: "SCORE_THRESHOLD = 0.03 ... MAX_SCORE = 500.0  # Maximum normalized score"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "11-14"
+      quote: "decentralized compute network where: - **Miners** contribute GPU/CPU resources and earn rewards based on performance ... **Quality Control** ensures only high-performance resources participate (PoW ≥ 0.03)"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "neurons/utils/api_utils.py"
+      line_ref: "190-195"
+      quote: "compute_multiplier = scaled_compute_score  # Direct PoW score as multiplier ... final_score = tempo_scaled_score * compute_multiplier * uptime_multiplier * rented_machine_bonus"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "neurons/utils/api_utils.py"
+      line_ref: "179"
+      quote: "uptime_score = (uptime_percent / 100) * 10  # 0-10 scale"
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "neurons/utils/api_utils.py"
+      line_ref: "182"
+      quote: "container_score = min(effective_container_count, MAX_CONTAINERS) * 0.5  # 0-10 scale (max 20 containers)"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "REWARD_MECHANISM_README.md"
+      line_ref: "82-84"
+      quote: "if pog_score < SCORE_THRESHOLD:  # 0.03 ... continue  # Skip this resource entirely - no processing, no bonuses"
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "neurons/utils/alpha_penalty.py"
+      line_ref: "455-458"
+      quote: "'low': 0.2,      # 20% reduction\n'moderate': 0.4,  # 40% reduction\n'high': 0.6,      # 60% reduction\n'extreme': 0.8    # 80% reduction"
+    - claim_field: "/aggregation/normalization"
+      source_path: "neurons/validator.py"
+      line_ref: "252-253"
+      quote: "if weights_array.sum() > 0:\n    weights_array = weights_array / weights_array.sum()"
+    - claim_field: "/aggregation/notes"
+      source_path: "neurons/utils/api_utils.py"
+      line_ref: "188-195"
+      quote: "tempo_scaled_score = base_score * (tempo / 3600) * 10 ... final_score = tempo_scaled_score * compute_multiplier * uptime_multiplier * rented_machine_bonus"
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "neurons/utils/validator_utils.py"
+      line_ref: "234-236"
+      quote: "total_rewarded_scores = sum(final_rewards.values())\nuid_44_90_percent_bonus = total_rewarded_scores * 0.90"
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "neurons/utils/validator_utils.py"
+      line_ref: "242-256"
+      quote: "uid_44_total = uid_44_penalty_collection + uid_44_cpu_collection + uid_44_90_percent_bonus ... final_rewards['44'] = uid_44_total"
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "49"
+      quote: "self.score_decay = 0.9"
+    - claim_field: "/weight_setting/method"
+      source_path: "neurons/validator.py"
+      line_ref: "286-294"
+      quote: "max_allowed_weight = 0.1  # 10% maximum per UID ... weights_list = [w / total_capped for w in capped_weights]"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "neurons/validator.py"
+      line_ref: "318-326"
+      quote: "result = self.subtensor.set_weights(\n    self.wallet,\n    netuid=self.config.netuid,\n    uids=uids_tensor,\n    weights=weights_tensor, ... version_key=9010000"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "neurons/validator.py"
+      line_ref: "171"
+      quote: "effective_rate_limit = max(self.tempo, weights_rate_limit)"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "neurons/validator.py"
+      line_ref: "331"
+      quote: "self.scores = np.zeros(self.metagraph.n, dtype=np.float32)"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "neurons/utils/api_utils.py"
+      line_ref: "43-48"
+      quote: "UPTIME_MULTIPLIER_TIERS = { \"excellent\": {\"threshold\": 95.0, \"multiplier\": 1.15}, \"good\": {\"threshold\": 85.0, \"multiplier\": 1.10}, \"average\": {\"threshold\": 70.0, \"multiplier\": 1.05}, \"poor\": {\"threshold\": 0.0, \"multiplier\": 1.0} }"
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "neurons/utils/api_utils.py"
+      line_ref: "51-55"
+      quote: "RENTED_MACHINE_BONUS = { \"base_multiplier\": 1.08, \"container_scaling\": 0.01, \"max_bonus\": 1.20 }"
+    - claim_field: "/documentation/source_version"
+      source_path: "REWARD_MECHANISM_README.md"
+      line_ref: "383-384"
+      quote: "**Documentation Version**: 2.1  \n**Last Updated**: 2025-08-12"
+  unresolved:
+    - "EMA alpha and SMA window are not used; smoothing is score_decay=0.9 with a max() merge, so smoothing.alpha/window left null."
+    - "aggregation.temperature/decay_rate/min_weight_floor have no literal source values (no softmax temperature or geometric decay in code)."
+    - "Per-signal additive weights are null because signals combine multiplicatively, not via an additive weighted sum."
+    - "alpha penalty duration scaling factors beyond base_durations (moderate=12h) not fully transcribed."

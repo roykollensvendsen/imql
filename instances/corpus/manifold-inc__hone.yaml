@@ -1,0 +1,249 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  set_weights() always allocates BURN_PERCENTAGE (default 0.95) to BURN_UID (default 251) and
+  distributes only MINER_PERCENTAGE (default 0.05) to qualifying top miners. If no miner meets the
+  accuracy floor, 100% is burned. So the live mechanism is a 95% burn / 5% scored split, escalating
+  to full burn when no miner qualifies.
+
+subnet:
+  name: "Hone (ARC-AGI-2 Benchmarking)"
+  owner_repo: "manifold-inc__hone"
+  netuid: 5
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners expose an /info endpoint pointing to a git repository containing an ARC-AGI-2 solver.
+    Validators submit the repo to a Sandbox Runner that clones, builds a Docker image, runs a prep
+    phase (internet on) and an isolated inference phase (internet off) over held-out ARC problems,
+    then computes metrics. Miners are scored solely on exact_match_rate (fraction of ARC problems
+    solved exactly); the top miners above an accuracy floor split a small non-burned reward fraction
+    via exponential rank decay.
+  submission_format: [source_code]
+
+scoring_signals:
+  - name: exact_match_rate
+    metric_kind: accuracy
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      Only exact_match_rate is used to score and rank miners. The sandbox also computes
+      partial_correctness, grid_similarity and efficiency (and a constants.py SCORING_WEIGHTS map
+      exact_match=0.5/partial=0.3/grid=0.15/efficiency=0.05), but the validator's
+      calculate_scores_and_update_leaderboard only reads exact_match_rate.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Held-out ARC-AGI-2 problems with expected outputs, generated daily by the sandbox runner and
+      never exposed to miners. exact_match is computed as predicted_output == expected_output per
+      problem.
+    source_identifier: "sandbox_runner synthetics / miner_current_dataset.json"
+    trust_model: trusted
+    notes: "Validation dataset with expected outputs never exposed to miners (README Security Notes)."
+
+aggregation:
+  method: exponential_decay_ema
+  composition: weighted_sum
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: 0.8
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "251"
+    fraction: 0.95
+    dynamic: false
+    notes: >-
+      BURN_PERCENTAGE default 0.95 to BURN_UID default 251 (both env-overridable). Miners share the
+      remaining 0.05. If no miner qualifies, all_weights[BURN_UID]=1.0 (100% burn).
+  notes: >-
+    Top-N qualifying miners (TOP_MINERS_COUNT default 5) are ranked by avg exact_match_rate; each
+    rank r gets weight exp(-0.8*r), normalized to sum to one, then scaled by MINER_PERCENTAGE (0.05).
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    Every weights cycle (gated by weights_interval_blocks = cycle_duration+5 and an on-chain
+    can_set_weights rate-limit check) the validator computes top-N exponential weights, sets
+    BURN_PERCENTAGE on the burn UID and distributes MINER_PERCENTAGE across qualifying miners.
+  on_chain_call: set_weights
+  tempo_or_interval: "cycle_duration+5 blocks (default CYCLE_DURATION=30 => 35 blocks)"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA on final weights. Scoring uses a lookback window score_window_blocks = cycle_duration*4
+      over recent DB results, but weights are recomputed fresh each cycle, not smoothed.
+
+anti_gaming:
+  - kind: rate_limit
+    enforcement: rejection
+    description: >-
+      MAX_SUBMISSIONS_PER_DAY (default 1) limits evaluations per miner per day; identical
+      repo+branch+commit reuse cached scores (no redundant evaluation).
+  - kind: deterministic_check
+    enforcement: barrier
+    description: >-
+      Inference phase runs with network disabled (network_mode: none), dropped capabilities
+      (CAP_SYS_ADMIN, CAP_NET_ADMIN, etc.) and no-new-privileges; held-out validation dataset never
+      exposed to miners.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      Validators must have sufficient stake and pass can_set_weights rate limiting before weights are
+      accepted on chain (README Troubleshooting: "Weights not setting - Ensure sufficient stake").
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: true
+  state_kinds: [performance_ledger, cooldown]
+  status_values: []
+  reset_policy: >-
+    Recent results kept for RETENTION_DAYS (default 30); leaderboard holds current top-N and removes
+    miners that drop out of the top N. Daily submission limit resets per day.
+  notes: >-
+    A leaderboard (top performers) and per-miner query results are persisted in PostgreSQL; scoring
+    aggregates over a recent block window.
+
+documentation:
+  status: docs_and_code
+  source_version: "validator/.version (1.0.0 per README /info example)"
+  primary_docs: ["README.md"]
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/mechanism_status"
+      source_path: "validator/scoring.py"
+      line_ref: "206-213"
+      quote: >-
+        "If miners qualify: 95% burn + 5% distributed to top miners (exponential) - If no miners
+        qualify: 100% burn" / BURN_PERCENTAGE = float(os.getenv("BURN_PERCENTAGE", "0.95"))
+    - claim_field: "/subnet/netuid"
+      source_path: "common/constants.py"
+      line_ref: "3"
+      quote: "NETUID_MAINNET = 5"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "validator/scoring.py"
+      line_ref: "1-6"
+      quote: "from typing import Dict, List, Tuple / from common.chain import can_set_weights / import os / import math"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "26-30"
+      quote: >-
+        "Miners expose an HTTP endpoint (/info) ... Validators fetch miner info, submit jobs to a
+        Sandbox Runner ... clones the miner's repo, builds a Docker image, runs prep ... and
+        inference ... then calculates metrics ... Validators aggregate exact_match_rate scores"
+    - claim_field: "/task/submission_format"
+      source_path: "README.md"
+      line_ref: "26-26"
+      quote: "Miners expose an HTTP endpoint (/info) that returns a pointer to their solution repository"
+    - claim_field: "/scoring_signals/0/name"
+      source_path: "validator/scoring.py"
+      line_ref: "14-14"
+      quote: "Calculate scores based on exact_match_rate only"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "common/constants.py"
+      line_ref: "19-24"
+      quote: >-
+        SCORING_WEIGHTS = {"exact_match": 0.5, "partial_correctness": 0.3, "grid_similarity": 0.15,
+        "efficiency": 0.05}
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "sandbox_runner/utils/metrics.py"
+      line_ref: "110-110"
+      quote: "exact_match = predicted_output == expected_output"
+    - claim_field: "/ground_truth_sources/0/notes"
+      source_path: "README.md"
+      line_ref: "699-699"
+      quote: "Validation dataset (with expected outputs) never exposed to miners"
+    - claim_field: "/aggregation/decay_rate"
+      source_path: "validator/scoring.py"
+      line_ref: "161-165"
+      quote: >-
+        decay_factor = 0.8 / for rank in range(len(top_miners)):
+        exponential_weights.append(math.exp(-decay_factor * rank))
+    - claim_field: "/aggregation/normalization"
+      source_path: "validator/scoring.py"
+      line_ref: "167-168"
+      quote: "total_weight = sum(exponential_weights) / normalized_weights = [w / total_weight for w in exponential_weights]"
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "validator/scoring.py"
+      line_ref: "211-213"
+      quote: >-
+        BURN_UID = int(os.getenv("BURN_UID", "251")) / BURN_PERCENTAGE =
+        float(os.getenv("BURN_PERCENTAGE", "0.95")) / MINER_PERCENTAGE = 1.0 - BURN_PERCENTAGE
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "validator/scoring.py"
+      line_ref: "225-230"
+      quote: "if not has_qualifying_miners: all_weights[BURN_UID] = 1.0 ... BURN MODE - No miners meet minimum requirements"
+    - claim_field: "/aggregation/notes"
+      source_path: "validator/scoring.py"
+      line_ref: "232-239"
+      quote: >-
+        all_weights[BURN_UID] = BURN_PERCENTAGE / normalized_miner_weight = (weight /
+        miner_weight_sum) * MINER_PERCENTAGE
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "validator/scoring.py"
+      line_ref: "265-265"
+      quote: "result = chain.set_weights(uids=all_uids, weights=all_weights)"
+    - claim_field: "/weight_setting/cadence"
+      source_path: "validator/scoring.py"
+      line_ref: "282-297"
+      quote: >-
+        "Check if the validator can set weights based on rate limiting" / can_set =
+        can_set_weights(chain.substrate, chain.netuid, chain.validator_uid)
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "validator/config.py"
+      line_ref: "98-101"
+      quote: 'def weights_interval_blocks(self) -> int: "Minimum blocks between weight settings" return self.cycle_duration + 5'
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "validator/config.py"
+      line_ref: "103-106"
+      quote: 'def score_window_blocks(self) -> int: "Look back window for scoring (e.g., last 4 cycles)" return self.cycle_duration * 4'
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "validator/config.py"
+      line_ref: "84-84"
+      quote: 'max_submissions_per_day: int = int(os.getenv("MAX_SUBMISSIONS_PER_DAY", "1"))'
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "README.md"
+      line_ref: "696-698"
+      quote: >-
+        "Inference phase runs with network disabled (network_mode: none) - Capabilities dropped:
+        CAP_SYS_ADMIN, CAP_NET_ADMIN, CAP_SYS_MODULE, CAP_SYS_PTRACE, CAP_SYS_RAWIO - No new
+        privileges flag enabled"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "README.md"
+      line_ref: "633-633"
+      quote: "Weights not setting - Ensure sufficient stake - Check rate limiting (must wait between weight updates)"
+    - claim_field: "/per_miner_state/state_kinds"
+      source_path: "validator/scoring.py"
+      line_ref: "150-159"
+      quote: >-
+        "remove miners from leaderboard who are no longer in top N" / for hotkey in
+        leaderboard_hotkeys - top_hotkeys: ... await db.remove_from_leaderboard(hotkey)
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "validator/config.py"
+      line_ref: "63-63"
+      quote: 'retention_days: int = int(os.getenv("RETENTION_DAYS", "30"))'
+    - claim_field: "/aggregation/notes#topN"
+      source_path: "validator/config.py"
+      line_ref: "85-86"
+      quote: >-
+        min_accuracy_floor: float = float(os.getenv("MIN_ACCURACY_FLOOR", "0.20")) / top_miners_count:
+        int = int(os.getenv("TOP_MINERS_COUNT", "5"))
+  unresolved:
+    - "Scoring/min_accuracy_floor (0.20) and top_miners_count (5) are config-driven defaults, not a fixed schema field; captured in aggregation notes."
+    - "efficiency / partial_correctness / grid_similarity metrics are computed but unused by the validator's weight calc; not modeled as active scoring_signals."

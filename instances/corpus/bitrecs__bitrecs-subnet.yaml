@@ -1,0 +1,377 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: full_burn
+mechanism_status_notes: >-
+  The documented scoring pipeline (base reward + reasoning f_score bonus + verified-proof /
+  rarity / consensus multipliers, EMA over scores) is fully implemented and live, but
+  EMISSION_CONTROL_ENABLED=True with EMISSION_CONTROL_RATE=1.0 routes 100% of emission
+  weight to EMISSION_CONTROL_TARGET_UID=0 inside emission_control_scores() before weights
+  are normalized and set on chain. Net effect at the captured constants: full burn to UID 0.
+
+subnet:
+  name: "Bitrecs"
+  owner_repo: "bitrecs__bitrecs-subnet"
+  netuid: 122
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners are e-commerce recommenders: given an input SKU, a store catalog, and the
+    validator's prompt, a miner returns an array of recommended product SKUs (with name,
+    price, reason) drawn from the store catalog. Validators score each response for
+    validity and quality (signed/timely response, SKUs in catalog, no dupes/query leakage,
+    correct count, latency above r_limit), then award a base reward modulated by an optional
+    reasoning f_score bonus, an optional verified-inference proof bonus, a model-rarity
+    bonus, and a per-round consensus bonus for the elected miner.
+  submission_format: [api_response]
+
+scoring_signals:
+  - name: response_validity
+    metric_kind: other
+    metric_kind_other: deterministic_validity_gate
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      A long sequence of pass/fail gates in reward(); any failure returns score 0.0
+      (e.g. Invalid_Validator_Hotkey, Timeout, Invalid_Signature, Invalid_SKU,
+      Duplicate_Results, Query_In_Results, Invalid_Num_Results, Invalid_Axon_Time).
+  - name: base_reward
+    metric_kind: reward
+    direction: higher_is_better
+    weight: 1.0
+    normalization: none
+    notes: "Flat BASE_REWARD = 0.80 awarded once all validity gates pass."
+  - name: reasoning_f_score
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      When REASONING_SCORING_ENABLED, f_score (capped at max_f_score) is added to BASE_REWARD
+      and the sum multiplied by REASONING_BONUS_MULTIPLIER=1.025. Missing report => BASE_REWARD/4;
+      f_score<=0 => BASE_REWARD/2. f_score/rank come from an external ReasoningReport synced
+      from the verified-inference server.
+  - name: verified_proof_bonus
+    metric_kind: other
+    metric_kind_other: cryptographic_proof_of_inference
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      If a valid verified_proof is present and verifies (Ed25519 + SKU/hash/TTL checks via
+      verify_proof_with_recs), score is multiplied by VERIFIED_BONUS_MULTIPLIER=1.15.
+  - name: model_rarity_bonus
+    metric_kind: other
+    metric_kind_other: model_rarity_multiplier
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      On verified proof, if the model's RarityReport.bonus >= 1.0 the verified multiplier is
+      further multiplied by that bonus value (bonus is an external server-supplied float).
+  - name: consensus_bonus
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Per round, top responses are sorted and the most-similar top_k examined; if entity and
+      model diversity thresholds are met, a winner is chosen via secrets.choice and its reward
+      multiplied by CONSENSUS_BONUS_MULTIPLIER=1.05 (single elected miner per request).
+
+ground_truth_sources:
+  - kind: other
+    kind_other: validator_constructed_query_plus_catalog
+    description: >-
+      The validator supplies the ground-truth BitrecsRequest (query SKU, num_results, and the
+      store catalog parsed from context) against which each miner response is validated.
+    source_identifier: "ground_truth: BitrecsRequest"
+    trust_model: trusted
+    notes: "Catalog SKUs (CatalogValidator) are the authority for valid recommendations."
+  - kind: other
+    kind_other: external_reasoning_and_rarity_server
+    description: >-
+      ReasoningReport (f_score, rank) and RarityReport (rarity, tier, bonus) are fetched from
+      the Bitrecs verified-inference server (VERIFIED_INFERENCE_URL).
+    source_identifier: "https://verified.bitrecs.ai"
+    trust_model: oracle
+    notes: "Off-chain server supplies the bonus multipliers and reasoning f_scores."
+
+aggregation:
+  method: weighted_average
+  composition: multiplicative
+  normalization: l1
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: 1.0
+    dynamic: false
+    notes: >-
+      emission_control_scores(target_uid=0) sets new_target_score = EMISSION_CONTROL_RATE *
+      total_score with EMISSION_CONTROL_RATE=1.0, giving UID 0 all weight and scaling every
+      other UID's residual to (1-1.0)=0. Applied in set_weights when EMISSION_CONTROL_ENABLED.
+  notes: >-
+    Per-response score is built multiplicatively (base reward * reasoning/verified/rarity/
+    consensus multipliers), optionally scaled by a difficulty_decay in [0.9,1.0] when
+    DIFFICULTY_SCORING_ENABLED (currently False). Scores are EMA-accumulated per UID, then in
+    set_weights emission control is applied and the score vector is L1-normalized into raw_weights.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    set_weights() applies emission control, computes L1 norm of the per-UID EMA score vector
+    to get raw_weights, runs process_weights_for_netuid + convert_weights_and_uids_for_emit,
+    and calls subtensor.set_weights with version_key=spec_version. Triggered when
+    (block - last_update[uid]) > neuron.epoch_length (should_set_weights), plus a backup
+    weights_sync every BACKUP_WEIGHT_SYNC_INTERVAL=7200s.
+  on_chain_call: set_weights
+  tempo_or_interval: "epoch_length blocks (default 100); EPOCH_TEMPO=360"
+  smoothing:
+    kind: ema
+    alpha: 0.2
+    window: null
+    notes: >-
+      update_scores uses default_alpha = neuron.moving_average_alpha (default 0.2):
+      score = alpha*reward + (1-alpha)*score for non-zero rewards; for zero rewards a gentle
+      decay (1-low_alpha)*score with low_alpha = default_alpha/2 = 0.1.
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      reward() enforces signature validity, validator/miner hotkey match, response success,
+      timestamp freshness (verify_time, PERMITTED_CLOCK_DIFF_SECONDS=300), exactly one model,
+      correct rec count, empty context, schema validity, SKUs in catalog, no duplicate SKUs,
+      and that the query SKU is not echoed in results. Any failure => 0.0 reward.
+  - kind: liveness_check
+    enforcement: rejection
+    description: >-
+      Axon and dendrite process_time must each be >= r_limit (default 1.0s); too-fast
+      responses are rejected (Invalid_Axon_Time / Invalid_Dendrite_Time).
+  - kind: other
+    kind_other: ip_entity_throttling
+    enforcement: penalty
+    description: >-
+      get_rewards counts responses per axon IP; if max IP share >= BATCH_ENTITY_THRESHOLD=0.20
+      those IPs are flagged as entities. When REWARD_ENTITIES is False they get 0 reward
+      (Entity_No_Reward). REWARD_ENTITIES is currently True so the zeroing is disabled.
+  - kind: other
+    kind_other: suspect_miner_decay
+    enforcement: penalty
+    description: >-
+      decay_suspects multiplies each suspect miner's score by SUSPECT_MINER_DECAY=0.980 each
+      update when that uid was not in the current batch.
+  - kind: commit_reveal
+    enforcement: rejection
+    description: >-
+      Verified inference proofs are Ed25519-signed and bound to a response hash and TTL;
+      verify_proof_with_recs rejects expired/mismatched/invalid-signature proofs.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: >-
+    Optional reasoning, verified-inference, and difficulty subsystems are feature-flagged in
+    constants (REASONING_SCORING_ENABLED=True, DIFFICULTY_SCORING_ENABLED=False,
+    CONVERSION_SCORING_ENABLED=False) but are bonuses within one mechanism, not separate
+    competitions.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, status_enum]
+  status_values: ["suspect_miner"]
+  reset_policy: >-
+    On hotkey replacement (resync_metagraph) the UID's EMA score is zeroed; metagraph growth
+    extends the score array with zeros. No explicit clearing of suspect_miners shown.
+  notes: >-
+    self.scores is a per-UID EMA vector persisted to state.npz. suspect_miners is a tracked
+    set whose members are decayed by SUSPECT_MINER_DECAY when not queried in a batch.
+
+documentation:
+  status: docs_and_code
+  source_version: "0.8.9"
+  primary_docs:
+    - "README.md"
+    - "docs/running_validator.md"
+    - "docs/verified_inference.md"
+    - "docs/releases/0.8.5.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8"
+  extracted_at: "2026-06-06"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "29-31"
+      quote: "## Subnet\n- Testnet: 296\n- Mainnet: 122"
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "bitrecs/validator/reward.py"
+      line_ref: "23-27"
+      quote: "import numpy as np\nimport bittensor as bt"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "74-75"
+      quote: "miners produce arrays of product SKUs from a given input SKUs, a catalog of store inventory and prompting"
+      confidence: high
+    - claim_field: "/scoring_signals/1/weight"
+      source_path: "bitrecs/validator/reward.py"
+      line_ref: "40-40"
+      quote: "BASE_REWARD = 0.80"
+      confidence: high
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "bitrecs/validator/reward.py"
+      line_ref: "301-302"
+      quote: "score = BASE_REWARD\n        score_notes = [\"Base_Reward\"]"
+      confidence: high
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "bitrecs/validator/reward.py"
+      line_ref: "312-317"
+      quote: "f_score = min(reasoning_report.f_score, max_f_score)\n                score = BASE_REWARD + f_score\n                score *= REASONING_BONUS_MULTIPLIER"
+      confidence: high
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "bitrecs/validator/reward.py"
+      line_ref: "42-42"
+      quote: "REASONING_BONUS_MULTIPLIER = 1.025"
+      confidence: high
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "bitrecs/validator/reward.py"
+      line_ref: "43-43"
+      quote: "VERIFIED_BONUS_MULTIPLIER = 1.15"
+      confidence: high
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "bitrecs/validator/reward.py"
+      line_ref: "328-338"
+      quote: "base_multiplier = VERIFIED_BONUS_MULTIPLIER\n...\n                score *= base_multiplier"
+      confidence: high
+    - claim_field: "/scoring_signals/4/notes"
+      source_path: "bitrecs/validator/reward.py"
+      line_ref: "331-333"
+      quote: "if rarity_report and rarity_report.bonus >= 1.0:\n                    base_multiplier *= rarity_report.bonus"
+      confidence: high
+    - claim_field: "/scoring_signals/5/notes"
+      source_path: "bitrecs/base/validator.py"
+      line_ref: "603-606"
+      quote: "winner = secrets.choice(top_k)\n                                selected_rec = responses.index(winner)\n                                rewards[selected_rec] *= CONSENSUS_BONUS_MULTIPLIER"
+      confidence: high
+    - claim_field: "/ground_truth_sources/1/source_identifier"
+      source_path: "bitrecs/utils/constants.py"
+      line_ref: "98-98"
+      quote: "VERIFIED_INFERENCE_URL = \"https://verified.bitrecs.ai\" if os.environ.get(\"NETWORK\", \"\") == \"mainnet\""
+      confidence: high
+    - claim_field: "/aggregation/composition"
+      source_path: "bitrecs/validator/reward.py"
+      line_ref: "314-338"
+      quote: "score = BASE_REWARD + f_score\n                score *= REASONING_BONUS_MULTIPLIER ... score *= base_multiplier"
+      confidence: high
+    - claim_field: "/aggregation/normalization"
+      source_path: "bitrecs/base/validator.py"
+      line_ref: "813-821"
+      quote: "norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True)\n...\n        raw_weights = self.scores / norm"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "bitrecs/utils/constants.py"
+      line_ref: "95-97"
+      quote: "EMISSION_CONTROL_ENABLED = True\nEMISSION_CONTROL_RATE = 1.0\nEMISSION_CONTROL_TARGET_UID = 0"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "bitrecs/base/validator.py"
+      line_ref: "766-784"
+      quote: "new_target_score = CONST.EMISSION_CONTROL_RATE * total_score\n...\n        remaining_weight = (1 - CONST.EMISSION_CONTROL_RATE) * total_score"
+      confidence: high
+    - claim_field: "/mechanism_status"
+      source_path: "bitrecs/base/validator.py"
+      line_ref: "809-811"
+      quote: "if CONST.EMISSION_CONTROL_ENABLED:\n            ... self.emission_control_scores(CONST.EMISSION_CONTROL_TARGET_UID)"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "bitrecs/base/validator.py"
+      line_ref: "860-868"
+      quote: "result, msg = self.subtensor.set_weights(\n                wallet=self.wallet,\n                netuid=self.config.netuid,\n                uids=uint_uids,\n                weights=uint_weights"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "bitrecs/base/neuron.py"
+      line_ref: "151-155"
+      quote: "(self.block - self.metagraph.last_update[self.uid])\n            > self.config.neuron.epoch_length\n            and self.neuron_type != \"MinerNeuron\""
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "bitrecs/utils/constants.py"
+      line_ref: "59-59"
+      quote: "EPOCH_TEMPO = 360"
+      confidence: medium
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "bitrecs/utils/config.py"
+      line_ref: "221-224"
+      quote: "\"--neuron.moving_average_alpha\",\n        ...\n        default=0.2,"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "bitrecs/base/validator.py"
+      line_ref: "940-950"
+      quote: "default_alpha = self.config.neuron.moving_average_alpha\n        low_alpha = default_alpha / 2\n...\n                self.scores[uid] = default_alpha * rewards[i] + (1 - default_alpha) * self.scores[uid]"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "bitrecs/validator/reward.py"
+      line_ref: "260-265"
+      quote: "if response.axon.process_time < r_limit:\n            ... return 0.0, \"Invalid_Axon_Time\""
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "bitrecs/validator/reward.py"
+      line_ref: "426-428"
+      quote: "if max_ip_percent >= entity_threshold:\n            entity_ips = {ip for ip, count in ip_counts.items() if count / len(responses) >= entity_threshold}"
+      confidence: high
+    - claim_field: "/anti_gaming/2/kind_other"
+      source_path: "bitrecs/utils/constants.py"
+      line_ref: "93-94"
+      quote: "BATCH_ENTITY_THRESHOLD = 0.20\nREWARD_ENTITIES = True"
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "bitrecs/base/validator.py"
+      line_ref: "965-967"
+      quote: "if suspect_uid not in uids_array and 0 <= suspect_uid < len(self.scores):\n                self.scores[suspect_uid] *= SUSPECT_MINER_DECAY"
+      confidence: high
+    - claim_field: "/anti_gaming/3/kind_other"
+      source_path: "bitrecs/validator/reward.py"
+      line_ref: "44-44"
+      quote: "SUSPECT_MINER_DECAY = 0.980"
+      confidence: high
+    - claim_field: "/per_miner_state/notes"
+      source_path: "bitrecs/base/validator.py"
+      line_ref: "983-989"
+      quote: "np.savez(\n            state_path,\n            step=self.step,\n            scores=self.scores,\n            hotkeys=self.hotkeys\n        )"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "bitrecs/validator/reward.py"
+      line_ref: "297-299"
+      quote: "if len(valid_items) != ground_truth.num_results:\n            ... return 0.0, \"Numrecs_Mismatch\""
+      confidence: high
+    - claim_field: "/documentation/source_version"
+      source_path: "README.md"
+      line_ref: "128-131"
+      quote: "- [x] reasoning scoring - 0.8.7\n- [x] verified inference - 0.8.8\n- [x] world of bitrecs - 0.8.9"
+      confidence: medium
+  unresolved:
+    - >-
+      Exact on-chain tempo for weight setting: should_set_weights gates on
+      config.neuron.epoch_length (a CLI default not located in the read config slice);
+      EPOCH_TEMPO=360 is defined in constants but its binding to epoch_length was not
+      confirmed in the read lines.
+    - >-
+      difficulty_decay constants (min_decay=0.9, max_decay=1.0, catalog/recs/participant
+      weights) are present but DIFFICULTY_SCORING_ENABLED=False, so they do not affect live
+      scoring; captured in aggregation.notes but not as an active signal.
+    - >-
+      CONVERSION_SCORING_ENABLED/sales-event (UserAction) signals named in README incentive
+      section are not wired into reward() in the read code (actions param unused), so no
+      engagement signal was asserted.
+  extractor_notes: >-
+    Documented multi-multiplier scoring is fully coded and active, but emission control burns
+    100% to UID 0 at the captured constants, so mechanism_status is full_burn.

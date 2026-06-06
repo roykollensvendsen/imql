@@ -1,0 +1,304 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  Storage-miner weights are actively scored on-chain (bandwidth/storage/uptime + family
+  aggregation), but a dynamically computed burn_percentage of the 65,535 weight budget is
+  routed to UID 0 (the validator) rather than to miners. When alpha emissions exceed storage
+  cost, the residual is burned to UID 0; the burn fraction is computed each cycle, not fixed.
+
+subnet:
+  name: "Hippius (thebrain / theNerveLab)"
+  owner_repo: "thenervelab__thebrain"
+  netuid: 75
+  implementation_lang: rust
+
+task:
+  summary: >-
+    A miner runs a Hippius storage node (IPFS-backed) that stores file shards and serves
+    bandwidth. Validators report per-node quality metrics (stored bytes, served bandwidth,
+    uptime, strikes, integrity failures) on-chain; miners cannot self-report. Only
+    StorageMiner-type nodes earn non-zero weight. Per-node scores are aggregated per family
+    (SS58 owner + linked child nodes), smoothed, and converted to Bittensor subnet-75 weights.
+  submission_format: [compute_service]
+
+scoring_signals:
+  - name: bandwidth_served
+    metric_kind: throughput
+    direction: higher_is_better
+    weight: 0.7
+    normalization: other
+    normalization_other: "log2(1+x) concave fixed-point (8.8) scoring"
+    notes: >-
+      bw_score = log2(bandwidth_bytes + 1); blended at NodeBandwidthWeightPermille=700 (70%).
+  - name: shard_storage
+    metric_kind: throughput
+    direction: higher_is_better
+    weight: 0.3
+    normalization: other
+    normalization_other: "log2(1+x) concave fixed-point (8.8) scoring"
+    notes: >-
+      st_score = log2(shard_data_bytes + 1); blended at NodeStorageWeightPermille=300 (30%).
+  - name: uptime
+    metric_kind: uptime
+    direction: higher_is_better
+    weight: null
+    normalization: other
+    normalization_other: "permille multiplier (uptime_permille / 1000)"
+    notes: >-
+      Multiplicative on the blended score: score *= uptime_permille/1000. Not additive.
+  - name: strikes_penalty
+    metric_kind: other
+    metric_kind_other: "validator-issued strike penalty"
+    direction: lower_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Subtracted directly: penalty = strikes * StrikePenalty(50). node_weight = max(0, score - penalty).
+  - name: integrity_fails_penalty
+    metric_kind: other
+    metric_kind_other: "data-integrity failure penalty"
+    direction: lower_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Subtracted directly: integrity_fails * IntegrityFailPenalty(100).
+
+ground_truth_sources:
+  - kind: hardware_probe
+    description: >-
+      Validators observe each storage node and submit NodeQuality metrics on-chain via
+      submit_node_quality(); miners cannot self-report. Family placement/ping reliability is
+      tracked off-chain (miner_ping_stats) for assignment eligibility.
+    source_identifier: "submit_node_quality / NodeQuality (pallets/arion-pallet)"
+    trust_model: trusted
+    notes: >-
+      Reported metrics: shard_data_bytes, bandwidth_bytes, uptime_permille, strikes, integrity_fails.
+
+aggregation:
+  method: weighted_average
+  composition: hybrid
+  normalization: other
+  normalization_other: >-
+    proportional to family share of total active-family weight, scaled into miners_pool
+  temperature: null
+  decay_rate: 0.8
+  min_weight_floor: 10
+  burn_allocation:
+    enabled: true
+    address_or_uid: "0"
+    fraction: null
+    dynamic: true
+    notes: >-
+      uid_zero_pool = 65535 * burn_percentage, where burn_percentage = max(0, emissions-cost)/emissions
+      (defaults to 0.2 if emissions == 0). emissions = alpha_price * EMISSION_PERIOD(50); cost =
+      storage_gb * price_per_gb. miners_pool = 65535 - uid_zero_pool. UID 0 weight is capped so total
+      <= 65535.
+  notes: >-
+    Family raw weight = sum over top FamilyTopN(10) node weights with geometric rank decay
+    FamilyRankDecayPermille=800 (factor 0.8^rank). Newcomer floor NewcomerFloorWeight=10 applied within
+    NewcomerGraceBuckets=24. EMA smoothing FamilyWeightEmaAlphaPermille=300 (30% new, 70% prev), then
+    delta clamp +/- MaxFamilyWeightDeltaPerBucket=100. Per-miner weight =
+    (family_arion_weight / total_arion_weight) * miners_pool. Caps: MaxNodeWeight=50000,
+    MaxFamilyWeight=65535.
+
+weight_setting:
+  cadence: continuous
+  method: >-
+    Validator offchain_worker periodically calls calculate_weights_for_nodes(), saves rankings to the
+    ranking pallet (instances 1=storage, 3=validator), then constructs and signs a Bittensor set_weights
+    extrinsic submitted to the Finney chain for subnet 75. An external Python submitter
+    (vali-weights-submitter/weight_submitter.py) is an alternative path that reads RankedList and submits
+    via SubtensorModule.set_weights.
+  on_chain_call: set_weights
+  tempo_or_interval: "BittensorCallSubmission interval (offchain worker); rewards every BlocksPerEra = HOURS*6 (~3600 blocks / 6h)"
+  smoothing:
+    kind: ema
+    alpha: 0.3
+    window: null
+    notes: >-
+      FamilyWeightEmaAlphaPermille=300 => smoothed = prev*0.7 + raw*0.3, applied to family weight before
+      delta clamp.
+
+anti_gaming:
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      Family diversity: at most one replica per family (family = main_node_id or node_id), so many
+      linked nodes in one family cannot multiply rewards. Family weight uses only top-10 nodes with 0.8
+      rank decay, favouring few high-quality nodes over many low-quality ones.
+  - kind: liveness_check
+    enforcement: penalty
+    description: >-
+      Offline detection: if last heartbeat exceeds the offline buffer, weight is set to 0 (storage
+      miners 3000 blocks ~5h; other types 300 blocks ~30min). Ping reliability >= 0.8
+      (last10_success_ratio) gates placement eligibility.
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      Strikes (StrikePenalty=50 each) and integrity failures (IntegrityFailPenalty=100 each) are
+      subtracted directly from a node's score. Metrics are validator-reported, not self-reported.
+  - kind: rate_limit
+    enforcement: barrier
+    description: >-
+      Newcomer/ramp-up controls: new families floored at weight 10 for NewcomerGraceBuckets=24 buckets;
+      EMA smoothing + per-bucket delta clamp (+/-100) prevent sudden weight jumps; family age gate
+      (>=3 days) and ~7-day age penalty slow new-cluster dominance in placement ranking.
+
+sub_competitions:
+  structure: per_task_type
+  stages: []
+  count: null
+  notes: >-
+    Weights are computed per miner type via separate functions (storage, storage-S3, validator, GPU,
+    compute) and the ranking pallet uses separate instances per type. Only storage (instance 1) and
+    validator (instance 3) are Active; compute (2), GPU (4), and storage-S3 (5) instances are disabled
+    / commented out.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [reputation, cumulative_score, registration_age, status_enum, performance_ledger]
+  status_values: ["Active", "Inactive"]
+  reset_policy: >-
+    Inactive miners have ping history purged and miner_ping_stats deleted; pings older than ~7 days
+    trimmed. FamilyWeight persists and is EMA-smoothed across buckets.
+  notes: >-
+    On-chain: NodeWeightByChild, FamilyWeight (EMA-smoothed), FamilyWeightRaw, FamilyFirstSeenBucket
+    (registration age for newcomer grace), NodeRankings/RankedList. MIN_BLOCKS_REGISTERED=1000 grace
+    (non-storage types reduced 80% for first 1000 blocks).
+
+documentation:
+  status: docs_and_code
+  source_version: "commit dd671787e9db7ce62cebe3f1ceb8744a38ef7c22"
+  primary_docs:
+    - "readme_weights.md"
+    - "incentives.md"
+    - "vali-weights-submitter/README.md"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8[1m]"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "vali-weights-submitter/README.md"
+      line_ref: "1"
+      quote: "# Bittensor Weight Submitter for Subnet 75"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "pallets/execution-unit/src/weight_calculation.rs"
+      line_ref: "13-19"
+      quote: "struct PoolContext { available_pool: f64, miners_pool: f64, uid_zero_pool: f64, burn_percentage: f64 }"
+    - claim_field: "/task/summary"
+      source_path: "readme_weights.md"
+      line_ref: "74"
+      quote: "These metrics are submitted on-chain via `submit_node_quality()` -- miners cannot self-report."
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "runtime/mainnet/src/lib.rs"
+      line_ref: "311-312"
+      quote: "pub const NodeBandwidthWeightPermille: u32 = 700;"
+    - claim_field: "/scoring_signals/1/weight"
+      source_path: "runtime/mainnet/src/lib.rs"
+      line_ref: "313-314"
+      quote: "pub const NodeStorageWeightPermille: u32 = 300;"
+    - claim_field: "/scoring_signals/0/normalization_other"
+      source_path: "pallets/arion-pallet/src/lib.rs"
+      line_ref: "1642-1643"
+      quote: "let bw_s = Self::log2_fixed_u128(q.bandwidth_bytes.saturating_add(1)); let st_s = Self::log2_fixed_u128(q.shard_data_bytes.saturating_add(1));"
+    - claim_field: "/scoring_signals/2/normalization_other"
+      source_path: "pallets/arion-pallet/src/lib.rs"
+      line_ref: "1664-1666"
+      quote: "let up = q.uptime_permille.min(1000) as u128; score_u16 = (((score_u16 as u128).saturating_mul(up)) / 1000u128)..."
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "pallets/arion-pallet/src/lib.rs"
+      line_ref: "1669-1673"
+      quote: "let strike_pen = (q.strikes as u128).saturating_mul(T::StrikePenalty::get() as u128); ... score_u16.saturating_sub(pen)"
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "runtime/mainnet/src/lib.rs"
+      line_ref: "317-320"
+      quote: "pub const StrikePenalty: u16 = 50; ... pub const IntegrityFailPenalty: u16 = 100;"
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "readme_weights.md"
+      line_ref: "76-86"
+      quote: "Validators periodically report quality metrics for each miner node. These metrics are submitted on-chain via `submit_node_quality()`"
+    - claim_field: "/aggregation/decay_rate"
+      source_path: "runtime/mainnet/src/lib.rs"
+      line_ref: "301-302"
+      quote: "pub const FamilyRankDecayPermille: u32 = 800;"
+    - claim_field: "/aggregation/notes"
+      source_path: "pallets/arion-pallet/src/lib.rs"
+      line_ref: "1571-1581"
+      quote: "// Top-N with rank decay: w0 + w1*decay + w2*decay^2 ... factor_permille = factor_permille.saturating_mul(decay as u128) / 1000u128;"
+    - claim_field: "/aggregation/min_weight_floor"
+      source_path: "runtime/mainnet/src/lib.rs"
+      line_ref: "309-310"
+      quote: "pub const NewcomerFloorWeight: u16 = 10;"
+    - claim_field: "/aggregation/notes"
+      source_path: "pallets/execution-unit/src/weight_calculation.rs"
+      line_ref: "172-178"
+      quote: "let exact = (miner_points as f64 / total_points as f64) * pool_amount as f64; exact.round() as u32"
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "pallets/execution-unit/src/weight_calculation.rs"
+      line_ref: "64-73"
+      quote: "let burn_number = if emissions > cost { emissions - cost } else { 0.0 }; let burn_percentage = if emissions != 0.0 { burn_number / emissions } else { 0.2 }; ... let uid_zero_pool = max_score * burn_percentage; let miners_pool = max_score - uid_zero_pool;"
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "pallets/execution-unit/src/weight_calculation.rs"
+      line_ref: "145-147"
+      quote: "pub fn uid_zero_weight<...>() -> u16 {"
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "runtime/mainnet/src/lib.rs"
+      line_ref: "303-304"
+      quote: "pub const FamilyWeightEmaAlphaPermille: u32 = 300;"
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "pallets/arion-pallet/src/lib.rs"
+      line_ref: "1537-1544"
+      quote: "fn ema_permille_u16(prev: u16, next: u16, alpha_permille: u32) -> u16 { ... (prev * inv + next * a) / 1000 }"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "readme_weights.md"
+      line_ref: "362-363"
+      quote: "3. Constructs and signs a Bittensor `set_weights` extrinsic / 4. Submits to the Finney chain (Bittensor mainnet)"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "runtime/mainnet/src/lib.rs"
+      line_ref: "750"
+      quote: "pub const BlocksPerEra: u32 = (HOURS * 6) as u32;"
+    - claim_field: "/weight_setting/method"
+      source_path: "pallets/bittensor/src/lib.rs"
+      line_ref: "96-108"
+      quote: "fn offchain_worker(block_number: ...) { ... if let Err(e) = Self::submit_weight_extrinsic(block_number)"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "incentives.md"
+      line_ref: "71-74"
+      quote: "Exactly one replica per family per file ... This thwarts gaming by many linked nodes in the same family"
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "readme_weights.md"
+      line_ref: "288-289"
+      quote: "If a miner's last heartbeat block is older than the offline buffer, the weight is set to **0**. Storage miners have a longer grace period (3,000 blocks / ~5 hours) than other types (300 blocks / ~30 minutes)."
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "pallets/arion-pallet/src/lib.rs"
+      line_ref: "1711-1734"
+      quote: "if age <= T::NewcomerGraceBuckets::get() { raw.max(T::NewcomerFloorWeight::get()...) } ... let lo = prev.saturating_sub(d); let hi = prev.saturating_add(d)..."
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "runtime/mainnet/src/lib.rs"
+      line_ref: "305-308"
+      quote: "pub const MaxFamilyWeightDeltaPerBucket: u16 = 100; ... pub const NewcomerGraceBuckets: u32 = 24;"
+    - claim_field: "/sub_competitions/notes"
+      source_path: "readme_weights.md"
+      line_ref: "338-345"
+      quote: "| 1 | Storage miners | **Active** | | 3 | Validators | **Active** | | 2 | Compute miners | Disabled (commented out) |"
+    - claim_field: "/per_miner_state/state_kinds"
+      source_path: "pallets/arion-pallet/src/lib.rs"
+      line_ref: "1726-1735"
+      quote: "FamilyWeightRaw::<T>::insert(family, raw); ... let ema = Self::ema_permille_u16(prev, raw, ...); ... FamilyWeight::<T>::insert(family, final_w);"
+    - claim_field: "/per_miner_state/notes"
+      source_path: "pallets/bittensor/src/lib.rs"
+      line_ref: "92"
+      quote: "const MIN_BLOCKS_REGISTERED: u32 = 1000;"
+    - claim_field: "/documentation/source_version"
+      source_path: "readme_weights.md"
+      line_ref: "15"
+      quote: "Code links reference commit [`dd67178`](https://github.com/thenervelab/thebrain/commit/dd671787e9db7ce62cebe3f1ceb8744a38ef7c22)."
+  unresolved:
+    - "/scoring_signals/2/weight: uptime is a multiplier with no additive weight (left null intentionally)."
+    - "Exact BittensorCallSubmission interval value (offchain worker cadence) not located in read sources."
+    - "Marketplace alpha/era token payout splits (75/25) are a separate on-chain reward flow, not part of the subnet-75 weight vector; not modeled here."
+    - "S3/GPU/compute per-type offline buffers (300 blocks) and 80% new-miner reduction documented in readme_weights.md but those ranking instances are disabled."

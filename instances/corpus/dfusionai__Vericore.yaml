@@ -1,0 +1,301 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  ENABLE_EMISSION_CONTROL is True and EMISSION_CONTROL_PERC = 0.80, so the validator
+  allocates 80% of total weight to a fixed emission-control (burn) hotkey first, gives a
+  1% base pool split equally among miners, and distributes the remainder by ranking. The
+  documented full scoring pipeline (NLI quality, penalties, speed, ranking) is computed and
+  drives the miner remainder, but the dominant emission share is burned. Note: docs claim
+  50% emission control / 50% to miners, but the live code constant is 0.80 burn.
+
+subnet:
+  name: "Vericore"
+  owner_repo: "dfusionai__Vericore"
+  netuid: 70
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners perform semantic fact-checking: given a natural-language statement, a miner returns
+    up to 5 evidence snippets (excerpt + source URL) that either support (entail) or contradict
+    the statement. Validators verify each snippet exists in the cited page, score its semantic
+    relevance with a RoBERTa-large-MNLI model (local_score = P(contradiction) + P(entailment)),
+    apply penalties/bonuses, a domain-deduplication factor, a speed factor, and desearch/social
+    bonuses, producing a per-request final_score that feeds a moving average used to rank miners.
+  submission_format: [signals]
+
+scoring_signals:
+  - name: nli_local_score
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: null
+    normalization: softmax
+    notes: >-
+      local_score = prob_contradiction + prob_entailment from RoBERTa-large-MNLI softmax over
+      [contradiction, neutral, entailment]; neutral intentionally excluded. Multiplied (not
+      added) by domain_factor and approved_url_multiplier to form snippet_score.
+  - name: snippet_score
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      snippet_score = local_score * domain_factor * approved_url_multiplier. domain_factor =
+      1/(2^times_used) (first use 1.0, then 0.5, 0.25...). approved_url_multiplier = 3 for
+      approved/social domains else 1. Snippets summed into sum_of_snippets.
+  - name: speed_factor
+    metric_kind: latency
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      speed_factor = max(1, 2.0 - (elapse_time / 30.0)); multiplies sum_of_snippets.
+      Faster-than-30s responses get up to 2.0x; >=30s clamped to 1.0.
+  - name: validation_penalties
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Fixed penalty scores assigned per failure: unreachable -10, invalid response -10,
+      snippet==statement -10, no snippet/excerpt-too-similar/blacklisted/search/fake/invalid
+      excerpt -5, SSL required -2, snippet-not-in-url -1, domain-registered-recently -1.
+      LOWEST_FINAL_SCORE floor = -10.
+  - name: desearch_and_social_bonus
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      Miner-level desearch_adjustment = +2 if all desearch proofs valid, -5 if any invalid, 0
+      otherwise. social_bonus_total = +1 per desearch x.com/twitter.com snippet, +0.5 per
+      reddit.com snippet (only when proofs valid). final_score =
+      (sum_of_snippets * speed_factor) + desearch_adjustment + social_bonus_total.
+
+ground_truth_sources:
+  - kind: reference_model
+    description: >-
+      RoBERTa-large-MNLI sequence-classification model used to score entailment/contradiction
+      between the statement (hypothesis) and miner snippet (premise).
+    source_identifier: "roberta-large-mnli"
+    trust_model: trusted
+    notes: "Softmax over [contradiction, neutral, entailment]; local_score = contra + entail."
+  - kind: organic_traffic
+    description: >-
+      Live web pages fetched at the miner-supplied URL; the snippet must be verified present in
+      the rendered page (exact normalized match or fuzzy partial_ratio >= 0.94).
+    source_identifier: "miner-supplied evidence URLs (https only)"
+    trust_model: adversarial
+    notes: "Domain blacklist, approved-site allowlist, recently-registered-domain and search-page checks."
+
+aggregation:
+  method: rank_based
+  composition: hybrid
+  normalization: other
+  normalization_other: "weights distributed to sum to DEFAULT_TOTAL_WEIGHT = 65535"
+  temperature: null
+  decay_rate: 0.5
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "5FWMeS6ED6NG6t5ovKQNZvGWEWVtZPve5BhYWM9wics5FgJ9"
+    fraction: 0.80
+    dynamic: false
+    notes: >-
+      EMISSION_CONTROL_PERC = 0.80 allocated to EMISSION_CONTROL_HOTKEY first. Then 1% base pool
+      (BASE_WEIGHT_FRACTION) split equally among miners, remainder distributed by ranking.
+  notes: >-
+    distribute_weights_burn_base_remainder: burn 80% to control hotkey, 1% base pool equally to
+    miners, remainder ranked geometrically (top gets RANKING_EMISSION_TOP_PERC=0.5 of remainder,
+    each next rank half: 0.25, 0.125...). Ranking on the moving-average calculated_score; ties
+    broken by request count. Validators and banned hotkeys get 0.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Daemon loop: when blocks_since_last_update > tempo+1, aggregate per-request final_scores into
+    moving scores, compute weights via move_miner_weights, then subtensor.set_weights.
+  on_chain_call: set_weights
+  tempo_or_interval: "tempo+1 blocks"
+  smoothing:
+    kind: ema
+    alpha: 0.3
+    window: null
+    notes: >-
+      Established miners (count > IMMUNITY_PERIOD=100): calculated_score = prev*INITIAL_WEIGHT(0.7)
+      + new*(1-0.7), i.e. new-score weight 0.3. During immunity period (count <= 100): first score
+      sets baseline, else prev*(1-IMMUNITY_WEIGHT) + new*IMMUNITY_WEIGHT with IMMUNITY_WEIGHT=0.5.
+
+anti_gaming:
+  - kind: deduplication
+    enforcement: penalty
+    description: >-
+      domain_factor = 1/(2^times_used): repeated use of the same domain within a response halves
+      its snippet contribution each time (first 1.0, then 0.5, 0.25...). Social desearch domains
+      exempt.
+  - kind: plagiarism_detection
+    enforcement: rejection
+    description: >-
+      Snippet must be verified present in the fetched page (exact normalized match or fuzzy
+      partial_ratio >= 0.94, min length 25); otherwise SNIPPET_NOT_VERIFIED_IN_URL = -1. FAKE/
+      UNRELATED snippet classification via AI assessment.
+  - kind: deterministic_check
+    enforcement: penalty
+    description: >-
+      Excerpt-too-similar-to-statement (-5), snippet==statement (-10), search-as-evidence (-5),
+      blacklisted domain (-5), non-HTTPS URL (-2), recently-registered domain (-1), search web
+      page (-5).
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      Validators (validator_permit) excluded from weight distribution; banned hotkeys (env
+      BANNED_WALLET_HOTKEYS) get 0 weight.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, registration_age]
+  status_values: []
+  reset_policy: >-
+    Per-UID WeightedMinerRecord holds calculated_score (moving average) and count (requests
+    processed). Reset to a fresh record when the UID's hotkey changes. count drives immunity
+    period (first 100 requests) vs established weighting.
+  notes: >-
+    miner_score_cache: list of WeightedMinerRecord{calculated_score, count, wallet_hotkey} per UID.
+    count<=IMMUNITY_PERIOD(100) uses immunity weighting, count>100 uses INITIAL_WEIGHT.
+
+documentation:
+  status: docs_and_code
+  source_version: "v0.0.43.4"
+  primary_docs:
+    - "docs/scoring_mechanics_subnet_70.md"
+    - "README.md"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8[1m]"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "validator/validator_daemon.py"
+      line_ref: "1-9"
+      quote: "import bittensor as bt"
+    - claim_field: "/subnet/netuid"
+      source_path: "docs/scoring_mechanics_subnet_70.md"
+      line_ref: "1-5"
+      quote: "Subnet 70, known as Vericore, is a Bittensor subnet focused on semantic fact-checking"
+    - claim_field: "/task/summary"
+      source_path: "validator/api_server.py"
+      line_ref: "75"
+      quote: "MAX_MINER_RESPONSES = 5"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "validator/quality_model.py"
+      line_ref: "1-1"
+      quote: "local_score = (prob_contra + prob_entail)"
+    - claim_field: "/scoring_signals/0/normalization"
+      source_path: "validator/quality_model.py"
+      line_ref: "1-1"
+      quote: "probs_tensor = torch.softmax(logits, dim=-1)[0]"
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "validator/api_server.py"
+      line_ref: "594-599"
+      quote: "statement_response.snippet_score = ( statement_response.local_score * domain_factor * statement_response.approved_url_multiplier )"
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "validator/api_server.py"
+      line_ref: "379"
+      quote: "return max(1, 2.0 - (elapse_time / 30.0))"
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "shared/scores.py"
+      line_ref: "3-13"
+      quote: "UNREACHABLE_MINER_SCORE = -10 ... SNIPPET_NOT_VERIFIED_IN_URL = -1"
+    - claim_field: "/scoring_signals/4/notes"
+      source_path: "validator/api_server.py"
+      line_ref: "626"
+      quote: "final_score = (sum_of_snippets * speed_factor) + desearch_adjustment + social_bonus_total"
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "validator/quality_model.py"
+      line_ref: "1-1"
+      quote: "def __init__(self, model_name='roberta-large-mnli'):"
+    - claim_field: "/ground_truth_sources/1/notes"
+      source_path: "validator/snippet_validator.py"
+      line_ref: "194-195"
+      quote: "ratio = fuzz.partial_ratio(normalized_snippet, normalized_page) / 100.0 ... if ratio >= FUZZY_VERIFY_THRESHOLD"
+    - claim_field: "/aggregation/method"
+      source_path: "validator/validator_daemon.py"
+      line_ref: "48-56"
+      quote: "Distribute weights using ranking-based geometric progression. Top miner gets top_percentage (default RANKING_EMISSION_TOP_PERC), second gets 25%, third gets 12.5%, etc."
+    - claim_field: "/aggregation/decay_rate"
+      source_path: "validator/validator_daemon.py"
+      line_ref: "88"
+      quote: "current_percentage *= 0.5"
+    - claim_field: "/aggregation/normalization_other"
+      source_path: "validator/validator_daemon.py"
+      line_ref: "32"
+      quote: "DEFAULT_TOTAL_WEIGHT = 65535.0  # Standard Bittensor weight total"
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "validator/validator_daemon.py"
+      line_ref: "27"
+      quote: "EMISSION_CONTROL_PERC = 0.80"
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "validator/validator_daemon.py"
+      line_ref: "26"
+      quote: "EMISSION_CONTROL_HOTKEY = \"5FWMeS6ED6NG6t5ovKQNZvGWEWVtZPve5BhYWM9wics5FgJ9\""
+    - claim_field: "/aggregation/notes"
+      source_path: "validator/validator_daemon.py"
+      line_ref: "190-221"
+      quote: "weights[burn_uid] = burn_perc * total_weight ... base_pool = min(base_fraction * total_weight, remaining_after_burn)"
+    - claim_field: "/mechanism_status"
+      source_path: "validator/validator_daemon.py"
+      line_ref: "25"
+      quote: "ENABLE_EMISSION_CONTROL = True"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "validator/validator_daemon.py"
+      line_ref: "616-622"
+      quote: "subtensor.set_weights( netuid=config.netuid, wallet=wallet, uids=metagraph.uids, weights=weights_burned, wait_for_inclusion=True, )"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "validator/validator_daemon.py"
+      line_ref: "572"
+      quote: "if last_update > tempo + 1:"
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "validator/validator_daemon.py"
+      line_ref: "484"
+      quote: "calculated_score = miner_score_cache[miner_uid].calculated_score * INITIAL_WEIGHT + final_score * (1 - INITIAL_WEIGHT)"
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "shared/environment_variables.py"
+      line_ref: "1-1"
+      quote: "INITIAL_WEIGHT = 0.7 ... IMMUNITY_PERIOD = 100 ... IMMUNITY_WEIGHT = 0.5"
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "validator/api_server.py"
+      line_ref: "585"
+      quote: "domain_factor = 1.0 / (2**times_used)"
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "validator/snippet_validator.py"
+      line_ref: "68-69"
+      quote: "FUZZY_VERIFY_THRESHOLD = 0.94  # ratio in [0, 1]; only accept if best match >= this"
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "validator/validator_daemon.py"
+      line_ref: "149-152"
+      quote: "if not n.validator_permit and n.hotkey not in banned"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "validator/validator_daemon.py"
+      line_ref: "585-588"
+      quote: "elif miner_score_cache[uid].wallet_hotkey !=uid_hotkey_dict_temp[uid]: new_miner_record = WeightedMinerRecord()"
+    - claim_field: "/per_miner_state/notes"
+      source_path: "validator/validator_daemon.py"
+      line_ref: "305-308"
+      quote: "class WeightedMinerRecord: calculated_score: float = 0; count: int = 0; wallet_hotkey:str = \"\""
+    - claim_field: "/documentation/source_version"
+      source_path: "shared/environment_variables.py"
+      line_ref: "1-1"
+      quote: "VERICORE_VALIDATOR_VERSION = os.environ.get(\"VERICORE_VALIDATOR_VERSION\", \"v0.0.43.4\")"
+  unresolved:
+    - "/aggregation/burn_allocation/fraction: docs (scoring_mechanics_subnet_70.md line 159) state 50% emission control, but code constant EMISSION_CONTROL_PERC = 0.80 — code value used; discrepancy unresolved."
+    - "scoring_signals weights are null (multiplicative/composite pipeline, no additive per-signal weights in code)."
+    - "Statement-context assessment signals (sentiment, conviction, source_credibility, etc.) are extracted and stored but not observed entering final_score formula."

@@ -1,0 +1,118 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: unknown
+mechanism_status_notes: >-
+  The repository contains only a README.md that is a "repository has moved"
+  redirect to github.com/sundae-bar/bittensor-subnet. No incentive-mechanism
+  code, config, or documentation is present in this archived tree, so the
+  operative state cannot be determined.
+
+subnet:
+  name: "sundae_bar (SN121)"
+  owner_repo: "sundae-bar__sundae_bar-bittensor-subnet"
+  netuid: 121
+  implementation_lang: none_docs_only
+
+task:
+  summary: >-
+    Unknown. The archived repository contains only a redirect notice and no
+    description of what miners produce or how they are rewarded. The README
+    references an "Agent Lab" (sundaebar.ai/lab) but provides no mechanism
+    detail.
+  submission_format: [other]
+  submission_format_other: "unknown — no submission format documented in the repo"
+
+scoring_signals: []
+
+ground_truth_sources: []
+
+aggregation:
+  method: undocumented
+  composition: other
+  composition_other: "unknown — no scoring/aggregation code or docs present"
+  normalization: none
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: "No burn information available; repo is a redirect-only stub."
+  notes: "No aggregation logic present in the archived tree."
+
+weight_setting:
+  cadence: undocumented
+  method: ""
+  on_chain_call: unknown
+  tempo_or_interval: null
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: ""
+
+anti_gaming: []
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: false
+  state_kinds: []
+  status_values: []
+  reset_policy: ""
+  notes: ""
+
+documentation:
+  status: absent
+  source_version: null
+  primary_docs:
+    - "README.md"
+  completeness: low
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8[1m]"
+  extracted_at: "2026-06-06"
+  confidence_overall: low
+  evidence:
+    - claim_field: "/documentation/status"
+      source_path: "README.md"
+      line_ref: "1-38"
+      quote: "This Repository Has Moved ... SN121 now lives at a new location."
+      confidence: high
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "6"
+      quote: "SN121 now lives at a new location."
+      confidence: medium
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "README.md"
+      line_ref: "11-18"
+      quote: "github.com/sundae-bar/bittensor-subnet"
+      confidence: high
+    - claim_field: "/mechanism_status"
+      source_path: "README.md"
+      line_ref: "3-19"
+      quote: "This Repository Has Moved ... New Repo sundae-bar/bittensor-subnet"
+      confidence: high
+  unresolved:
+    - "task.summary — no description of the miner task in the archived repo"
+    - "task.submission_format — no submission format documented"
+    - "scoring_signals — none documented; mechanism content lives in the moved repo"
+    - "ground_truth_sources — undocumented"
+    - "aggregation.* — no scoring/aggregation code present"
+    - "weight_setting.* — no weight-setting call site present"
+    - "anti_gaming — undocumented"
+    - "burn_allocation — unknown"
+  extractor_notes: >-
+    The repo is a redirect-only stub (single README.md) pointing to
+    github.com/sundae-bar/bittensor-subnet and sundaebar.ai/lab. netuid 121 is
+    inferred from the "SN121" string in the README. All mechanism fields are
+    unresolved because the actual implementation was relocated and is not part
+    of this archived tree.

@@ -1,0 +1,323 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Validator (babelbit/cli/validate.py) fetches per-miner scores from the
+  Babelbit-operated submit API and splits emissions between a Qualifying
+  (main) tier paid proportionally to scores and a winner-take-all Arena tier.
+  Default split is 80% arena / 20% main (BB_ARENA_INCENTIVE_PERCENT=80.0).
+  When no scores are available the validator reuses last weights and, after
+  BB_MAX_SKIPPED_WEIGHT_EPOCHS rounds, falls back to a single default/burn UID
+  (BB_DEFAULT_FALLBACK_UID=248) — a degenerate-state burn, not a steady-state
+  one. The reference scorer (score_dialogue.py) lives in-repo but the
+  authoritative scoring is performed by Babelbit-operated services and only
+  the resulting scores are consumed here.
+
+subnet:
+  name: "Babelbit"
+  owner_repo: "babelbit__babelbit_subnet"
+  netuid: 59
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners run low-latency predictive-translation models that predict the
+    completion of an utterance step-by-step as it is revealed. Each prediction
+    is scored against the revealed ground-truth utterance by a blend of
+    lexical (edit-distance) and calibrated semantic (sentence-embedding cosine)
+    similarity, multiplied by an earliness factor that rewards getting the
+    meaning right before the utterance is finished. The dialogue score is the
+    mean over utterances of the best earliness-weighted similarity achieved.
+    Miners compete in a 20% Qualifying tier (paid proportionally) and an 80%
+    winner-take-all Arena tier.
+  submission_format: [api_response, model_weights]
+  # miners expose a POST /predict endpoint (api_response) and also submit a
+  # Docker image + Hugging Face model repo (model_weights) for managed flows.
+
+scoring_signals:
+  - name: semantic_similarity
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: null
+    normalization: min_max
+    notes: >-
+      Calibrated semantic similarity s = clamp01((cos_raw - b)/(1 - b)) where
+      cos_raw is the cosine between normalized prediction and ground-truth
+      embeddings (mxbai-embed-large-v1 truncated to EMBED_DIM) and b is a
+      baseline cosine estimated from random GT pairs. Combined with lexical via
+      weight (1 - lex_weight); not an independent additive weight, hence null.
+  - name: lexical_similarity
+    metric_kind: similarity
+    direction: higher_is_better
+    weight: null
+    normalization: min_max
+    notes: >-
+      Character-level similarity 1 - edit_distance/max(len). Combined with
+      semantic via lex_weight (CLI default 0.5; score_jsonl default 0.0).
+      U_step = (lex*lex_weight + sem*(1-lex_weight)) * earliness.
+  - name: earliness
+    metric_kind: latency
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      earliness_s = 1.0/(s+1) for step index s; multiplicative gate on the
+      similarity blend so earlier correct predictions score higher. Per-utterance
+      score is the max U_step over steps; dialogue score is the mean of those.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Revealed ground-truth utterance text for each utterance/step, emitted as
+      'revealed' / 'utterance_complete' events in the dialogue JSONL log; the
+      last 'complete' event's 'ground_truth' field (EOF-stripped) is the target.
+    source_identifier: "dialogue_run_*.jsonl ('ground_truth' field)"
+    trust_model: trusted
+    notes: >-
+      Challenges are served by the Babelbit utterance engine
+      (BB_UTTERANCE_ENGINE_URL, default https://api.babelbit.ai).
+  - kind: reference_model
+    description: >-
+      Sentence-transformer embedding model used to compute semantic cosine
+      similarity for scoring.
+    source_identifier: "mixedbread-ai/mxbai-embed-large-v1"
+    trust_model: trusted
+    notes: "EMBEDDER_NAME default; truncate_dim=EMBED_DIM (default 64)."
+
+aggregation:
+  method: proportional
+  composition: hybrid
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "248"
+    fraction: null
+    dynamic: true
+    notes: >-
+      No steady-state burn fraction. compute_weights routes the main share to
+      burn_uid only if there are no positive main scores, and falls back to
+      [1.0]->burn_uid when no scores are available after MAX_NO_SCORE_ROUNDS.
+      Default burn/fallback UID is BB_DEFAULT_FALLBACK_UID=248.
+  notes: >-
+    compute_weights: main_fraction = 1 - arena_fraction distributed
+    proportionally to positive main scores; arena_fraction assigned entirely to
+    the arena winner UID (winner-take-all). Final vector renormalized to sum 1
+    (_normalize_weight_vector). arena_fraction default 0.8 (main 0.2).
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    Validator loop runs only when block % tempo == 0. It fetches main and arena
+    scores from the submit API (/v1/get_scores), picks the max-score hotkey per
+    mode, and calls compute_weights to build the (uids, weights) vector, then
+    submits via retry_set_weights (signer HTTP /set_weights, falling back to a
+    subtensor-gateway set_weights_and_confirm).
+  on_chain_call: set_weights
+  tempo_or_interval: 100
+  smoothing:
+    kind: other
+    alpha: null
+    window: null
+    notes: >-
+      No EMA/SMA of the reward. The only temporal carry-over is reuse of the
+      previous weight vector (last_weights) on rounds where the API returns no
+      scores; otherwise weights are recomputed fresh each epoch.
+
+anti_gaming:
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      Arena eligibility is gated: a miner must have won at least one qualifying
+      challenge in the last 7 days (rolling 7x24h window). There are 7 arena
+      slots ordered by number of wins then by score. (README 5.2; eligibility
+      computed by Babelbit-operated services, not in this repo.)
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Validator requests to the submit API and miners are Bittensor-signed
+      (sign_message / bt_header_* headers); set_weights submissions go through a
+      signer service. Miners self-reported as cheating are excluded from the
+      qualifying share (README 4).
+
+sub_competitions:
+  structure: tiered
+  stages:
+    - name: "Qualifying (main / round1)"
+      role: qualifier
+      advancement_rule: "win >=1 qualifying challenge in rolling 7-day window; top 7 by wins then score advance to Arena"
+    - name: "Arena (round2)"
+      role: final
+      advancement_rule: "winner_take_all_per_challenge"
+  count: 2
+  notes: >-
+    Split controlled by BB_ARENA_INCENTIVE_PERCENT (default 80.0). 'round1'
+    normalizes to 'main'/'qualifying'; 'round2' to 'arena'.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [performance_ledger, cumulative_score]
+  status_values: []
+  reset_policy: >-
+    Arena eligibility uses a rolling 7-day (7x24h) window of qualifying wins;
+    validator's no_score_rounds counter resets when the active challenge UID
+    changes.
+  notes: >-
+    Win history and per-miner scores are persisted/aggregated by Babelbit
+    services (Postgres-backed) and exposed to the validator via the submit API;
+    this repo only reads the resulting scores.
+
+documentation:
+  status: docs_and_code
+  source_version: "0.1.0"
+  primary_docs: ["README.md"]
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8"
+  extracted_at: "2026-06-06"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "babelbit/utils/settings.py"
+      line_ref: "113"
+      quote: 'BABELBIT_NETUID=int(getenv("BABELBIT_NETUID", "59"))'
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "babelbit/cli/validate.py"
+      line_ref: "1-10"
+      quote: "import asyncio\nimport bittensor as bt"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "babelbit/scoring/score_dialogue.py"
+      line_ref: "396"
+      quote: "U_step = ((lex_s * lex_weight) + (sem_s * (1.0 - lex_weight))) * earliness_s"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "babelbit/scoring/score_dialogue.py"
+      line_ref: "114-120"
+      quote: "s = clamp01((c - b) / (1 - b))"
+      confidence: high
+    - claim_field: "/scoring_signals/0/normalization"
+      source_path: "babelbit/scoring/score_dialogue.py"
+      line_ref: "110-120"
+      quote: "return _clamp01((cos_raw - baseline_b) / denom)"
+      confidence: medium
+    - claim_field: "/scoring_signals/1/notes"
+      source_path: "babelbit/scoring/score_dialogue.py"
+      line_ref: "223-230"
+      quote: "ed = _edit_distance(a, b)\n    return max(0.0, 1.0 - (ed / mx))"
+      confidence: high
+    - claim_field: "/scoring_signals/2/notes"
+      source_path: "babelbit/scoring/score_dialogue.py"
+      line_ref: "393"
+      quote: "earliness_s = 1.0 / (s + 1)"
+      confidence: high
+    - claim_field: "/scoring_signals/1/weight"
+      source_path: "babelbit/scoring/score_dialogue.py"
+      line_ref: "459-463"
+      quote: '"--lex-weight", type=float, default=0.5, help="Weight for lexical similarity (0..1); 1-lex used for semantic"'
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "babelbit/scoring/score_dialogue.py"
+      line_ref: "310"
+      quote: 'gt_full = _strip_eof((comp[-1].get("ground_truth") or "").strip())'
+      confidence: high
+    - claim_field: "/ground_truth_sources/1/source_identifier"
+      source_path: "babelbit/scoring/score_dialogue.py"
+      line_ref: "21-22"
+      quote: 'EMBEDDER_NAME = os.getenv("EMBEDDER_NAME", "mixedbread-ai/mxbai-embed-large-v1")'
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "babelbit/cli/validate.py"
+      line_ref: "368-372"
+      quote: "for uid, score in positive_main:\n                add_uid(uid, main_fraction * (score / total_main_score))"
+      confidence: high
+    - claim_field: "/aggregation/composition"
+      source_path: "babelbit/cli/validate.py"
+      line_ref: "376-378"
+      quote: "if arena_fraction > 0.0:\n        if arena_recipient_uid is not None:\n            add_uid(arena_recipient_uid, arena_fraction)"
+      confidence: high
+    - claim_field: "/aggregation/normalization"
+      source_path: "babelbit/cli/validate.py"
+      line_ref: "188-192"
+      quote: "correction = 1.0 - sum(normalized)\n    if abs(correction) > WEIGHT_SUM_TOLERANCE:\n        normalized[-1] += correction"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "babelbit/cli/validate.py"
+      line_ref: "238"
+      quote: 'DEFAULT_FALLBACK_UID = _get_int_env("BB_DEFAULT_FALLBACK_UID", 248)'
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/dynamic"
+      source_path: "babelbit/cli/validate.py"
+      line_ref: "387-388"
+      quote: "if not ordered_uids and burn_uid is not None:\n        return [1.0], [burn_uid]"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "babelbit/utils/bittensor_helpers.py"
+      line_ref: "121-127"
+      quote: "success = await st.set_weights(\n                wallet=wallet,\n                netuid=netuid,\n                uids=uids,\n                weights=weights,"
+      confidence: high
+    - claim_field: "/weight_setting/cadence"
+      source_path: "babelbit/cli/validate.py"
+      line_ref: "258"
+      quote: "if block % tempo != 0 or block <= last_done:"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "babelbit/utils/settings.py"
+      line_ref: "114-115"
+      quote: "# enforcing tempo to 100 blocks to avoid vtrust issues\n        BABELBIT_TEMPO=100,"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "babelbit/cli/validate.py"
+      line_ref: "535-539"
+      quote: "if last_weights:\n        logger.info(\n            f\"No scores available from API; reusing last weights"
+      confidence: high
+    - claim_field: "/sub_competitions/notes"
+      source_path: "babelbit/utils/settings.py"
+      line_ref: "35"
+      quote: "BB_ARENA_INCENTIVE_PERCENT: float = 80.0"
+      confidence: high
+    - claim_field: "/sub_competitions/stages/0/advancement_rule"
+      source_path: "README.md"
+      line_ref: "119-120"
+      quote: "`Qualifying` receives 20% of the incentive. `Qualifying` miners are rewarded in proportion to their scores."
+      confidence: high
+    - claim_field: "/sub_competitions/stages/1/advancement_rule"
+      source_path: "README.md"
+      line_ref: "120"
+      quote: "`Arena` receives 80% of the incentive. `Arena` is winner-takes-all."
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "README.md"
+      line_ref: "124-127"
+      quote: "A miner must have won at least one qualifying challenge in the last 7 days to be arena-eligible."
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "babelbit/cli/validate.py"
+      line_ref: "573-574"
+      quote: "canonical = json.dumps(payload, separators=(\",\", \":\"), sort_keys=True)\n    signature_hex = sign_message(validator_kp, canonical)"
+      confidence: medium
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "babelbit/cli/validate.py"
+      line_ref: "61-62"
+      quote: "if current_challenge_uid and current_challenge_uid != last_challenge_uid:\n        return 0, current_challenge_uid"
+      confidence: high
+    - claim_field: "/mechanism_status_notes"
+      source_path: "babelbit/cli/validate.py"
+      line_ref: "541-545"
+      quote: "if no_score_rounds >= max_no_score_rounds:\n        ... falling back to default uid {default_uid}.\n        return [default_uid], [1.0], no_score_rounds"
+      confidence: high
+    - claim_field: "/documentation/status"
+      source_path: "README.md"
+      line_ref: "86-87"
+      quote: "Some submission, scoring, and managed deployment workflows are handled by Babelbit-operated services and are intentionally described here only at a high level."
+      confidence: high
+  unresolved:
+    - "/aggregation/burn_allocation/fraction: no fixed burn fraction in source; burn is a degenerate-state fallback (whole vector -> burn UID) not a steady fraction."
+    - "/weight_setting/smoothing/alpha: no EMA/alpha on the reward; left null."
+    - "Exact arena-eligibility ranking, win-count tallying, and per-miner score aggregation run in Babelbit-operated services (submit API, Postgres) not present in this repo; only consumed scores are visible here."
+    - "score_dialogue.py is a reference/dev scorer; whether the production submit-API scores use identical lex_weight / U_step formula is not verifiable from this repo."

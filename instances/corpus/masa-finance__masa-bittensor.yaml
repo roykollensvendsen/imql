@@ -1,0 +1,263 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Active volume-based scoring: validators query miners for tweets, validate them,
+  accumulate per-miner tweet volume across a rolling window, score via a kurtosis
+  (normal-CDF z-score) curve, EMA the scores, and set_weights on chain. No burn
+  logic present in source.
+
+subnet:
+  name: "Masa Subnet 42 (Real-Time Data Scraping)"
+  owner_repo: "masa-finance__masa-bittensor"
+  netuid: 42
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners extract recent/trending tweets from X (Twitter) using the Masa SDK in
+    response to validator-issued keyword queries. Validators check each returned
+    batch for structural validity, ID validity, deduplication, query-keyword
+    match, recency (timestamp within ~yesterday), and existence via masa-ai's
+    TweetValidator. Each miner's reward is driven by its accumulated volume of
+    valid, unique tweets over a rolling window of tempos.
+  submission_format: [api_response]
+
+scoring_signals:
+  - name: valid_tweet_volume
+    metric_kind: volume
+    direction: higher_is_better
+    weight: 1.0
+    normalization: zscore
+    notes: >-
+      Accumulated count of valid, unique tweets per miner over the volume_window
+      of tempos. Reward = stats.norm.cdf((volume - mean)/std_dev) (kurtosis-based
+      score). Only volume that passes all validation checks is counted.
+
+ground_truth_sources:
+  - kind: organic_traffic
+    description: >-
+      Trending Twitter queries fetched via masa_ai TrendingQueries (top 10), with
+      fallback keywords ["crypto","btc","eth"]; tweets are validated for existence
+      against the live Twitter/X API through masa-ai's TweetValidator.
+    source_identifier: "masa_ai.tools.validator (TrendingQueries, TweetValidator)"
+    trust_model: oracle
+    notes: >-
+      Tweet existence/authenticity is checked against the real Twitter API (404
+      handling); queries derive from real-time trending topics.
+
+aggregation:
+  method: exponential_decay_ema
+  composition: weighted_sum
+  normalization: sum_to_one
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: "No burn logic found in source."
+  notes: >-
+    Per-round rewards are the normal-CDF z-score of each miner's windowed volume
+    (single miner => reward 1). These are EMA'd into self.scores
+    (update_scores), then passed raw to process_weights_for_netuid which applies
+    max-weight normalization and sum-to-one normalization before emit. With one
+    miner the reward list is [1].
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    self.scores (EMA of per-round rewards) -> process_weights_for_netuid
+    (max-weight + sum-to-one normalization) -> convert_weights_and_uids_for_emit
+    -> subtensor.set_weights. Gated by should_set_weights: requires >=150 scored
+    UIDs on mainnet and >100 blocks since last update (except first run).
+  on_chain_call: set_weights
+  tempo_or_interval: "epoch_length default 100 blocks; set_weights gated on >100 blocks since last_update"
+  smoothing:
+    kind: ema
+    alpha: 0.1
+    window: null
+    notes: >-
+      update_scores: scores[mask] = alpha*reward + (1-alpha)*scores[mask], alpha =
+      config.neuron.moving_average_alpha (default 0.1). Volume itself is summed
+      over a rolling window of volume_window=6 tempos before scoring.
+
+anti_gaming:
+  - kind: deduplication
+    enforcement: rejection
+    description: >-
+      Within-batch duplicate detection (unique tweet IDs must equal batch size)
+      and cross-history dedup via tweets_by_uid: previously seen tweet IDs are
+      subtracted so only new unique tweets add to volume.
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      strict_tweet_id_validation (pure ASCII digits, no leading zeros, no
+      zero-width chars), query-keyword match across tweet fields, and timestamp
+      recency (>= yesterday) checks; any failure invalidates the whole batch.
+  - kind: liveness_check
+    enforcement: rejection
+    description: >-
+      masa-ai TweetValidator validates 3 randomly sampled tweets against the live
+      Twitter API (requires >=2/3 successful validations); 404s count as failures.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      Miners selected for scoring are those with metagraph.validator_trust == 0;
+      validators require minimum stake / vpermit to be queried.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, performance_ledger]
+  status_values: []
+  reset_policy: >-
+    On hotkey replacement (resync_metagraph), the miner's score is zeroed, its
+    recent windowed volumes set to 0, and tweets_by_uid reset to empty set.
+  notes: >-
+    Per-miner persistent state: self.scores (EMA), self.volumes (rolling window of
+    per-tempo volume), self.tweets_by_uid (set of seen tweet IDs, capped 100,000).
+    State saved to state.pt; scores can be rebuilt from scores.log.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs: ["README.md", "docs/RELEASE_NOTES.md"]
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "3"
+      quote: "We are subnet #42 on mainnet and #165 on testnet."
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "masa/validator/scorer.py"
+      line_ref: "19-21"
+      quote: "import bittensor as bt\nimport torch\nimport scipy.stats as stats"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "8-12"
+      quote: "Miners extract trending tweets from X (Twitter) in real-time / Validators ensure data quality, freshness, and relevance"
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "masa/validator/forwarder.py"
+      line_ref: "585-594"
+      quote: "request = RecentTweetsSynapse(query=query, timeout=timeout,) responses, miner_uids = await self.forward_request(...)"
+      confidence: high
+    - claim_field: "/scoring_signals/0/metric_kind"
+      source_path: "masa/validator/scorer.py"
+      line_ref: "55"
+      quote: "async def score_miner_volumes(self, current_block: int):"
+      confidence: high
+    - claim_field: "/scoring_signals/0/normalization"
+      source_path: "masa/validator/scorer.py"
+      line_ref: "195-199"
+      quote: "def kurtosis_based_score(self, volume, mean, std_dev, scale_factor=1.0): ... z_score = (volume - mean) / std_dev return stats.norm.cdf(z_score) * scale_factor"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "masa/validator/scorer.py"
+      line_ref: "64-76"
+      quote: "window_size = min(self.validator.volume_window, len(volumes)) ... miner_volumes[miner_uid_str] += vol"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/source_identifier"
+      source_path: "masa/validator/forwarder.py"
+      line_ref: "41"
+      quote: "from masa_ai.tools.validator import TrendingQueries, TweetValidator"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "masa/validator/forwarder.py"
+      line_ref: "269-277"
+      quote: "trending_queries = TrendingQueries().fetch() ... self.validator.keywords = [\"crypto\", \"btc\", \"eth\"]"
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "masa/base/validator.py"
+      line_ref: "530-577"
+      quote: "Performs exponential moving average on the scores based on the rewards received from the miners."
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "masa/validator/scorer.py"
+      line_ref: "128-145"
+      quote: "if len(valid_miner_uids) == 1: rewards = [1] else: ... reward = self.kurtosis_based_score(volume, mean_volume, std_dev_volume)"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "masa/base/validator.py"
+      line_ref: "306-314"
+      quote: "result = await self.subtensor.set_weights(netuid=self.config.netuid, wallet=self.wallet, uids=uint_uids, weights=uint_weights, version_key=self.spec_version,"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "masa/base/validator.py"
+      line_ref: "243-260"
+      quote: "(processed_weight_uids, processed_weights,) = await process_weights_for_netuid(uids=self.metagraph.uids, weights=raw_weights, ...)"
+      confidence: high
+    - claim_field: "/weight_setting/cadence"
+      source_path: "masa/base/validator.py"
+      line_ref: "189-207"
+      quote: "if scored_uids < 150: ... return False ... if blocks_elapsed <= 100 and not self.first_run: ... return False"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "masa/utils/config.py"
+      line_ref: "73-78"
+      quote: "\"--neuron.epoch_length\", type=int, help=\"The default epoch length (how often we set weights, measured in 12 second blocks).\", default=100,"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "masa/utils/config.py"
+      line_ref: "200-205"
+      quote: "\"--neuron.moving_average_alpha\", type=float, help=\"Moving average alpha parameter, how much to add of the new observation.\", default=0.1,"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "masa/base/validator.py"
+      line_ref: "572-577"
+      quote: "alpha: float = self.config.neuron.moving_average_alpha ... self.scores[mask] = (alpha * scattered_rewards[mask] + (1 - alpha) * self.scores[mask])"
+      confidence: high
+    - claim_field: "/per_miner_state/notes"
+      source_path: "masa/base/validator.py"
+      line_ref: "504-509"
+      quote: "state_dict = { \"step\": self.step, \"scores\": self.scores, \"hotkeys\": self.hotkeys, \"volumes\": self.volumes, \"tweets_by_uid\": self.tweets_by_uid, }"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "masa/base/validator.py"
+      line_ref: "408-422"
+      quote: "self.scores[uid] = 0  # hotkey has been replaced ... volume[\"miners\"][str(uid)] = 0 ... self.tweets_by_uid[uid] = set()"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "masa/validator/forwarder.py"
+      line_ref: "342-349"
+      quote: "unique_ids = {tweet[\"Tweet\"][\"ID\"] for tweet in all_responses} if len(unique_ids) != len(all_responses): ... FAILED - batch contains duplicates"
+      confidence: high
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "masa/validator/forwarder.py"
+      line_ref: "68-87"
+      quote: "Strictly validate a tweet ID. - Must be a string of pure ASCII digits - No leading zeros - No invisible/zero-width characters"
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "masa/validator/forwarder.py"
+      line_ref: "456-463"
+      quote: "is_valid = validator.validate_tweet(tweet_id=random_tweet.get(\"ID\"), expected_name=..., expected_text=..., ...)"
+      confidence: high
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "masa/validator/forwarder.py"
+      line_ref: "553-558"
+      quote: "miner_uids = [uid for uid in range(self.validator.metagraph.n.item()) if self.validator.metagraph.validator_trust[uid] == 0]"
+      confidence: high
+    - claim_field: "/mechanism_status"
+      source_path: "masa/base/validator.py"
+      line_ref: "75-77"
+      quote: "await self.forwarder.get_miners_volumes(current_block) await self.scorer.score_miner_volumes(current_block)"
+      confidence: high
+  unresolved:
+    - "aggregation.decay_rate / temperature: process_weights_for_netuid uses max_weight_limit and min_allowed_weights from chain hyperparameters (subtensor), not literals in this repo; exact on-chain values unknown."
+    - "scale_factor in kurtosis_based_score defaults to 1.0 but is never passed a non-default value at the call site; effective multiplier is 1.0."
+    - "volume_window=6 is a literal in BaseValidatorNeuron.__init__ but config.json synthetic 'blocks' (3) governs query cadence; relationship to scoring window not fully documented."

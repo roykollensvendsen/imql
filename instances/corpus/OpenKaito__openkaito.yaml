@@ -1,0 +1,250 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: partial_burn
+mechanism_status_notes: >-
+  The validator forward() loads a `burner_config` from GitHub and reallocates
+  `burner_reward_percentage` (default 0.95, fallback 0.90) of the total batch reward to a
+  designated burner miner UID, leaving the documented InfoNCE text-embedding scoring to
+  distribute only the remaining fraction (~5%) among real miners. The documented per-miner
+  scoring still runs, so this is a partial burn rather than a full burn or fully dormant
+  mechanism.
+
+subnet:
+  name: "OpenKaito (Decentralized Embedding, Bittensor SN5)"
+  owner_repo: "OpenKaito__openkaito"
+  netuid: 5
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners serve a text-embedding model. Each step the validator generates a batch of texts
+    composed of relevant (positive) pairs drawn from a corpus and asks miners to embed all
+    texts into vectors of a requested dimension (1024). Validators evaluate the returned
+    embeddings with the InfoNCE contrastive loss over the known positive pairs; lower loss
+    (better separation of positive vs negative pairs) yields a higher score. Legacy/inactive
+    paths also support semantic search and Discord search tasks, but the live forward sends
+    the text-embedding task with ~100% probability.
+  submission_format: [signals]
+
+scoring_signals:
+  - name: infonce_embedding_loss
+    metric_kind: loss
+    direction: lower_is_better
+    weight: 1.0
+    normalization: none
+    notes: >-
+      In evaluate_text_embedding, the validator computes loss = info_nce_loss(q_embeddings,
+      a_embeddings) and converts it to a score as scores[i] = min(100.0, 1 / loss.item()).
+      Lower InfoNCE loss => higher score. top1/top3 recall are also computed but only logged
+      to wandb, not used for the on-chain reward.
+
+ground_truth_sources:
+  - kind: deterministic_dataset
+    description: >-
+      Relevant (positive) text pairs are generated from a configured corpus via
+      generate_relevant_pairs / generate_text_embedding_synapse; the validator holds the
+      pairwise relevance (q_indices, a_indices) used as ground truth for the InfoNCE loss.
+    source_identifier: "text_embedding_datasets (cached_datasets_from_config(branch='main'))"
+    trust_model: trusted
+    notes: >-
+      The validator knows which texts are positive pairs because it constructs the batch,
+      so the relevance labels are trusted ground truth held by the validator.
+
+aggregation:
+  method: weighted_average
+  composition: weighted_sum
+  normalization: l1
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: true
+    address_or_uid: "5FHsM8ywifUgtSXbDQaSD9zzDYq76RqAvf9PnaSVg5q3Lc8G"
+    fraction: 0.95
+    dynamic: false
+    notes: >-
+      burner_reward_percentage of the total batch reward is assigned to the burner miner UID
+      (rewards[burner_idx] = total_reward * burner_reward_percentage). Default fallback value
+      in burner_config.fetch_config is 0.95; if the GitHub config fetch fails entirely the
+      forward() except-branch defaults to 0.90. Remaining (1 - burner_reward_percentage) is
+      split among real miners proportionally to their normalized rewards. The fraction and
+      address are fetched from an external GitHub burner_config.json at runtime and may differ
+      from these source defaults.
+  notes: >-
+    Per step, raw scores are normalized by rewards = rewards / (rewards.max() + 1e-5), then
+    the burner split is applied, then update_scores applies an EMA. set_weights L1-normalizes
+    the EMA scores (torch.nn.functional.normalize(self.scores, p=1, dim=0)) before on-chain
+    emit.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    EMA scores are L1-normalized into raw_weights, passed through
+    bt.utils.weight_utils.process_weights_for_netuid and convert_weights_and_uids_for_emit,
+    then emitted via subtensor.set_weights.
+  on_chain_call: set_weights
+  tempo_or_interval: "100 blocks (neuron.epoch_length default; 12s blocks)"
+  smoothing:
+    kind: ema
+    alpha: 0.2
+    window: null
+    notes: >-
+      update_scores does self.scores = alpha * scattered_rewards + (1 - alpha) * self.scores,
+      with alpha = config.neuron.moving_average_alpha (default 0.2).
+
+anti_gaming:
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      In evaluate_text_embedding, responses whose embedding tensor cannot be parsed, whose row
+      count != number of query texts, or whose dimension != query.dimensions are given NaN loss
+      / skipped (effectively zero score). Other task evaluators (evaluate, evaluate_discord_query_search)
+      apply integrity/uniqueness checks (zero_score_mask) but are not on the live path.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: >-
+    The codebase contains multiple task evaluators (text embedding, keyword/structured search,
+    semantic search, Discord search) but the live validator forward sends the text-embedding
+    task with ~100% probability (random_number < 1 + 1e-5), so only one mechanism is active.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score]
+  status_values: []
+  reset_policy: >-
+    Scores are persisted to state.pt and reset to 0 for a UID when its hotkey is replaced in
+    resync_metagraph.
+  notes: >-
+    self.scores is a per-UID EMA moving average maintained across steps (the only persistent
+    per-miner state).
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "quickstart.md"
+    - "docs/query_and_response_api.md"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Claude Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/name"
+      source_path: "README.md"
+      line_ref: "3"
+      quote: "# **Decentralized Embedding: Bittensor SN5**"
+      confidence: high
+    - claim_field: "/subnet/netuid"
+      source_path: "quickstart.md"
+      line_ref: "39"
+      quote: "python neurons/miner.py --netuid 5 --subtensor.network finney"
+      confidence: high
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "neurons/validator.py"
+      line_ref: "29-31"
+      quote: "import bittensor as bt\nimport openai\nimport torch"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "neurons/validator.py"
+      line_ref: "302-328"
+      quote: "# 100% chance to send text-embedding task\n            if random_number < 1 + 1e-5:\n                ...\n                query, q_indices, a_indices = generate_text_embedding_synapse(\n                    pairs, dimensions=1024\n                )"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "44-46"
+      quote: "Miners will receive a batch of texts and embed them.\n\nFor the text embeddings, validators have the pairwise relevance information to evaluate them via the contrastive learning loss:"
+      confidence: high
+    - claim_field: "/scoring_signals/0/metric_kind"
+      source_path: "openkaito/evaluation/evaluator.py"
+      line_ref: "327-350"
+      quote: "loss = info_nce_loss(q_embeddings, a_embeddings)\n                ...\n                losses[i] = loss.item()\n                scores[i] = min(100.0, 1 / loss.item())"
+      confidence: high
+    - claim_field: "/scoring_signals/0/direction"
+      source_path: "openkaito/evaluation/evaluator.py"
+      line_ref: "350"
+      quote: "scores[i] = min(100.0, 1 / loss.item())"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0/kind"
+      source_path: "neurons/validator.py"
+      line_ref: "306-326"
+      quote: "text_embedding_datasets = cached_datasets_from_config(branch=\"main\")[\n                    \"text_embedding_datasets\"\n                ]\n                ...\n                pairs = generate_relevant_pairs(...)\n                query, q_indices, a_indices = generate_text_embedding_synapse(\n                    pairs, dimensions=1024\n                )"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/enabled"
+      source_path: "neurons/validator.py"
+      line_ref: "245-252"
+      quote: "burner_config = fetch_config(branch=\"main\")\n                burner_miner_address = burner_config[\"burner_miner_address\"]\n                burner_reward_percentage = burner_config[\"burner_reward_percentage\"]"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/fraction"
+      source_path: "openkaito/utils/burner_config.py"
+      line_ref: "16-18"
+      quote: "\"burner_miner_address\": \"5FHsM8ywifUgtSXbDQaSD9zzDYq76RqAvf9PnaSVg5q3Lc8G\",\n            \"burner_reward_percentage\": 0.95"
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/address_or_uid"
+      source_path: "openkaito/utils/burner_config.py"
+      line_ref: "17"
+      quote: "\"burner_miner_address\": \"5FHsM8ywifUgtSXbDQaSD9zzDYq76RqAvf9PnaSVg5q3Lc8G\","
+      confidence: high
+    - claim_field: "/aggregation/burn_allocation/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "449-460"
+      quote: "rewards[i] = max(\n                                    1e-12, \n                                    original_rewards[i] / non_burner_total * (total_reward * (1 - burner_reward_percentage))\n                                )\n                    ...\n                    rewards[burner_idx] = total_reward * burner_reward_percentage"
+      confidence: high
+    - claim_field: "/aggregation/normalization"
+      source_path: "openkaito/base/validator.py"
+      line_ref: "225"
+      quote: "raw_weights = torch.nn.functional.normalize(self.scores, p=1, dim=0).numpy()"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "neurons/validator.py"
+      line_ref: "430-431"
+      quote: "raw_scores = rewards.clone().detach()\n            rewards = rewards / (rewards.max() + 1e-5)"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "openkaito/utils/config.py"
+      line_ref: "145-150"
+      quote: "\"--neuron.moving_average_alpha\",\n            type=float,\n            ...\n            default=0.2,"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/notes"
+      source_path: "openkaito/base/validator.py"
+      line_ref: "320-323"
+      quote: "alpha: float = self.config.neuron.moving_average_alpha\n        self.scores: torch.FloatTensor = alpha * scattered_rewards + (\n            1 - alpha\n        ) * self.scores.to(self.device)"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "openkaito/base/validator.py"
+      line_ref: "254-262"
+      quote: "result = self.subtensor.set_weights(\n            wallet=self.wallet,\n            netuid=self.config.netuid,\n            uids=uint_uids,\n            weights=uint_weights,"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "openkaito/utils/config.py"
+      line_ref: "82-87"
+      quote: "\"--neuron.epoch_length\",\n        type=int,\n        help=\"The default epoch length (how often we set weights, measured in 12 second blocks).\",\n        default=100,"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "openkaito/evaluation/evaluator.py"
+      line_ref: "305-320"
+      quote: "if embeddings.shape[0] != num_of_text:\n                    ...\n                    losses[i] = torch.nan\n                    continue\n\n                if embeddings.shape[1] != query.dimensions:\n                    ...\n                    continue"
+      confidence: high
+    - claim_field: "/per_miner_state/state_kinds"
+      source_path: "openkaito/base/validator.py"
+      line_ref: "302-303"
+      quote: "def update_scores(self, rewards: torch.FloatTensor, uids: List[int]):\n        \"\"\"Performs exponential moving average on the scores based on the rewards received from the miners.\"\"\""
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "openkaito/base/validator.py"
+      line_ref: "286-288"
+      quote: "for uid, hotkey in enumerate(self.hotkeys):\n            if hotkey != self.metagraph.hotkeys[uid]:\n                self.scores[uid] = 0  # hotkey has been replaced"
+      confidence: high
+    - claim_field: "/mechanism_status"
+      source_path: "neurons/validator.py"
+      line_ref: "458-460"
+      quote: "rewards[burner_idx] = total_reward * burner_reward_percentage\n                    \n                    bt.logging.info(f\"Allocated {burner_reward_percentage*100}% incentive to burner miner UID {burner_miner_uid}\")"
+      confidence: high
+  unresolved:
+    - "Live on-chain burner_reward_percentage and burner_miner_address are fetched at runtime from an external GitHub burner_config.json (openkaito/utils/burner_config.py); the values in the repo (0.95 / 5FHsM8...) are source defaults and may differ on mainnet."
+    - "sample_size default is 30 (config.py) but the actual number of miners scored per step and the real netuid emission split are not determinable from source alone."

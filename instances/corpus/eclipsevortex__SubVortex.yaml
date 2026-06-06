@@ -1,0 +1,267 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Weights are set directly from the per-miner EMA moving_scores array
+  (main.py: weights = self.moving_scores); no burn / UID-routing is present in the
+  weight-setting path. The documented 4-criteria scoring drives weights.
+
+subnet:
+  name: "SubVortex"
+  owner_repo: "eclipsevortex__SubVortex"
+  netuid: 7
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners each run a Bittensor subtensor node. The validator challenges each miner by
+    connecting to its subtensor and fetching the current block, scoring the miner on
+    availability (verified + unique IP), latency (normalized request time with a
+    distance-based tolerance), reliability (Wilson-normalized success/attempt ratio), and
+    global distribution (geographic spread). These four scores combine into a weighted
+    average final score that feeds an EMA moving score used to set on-chain weights.
+  submission_format: [compute_service]
+
+scoring_signals:
+  - name: availability
+    metric_kind: uptime
+    direction: higher_is_better
+    weight: 8.0
+    normalization: none
+    notes: >-
+      1.0 if miner is verified and has no IP conflict, else 0.0
+      (AVAILABILITY_FAILURE_REWARD). In compute_final_score the weight is 3 instead of 8
+      when the miner is verified but its subtensor is not synced.
+  - name: latency
+    metric_kind: latency
+    direction: higher_is_better
+    weight: 7.0
+    normalization: min_max
+    notes: >-
+      Process time is scaled by a distance-based tolerance (1 - distance/MAX_DISTANCE),
+      converted to a relative latency score (1 - process_time/baseline_latency), then
+      min-max normalized across verified miners so best=1, worst=0. 0.0 if not verified or
+      IP conflict.
+  - name: reliability
+    metric_kind: win_rate
+    direction: higher_is_better
+    weight: 3.0
+    normalization: other
+    normalization_other: "wilson_score_interval (lower/upper bound midpoint, z=0.6744897501960817)"
+    notes: >-
+      Ratio of challenge_successes/challenge_attempts normalized via Wilson score interval;
+      returns 0.5 when total attempts is 0.
+  - name: distribution
+    metric_kind: other
+    metric_kind_other: "geographic_distribution"
+    direction: higher_is_better
+    weight: 2.0
+    normalization: none
+    notes: >-
+      1 / (# of verified, non-conflicting miners in that miner's country), else 0.0 if not
+      verified or IP conflict.
+
+ground_truth_sources:
+  - kind: hardware_probe
+    description: >-
+      Validator establishes a direct connection to the miner's subtensor node and retrieves
+      the current block; success, response time, and the miner's reported country/IP drive
+      all four scores.
+    source_identifier: "miner subtensor node (block fetch)"
+    trust_model: adversarial
+    notes: ""
+
+aggregation:
+  method: weighted_average
+  composition: weighted_sum
+  normalization: other
+  normalization_other: "divide by sum of the four signal weights (availability+latency+reliability+distribution)"
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: "No burn or UID-routing in the weight-setting path; weights = moving_scores."
+  notes: >-
+    final score = (avail_w*avail + lat_w*lat + rel_w*rel + dist_w*dist) /
+    (avail_w + lat_w + rel_w + dist_w). Suspicious miners' final score is multiplied by a
+    penalty_factor (0 if none provided).
+
+weight_setting:
+  cadence: rate_limited
+  method: >-
+    should_set_weights gates on min stake and the subnet weights_rate_limit (next_block =
+    validator_last_update + weights_rate_limit + 1). Weights are the EMA moving_scores
+    processed through process_weights_for_netuid, then set via subtensor.set_weights with
+    retries.
+  on_chain_call: set_weights
+  tempo_or_interval: "weights_rate_limit (subnet hyperparameter)"
+  smoothing:
+    kind: ema
+    alpha: 0.1
+    window: null
+    notes: >-
+      moving_scores[uid] = alpha*score + (1-alpha)*moving_scores[uid] for non-suspicious
+      miners; suspicious miners' moving score is multiplied by penalty_factor. Code comment
+      says alpha=0.1 replaces ~10% of the previous weight.
+
+anti_gaming:
+  - kind: deduplication
+    enforcement: penalty
+    description: >-
+      Multiple miners sharing the same IP all receive 0 for availability, latency, and
+      distribution (1 miner = 1 IP enforced via ip_occurrences).
+  - kind: liveness_check
+    enforcement: penalty
+    description: >-
+      A miner must be verified (miner and subtensor operational and accessible) or it scores
+      0 on availability/latency/distribution.
+  - kind: other
+    kind_other: "suspicious_uid_list_penalty"
+    enforcement: penalty
+    description: >-
+      Miners present in the suspicious UID list (matched by uid + hotkey) have their final
+      and moving scores multiplied by a penalty_factor in ]0,1[, or set to 0 when no penalty
+      factor is provided.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, performance_ledger]
+  status_values: []
+  reset_policy: >-
+    Reliability challenge statistics (successes/attempts) are reset every 3 epochs
+    (RELIABILLITY_RESET = 1080 in constants.py). Moving scores persist across challenges in
+    saved state.
+  notes: >-
+    Persistent per-uid moving_scores (EMA) saved to disk via save_state/load_state, plus
+    per-miner challenge_successes/challenge_attempts counters used by the Wilson reliability
+    score.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "docs/features/incentive_mechanism.md"
+  completeness: high
+
+provenance:
+  extracted_by: "im-extract / claude-opus-4-8"
+  extracted_at: "2026-06-06"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "subvortex/validator/neuron/src/settings.py"
+      line_ref: "18"
+      quote: "netuid: int = 7"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "docs/features/incentive_mechanism.md"
+      line_ref: "1-6"
+      quote: "SubVortex's incentive mechanism will score miners based on multiple criteria of their subtensor node: - Availability ... - Latency ... - Reliability ... - Global distribution"
+      confidence: high
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "subvortex/core/constants.py"
+      line_ref: "24"
+      quote: "AVAILABILITY_WEIGHT = 8"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "subvortex/validator/neuron/src/score.py"
+      line_ref: "60-71"
+      quote: "score = (1.0 if can_compute_availability_score(miner, has_ip_conflicts) else AVAILABILITY_FAILURE_REWARD)"
+      confidence: high
+    - claim_field: "/scoring_signals/1/weight"
+      source_path: "subvortex/core/constants.py"
+      line_ref: "25"
+      quote: "LATENCY_WEIGHT = 7"
+      confidence: high
+    - claim_field: "/scoring_signals/1/normalization"
+      source_path: "subvortex/validator/neuron/src/score.py"
+      line_ref: "160-201"
+      quote: "scaled_distance = distance / MAX_DISTANCE ... relative_latency_score = 1 - (process_time / baseline_latency) ... score = (score - min_score) / (max_score - min_score)"
+      confidence: high
+    - claim_field: "/scoring_signals/2/weight"
+      source_path: "subvortex/core/constants.py"
+      line_ref: "26"
+      quote: "RELIABILLITY_WEIGHT = 3"
+      confidence: high
+    - claim_field: "/scoring_signals/2/normalization_other"
+      source_path: "subvortex/validator/neuron/src/bonding.py"
+      line_ref: "23-46"
+      quote: "def wilson_score_interval(successes, total): ... z = 0.6744897501960817 ... wilson_score = (max(0, lower_bound) + min(upper_bound, 1)) / 2"
+      confidence: high
+    - claim_field: "/scoring_signals/3/weight"
+      source_path: "subvortex/core/constants.py"
+      line_ref: "27"
+      quote: "DISTRIBUTION_WEIGHT = 2"
+      confidence: high
+    - claim_field: "/scoring_signals/3/notes"
+      source_path: "subvortex/validator/neuron/src/score.py"
+      line_ref: "240"
+      quote: "score = 1 / count if count > 0 else 0"
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "subvortex/validator/neuron/src/score.py"
+      line_ref: "254-265"
+      quote: "numerator = ((availability_weight * miner.availability_score) + (LATENCY_WEIGHT * miner.latency_score) + (RELIABILLITY_WEIGHT * miner.reliability_score) + (DISTRIBUTION_WEIGHT * miner.distribution_score)) ... score = numerator / denominator if denominator != 0 else 0"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "subvortex/validator/neuron/src/score.py"
+      line_ref: "250-252"
+      quote: "availability_weight = (3 if miner.verified and not miner.sync else AVAILABILITY_WEIGHT)"
+      confidence: high
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "subvortex/validator/neuron/src/challenge.py"
+      line_ref: "342-404"
+      quote: "alpha: float = 0.1 ... self.moving_scores[uid] = (alpha * miner.score + (1 - alpha) * self.moving_scores[uid] if not miner.suspicious else self.moving_scores[uid] * miner.penalty_factor)"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "subvortex/validator/neuron/src/weights.py"
+      line_ref: "68-72"
+      quote: "next_block = validator_last_update + (weights_rate_limit) + 1 ; return next_block <= block"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "subvortex/validator/neuron/src/weights.py"
+      line_ref: "104-113"
+      quote: "success, message = subtensor.set_weights(wallet=wallet, netuid=settings.netuid, uids=uids_proceed.tolist(), weights=weights_proceed.tolist(), ...)"
+      confidence: high
+    - claim_field: "/mechanism_status"
+      source_path: "subvortex/validator/neuron/src/main.py"
+      line_ref: "347-359"
+      quote: "if must_set_weight: weights = self.moving_scores ... set_weights(... weights=weights, ...)"
+      confidence: high
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "subvortex/validator/neuron/src/score.py"
+      line_ref: "267-272"
+      quote: "if miner.suspicious: penalty_factor = miner.penalty_factor or 0 ... score = penalty_factor * score"
+      confidence: high
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "subvortex/validator/neuron/src/challenge.py"
+      line_ref: "372-376"
+      quote: "has_ip_conflicts = miner_ip_occurences > 1"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "subvortex/core/constants.py"
+      line_ref: "30"
+      quote: "RELIABILLITY_RESET = 1080 # Reset challenge statistics every 3 epochs"
+      confidence: high
+    - claim_field: "/per_miner_state/notes"
+      source_path: "subvortex/validator/neuron/src/challenge.py"
+      line_ref: "419"
+      quote: "save_state(path=self.config.neuron.full_path, moving_scores=self.moving_scores)"
+      confidence: high
+  unresolved:
+    - "weights_rate_limit is a runtime subnet hyperparameter, not a literal in the repo; exact tempo unknown."
+    - "min_stake threshold for setting weights is passed in at runtime; no literal value found in source."
+  extractor_notes: >-
+    Active 4-signal weighted-average mechanism with EMA smoothing (alpha=0.1) over per-uid
+    moving_scores, set directly on chain. No burn path observed.

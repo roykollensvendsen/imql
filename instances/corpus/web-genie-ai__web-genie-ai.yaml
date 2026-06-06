@@ -1,0 +1,292 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Live validator scores miners each session and sets weights on-chain (L1-normalized
+  winner-take-all). No burn UID is allocated in code. Only AccuracyChallenge and
+  BalancedChallenge are in the rotation; SeoChallenge and QualityChallenge classes exist
+  but are not used by query_miners.
+
+subnet:
+  name: "WebGenieAI"
+  owner_repo: "web-genie-ai__web-genie-ai"
+  netuid: null
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners receive an image (screenshot of a ground-truth webpage) and must generate HTML
+    that visually and structurally reproduces it. Submissions are revealed via a hash
+    commit-reveal scheme. Validators score each submission on three metrics (visual
+    accuracy, Lighthouse SEO, and code quality) and pick a per-session winner.
+  submission_format: [source_code, commitment_hash]
+
+scoring_signals:
+  - name: Accuracy
+    metric_kind: vlm_judgment
+    direction: higher_is_better
+    weight: null
+    normalization: none
+    notes: >-
+      VisualReward: visual similarity between rendered miner HTML screenshot and ground-truth
+      image. Combines high-level matching (CLIP) and low-level element matching as
+      high_level_scores*0.3 + low_level_scores*0.7. Low-level itself is
+      button*0.25 + input*0.25 + text*0.25 + anchor*0.25. Weight is null because the
+      additive weight depends on the active challenge type (0.9 in Accuracy, 0.8 in Balanced)
+      and it also acts as a gate (>0.85) in the Seo/Quality challenge variants.
+  - name: Seo
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    notes: >-
+      LighthouseReward: Google Lighthouse score of the miner HTML, served via a local
+      lighthouse server. Contributes 0.1 weight only in BalancedChallenge; in (unused)
+      SeoChallenge it is gated by accuracy>0.85.
+    normalization: none
+  - name: Quality
+    metric_kind: composite
+    direction: higher_is_better
+    weight: null
+    notes: >-
+      QualityReward: code-quality score of the generated HTML. Contributes 0.1 weight in both
+      Accuracy and Balanced challenges; in (unused) QualityChallenge it is gated by accuracy>0.85.
+    normalization: none
+
+ground_truth_sources:
+  - kind: reference_model
+    description: >-
+      Ground-truth HTML pages are drawn from CentralDataset (the WebGenieAI central dataset,
+      authenticated by validator wallet signature). The ground-truth HTML is rendered to a
+      screenshot which becomes the task prompt; the same HTML is the reference for scoring.
+    source_identifier: "CentralDataset"
+    trust_model: trusted
+    notes: >-
+      Other datasets (RandomWebsiteDataset, SyntheticDataset, HuggingfaceDataset
+      SALT-NLP/Design2Code-hf) are present but commented out; only CentralDataset is active.
+
+aggregation:
+  method: winner_take_all
+  composition: hybrid
+  normalization: l1
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: "No burn UID or burn fraction allocated in the weight-setting code."
+  notes: >-
+    Per challenge, aggregated_scores combine the metrics linearly (AccuracyChallenge:
+    accuracy*0.9 + quality*0.1; BalancedChallenge: accuracy*0.8 + quality*0.1 + seo*0.1).
+    Across a session these per-task scores accumulate; a single winner (argmax of average
+    score, requiring solved_tasks >= number_of_tasks - MAX_UNANSWERED_TASKS) is chosen.
+    get_scores then assigns the current session's winner big_weight=1.0 and earlier session
+    winners (within CONSIDERING_SESSION_COUNTS=8) tiny_weight=1/128; the resulting score
+    vector is L1-normalized (scores / norm with ord=1) into raw weights.
+
+weight_setting:
+  cadence: per_round
+  method: >-
+    Set once per session boundary. set_weights() runs in sync_loop (every BLOCK_IN_SECONDS*10
+    seconds), but skips unless a new session has started (last_set_weights_session ==
+    current_session - 1 guard). A session = block // SESSION_WINDOW_BLOCKS where
+    SESSION_WINDOW_BLOCKS = EPOCH_BLOCKS(361) * 5.
+  on_chain_call: set_weights
+  tempo_or_interval: "SESSION_WINDOW_BLOCKS = 1805 blocks (EPOCH_BLOCKS 361 * 5)"
+  smoothing:
+    kind: none
+    alpha: null
+    window: null
+    notes: >-
+      No EMA on the final reward. Scores are accumulated within a session and reset on each
+      new session (update_scores zeroes total_scores when current_session != session). Past
+      session winners only contribute the fixed tiny_weight 1/128.
+
+anti_gaming:
+  - kind: commit_reveal
+    enforcement: rejection
+    description: >-
+      Two-phase query: miners first return an html_hash, then after TASK_REVEAL_TIME the HTML
+      is revealed. checked_synapse calls verify_answer_hash(synapse); mismatching hash =>
+      solution dropped.
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      checked_synapse rejects solutions with dendrite status_code != 200, with nonce !=
+      miner_uid, and HTML that fails preprocess_html / is_valid_resources validity checks.
+  - kind: other
+    kind_other: "hardcoded coldkey blacklist"
+    enforcement: elimination
+    enforcement_other: "hardcoded coldkey blacklist"
+    description: >-
+      is_blacklisted() skips any UID whose coldkey is in a hardcoded blacklist
+      (["5G9yTkkDd39chZiyvKwNsQvzqbbPgdiLtdb4sCR743f4MuRY"]) when selecting the session winner.
+  - kind: liveness_check
+    enforcement: penalty
+    description: >-
+      A miner is only eligible to win if it answered at least
+      number_of_tasks - MAX_UNANSWERED_TASKS (MAX_UNANSWERED_TASKS=4) tasks in the session;
+      otherwise its average score is forced to 0.
+
+sub_competitions:
+  structure: multi_mechanism
+  stages:
+    - name: AccuracyChallenge
+      role: main
+      advancement_rule: "aggregated = accuracy*0.9 + quality*0.1"
+      multipliers: {accuracy: 0.9, quality: 0.1}
+    - name: BalancedChallenge
+      role: main
+      advancement_rule: "aggregated = accuracy*0.8 + quality*0.1 + seo*0.1"
+      multipliers: {accuracy: 0.8, quality: 0.1, seo: 0.1}
+  count: 2
+  notes: >-
+    Challenge class for a session = available_challenges_classes[session % 4] where the list is
+    [AccuracyChallenge, BalancedChallenge, AccuracyChallenge, BalancedChallenge]. SeoChallenge
+    and QualityChallenge classes are defined (gated by accuracy>0.85) but not in the rotation.
+    RESERVED_WEIGHTS dict (ACCURACY:70, BALANCED:10, SEO:10, QUALITY:10) exists but is only used
+    in the commented-out get_scores branch.
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, performance_ledger]
+  status_values: []
+  reset_policy: >-
+    total_scores and solved_tasks are accumulated per session and reset to zeros at each new
+    session. session_results older than session - CONSIDERING_SESSION_COUNTS*2 are pruned.
+    Scores for a UID are zeroed when its hotkey changes (set_new_hotkeys).
+  notes: >-
+    Persisted to state.npz: total_scores_{__STATE_VERSION__}, solved_tasks, number_of_tasks,
+    session_results, last_set_weights_session, current_session.
+
+documentation:
+  status: docs_and_code
+  source_version: "webgenie __VERSION__ = 1.3.4"
+  primary_docs: ["README.md", "docs/validator.md", "docs/miner.md"]
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract"
+  confidence_overall: medium
+  evidence:
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "webgenie/constants.py"
+      line_ref: "1-12"
+      quote: "import bittensor as bt ... __VERSION__ = \"1.3.4\" # version"
+      confidence: high
+    - claim_field: "/task/summary"
+      source_path: "webgenie/tasks/image_task_generator.py"
+      line_ref: "52-87"
+      quote: "base64_image = await html_to_screenshot(ground_truth_html ...) ... WebgenieImageSynapse(base64_image=base64_image, task_id=image_task.task_id)"
+      confidence: high
+    - claim_field: "/task/submission_format"
+      source_path: "neurons/validators/genie_validator.py"
+      line_ref: "133-143"
+      quote: "reveal_synapse.html_hash = hash_synapse.html_hash ... Solution(html = checked_synapse.html, miner_uid = miner_uid,)"
+      confidence: high
+    - claim_field: "/scoring_signals/0"
+      source_path: "webgenie/rewards/visual_reward/visual_reward.py"
+      line_ref: "53"
+      quote: "scores = high_level_scores * 0.3 + low_level_scores * 0.7"
+      confidence: high
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "webgenie/rewards/visual_reward/low_level_matching_score/low_level_matching_score.py"
+      line_ref: "35"
+      quote: "score = button_score * 0.25 + input_score * 0.25 + text_score * 0.25 + anchor_score * 0.25"
+      confidence: high
+    - claim_field: "/scoring_signals/1"
+      source_path: "webgenie/tasks/image_task_generator.py"
+      line_ref: "46-50"
+      quote: "self.metrics = { ACCURACY_METRIC_NAME: VisualReward(), SEO_METRIC_NAME: LighthouseReward(), QUALITY_METRIC_NAME: QualityReward(), }"
+      confidence: high
+    - claim_field: "/ground_truth_sources/0"
+      source_path: "webgenie/tasks/image_task_generator.py"
+      line_ref: "39-44"
+      quote: "self.datasets = [ (CentralDataset(), 1), #(RandomWebsiteDataset(), 1), ... ]"
+      confidence: high
+    - claim_field: "/aggregation/notes"
+      source_path: "webgenie/challenges/challenge.py"
+      line_ref: "33-36"
+      quote: "scores = await self.task.generator.calculate_scores(self.task, self.solutions) ; aggregated_scores = scores[ACCURACY_METRIC_NAME] * 0.9 + scores[QUALITY_METRIC_NAME] * 0.1"
+      confidence: high
+    - claim_field: "/sub_competitions/stages/1"
+      source_path: "webgenie/challenges/challenge.py"
+      line_ref: "64-69"
+      quote: "aggregated_scores = accuracy_scores * 0.8 + quality_scores * 0.1 + seo_scores * 0.1"
+      confidence: high
+    - claim_field: "/aggregation/method"
+      source_path: "neurons/validators/score_manager.py"
+      line_ref: "199-214"
+      quote: "tiny_weight = 1 / 128 ; big_weight = 1.0 ... if session_number == session_upto: scores[winner] += big_weight else: scores[winner] += tiny_weight"
+      confidence: high
+    - claim_field: "/aggregation/normalization"
+      source_path: "neurons/validators/validator.py"
+      line_ref: "141-148"
+      quote: "norm = np.linalg.norm(scores, ord=1, axis=0, keepdims=True) ... raw_weights = scores / norm"
+      confidence: high
+    - claim_field: "/weight_setting/method"
+      source_path: "neurons/validators/validator.py"
+      line_ref: "128-134"
+      quote: "current_session = self.session ; last_set_weights_session = self.score_manager.last_set_weights_session ; if last_set_weights_session == current_session - 1: return ; scores = self.score_manager.get_scores(current_session - 1)"
+      confidence: high
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "neurons/validators/validator.py"
+      line_ref: "173-181"
+      quote: "result, msg = self.subtensor.set_weights( wallet=self.wallet, netuid=self.config.netuid, uids=uint_uids, weights=uint_weights, ... version_key=self.spec_version,)"
+      confidence: high
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "webgenie/constants.py"
+      line_ref: "60-62"
+      quote: "EPOCH_BLOCKS = 361 # epoch blocks ; SESSION_WINDOW_BLOCKS = EPOCH_BLOCKS * 5 # session window blocks"
+      confidence: high
+    - claim_field: "/weight_setting/cadence"
+      source_path: "neurons/validators/validator.py"
+      line_ref: "55-57"
+      quote: "@property def session(self): return self.block // SESSION_WINDOW_BLOCKS"
+      confidence: high
+    - claim_field: "/anti_gaming/0"
+      source_path: "neurons/validators/genie_validator.py"
+      line_ref: "396-398"
+      quote: "if not verify_answer_hash(synapse): bt.logging.warning(f\"Invalid answer hash: {synapse.html_hash}\") return None"
+      confidence: high
+    - claim_field: "/anti_gaming/1"
+      source_path: "neurons/validators/genie_validator.py"
+      line_ref: "389-404"
+      quote: "if synapse.dendrite.status_code != 200: return None ... if synapse.nonce != miner_uid: ... if not html or not is_valid_resources(html): ... return None"
+      confidence: high
+    - claim_field: "/anti_gaming/2"
+      source_path: "neurons/validators/score_manager.py"
+      line_ref: "166-168"
+      quote: "blacklisted_coldkeys = [\"5G9yTkkDd39chZiyvKwNsQvzqbbPgdiLtdb4sCR743f4MuRY\"] ; return self.neuron.metagraph.axons[uid].coldkey in blacklisted_coldkeys"
+      confidence: high
+    - claim_field: "/anti_gaming/3"
+      source_path: "neurons/validators/score_manager.py"
+      line_ref: "175-178"
+      quote: "if solved_tasks[uid] >= max(1, number_of_tasks - MAX_UNANSWERED_TASKS): avg_scores[uid] = total_scores[uid] / solved_tasks[uid] else: avg_scores[uid] = 0"
+      confidence: high
+    - claim_field: "/sub_competitions/notes"
+      source_path: "neurons/validators/genie_validator.py"
+      line_ref: "94-104"
+      quote: "available_challenges_classes = [ AccuracyChallenge, BalancedChallenge, AccuracyChallenge, BalancedChallenge, ] ... challenge_class = available_challenges_classes[session % len(available_challenges_classes)]"
+      confidence: high
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "neurons/validators/score_manager.py"
+      line_ref: "130-139"
+      quote: "if self.current_session != session: ... self.total_scores = np.zeros(...) ; self.number_of_tasks += 1 ; self.total_scores[uids] += rewards ; self.solved_tasks[uids] += 1"
+      confidence: high
+    - claim_field: "/mechanism_status"
+      source_path: "neurons/validators/validator.py"
+      line_ref: "135-137"
+      quote: "scores = self.score_manager.get_scores(current_session - 1) ; if np.all(scores == 0): ... skipping set_weights"
+      confidence: medium
+  unresolved:
+    - "subnet.netuid not stated in source (README mentions testnet 214; mainnet netuid not in code)."
+    - "QualityReward and LighthouseReward internal scoring formulas not fully read; signal weights for Seo/Quality marked null."
+    - "CONSIDERING_SESSION_COUNTS=8 governs how many past sessions contribute tiny_weight; not mapped to a single schema decay field."
+  extractor_notes: >-
+    Winner-take-all per session with a small tail of recent-session winners (1/128 each) then
+    L1-normalized; modeled as aggregation.method winner_take_all + composition hybrid +
+    normalization l1. No burn allocation in code.

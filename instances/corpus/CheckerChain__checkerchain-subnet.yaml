@@ -1,0 +1,275 @@
+schema_version: "1.0.0"
+instance_kind: extracted
+
+mechanism_status: active
+mechanism_status_notes: >-
+  Validator computes per-miner rewards from an LLM analysis of each review (sentiment,
+  keyword verification, coherence, score accuracy), keeps the top 90% of miners, EMA-blends
+  into self.scores, and emits L1-normalized weights via set_weights. No burn / no-op path
+  observed in the weight-setting code.
+
+subnet:
+  name: "CheckerChain SN87 — AI-powered trustless crypto review platform (tRCM)"
+  owner_repo: "CheckerChain__checkerchain-subnet"
+  netuid: 87
+  implementation_lang: python
+
+task:
+  summary: >-
+    Miners run an LLM to predict a product's Trust Score (0-100) plus a short review,
+    quality keywords, and a sentiment for products fetched from the CheckerChain dApp.
+    Validators compare each prediction against the platform-provided ground-truth trustScore:
+    predictions deviating more than 10% earn 0, otherwise an LLM analyzes the response and
+    awards points for score accuracy, sentiment, keyword verification, and coherence.
+  submission_format: [signals]
+
+scoring_signals:
+  - name: score_accuracy
+    metric_kind: regression_error
+    direction: higher_is_better
+    weight: 40.0
+    normalization: none
+    notes: >-
+      analysis_result["score_accuracy"] capped at 40 (accuracy_score = min(..., 40)).
+      LLM rubric: 40 within 2%, 30 within 6%, 20 within 8%, 10 within 10%, 0 beyond 10%.
+      A hard gate also returns 0.0 when deviation > 10% before the LLM is called.
+  - name: sentiment_score
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: 20.0
+    normalization: none
+    notes: >-
+      sentiment_score = 20 if analysis_result["sentiment"] != "unknown" else 5.
+      sentiment == "malicious" returns -math.inf (blacklist sentinel).
+  - name: keyword_verification_score
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: 5.0
+    normalization: none
+    notes: 'keyword_score = min(analysis_result["keyword_verification_score"], 5); LLM rubric 0-5.'
+  - name: coherence_score
+    metric_kind: llm_judgment
+    direction: higher_is_better
+    weight: 20.0
+    normalization: none
+    notes: 'coherence_score = min(analysis_result["coherence_score"], 20); LLM rubric 0-20.'
+
+ground_truth_sources:
+  - kind: real_engagement
+    description: >-
+      Product trustScore (0-100) produced by CheckerChain's tRCM consensus of human reviewers,
+      fetched from the CheckerChain dApp / API and passed as `actual` to the reward function.
+    source_identifier: "checkerchain.com / fetch_products()"
+    trust_model: oracle
+    notes: >-
+      reviewed_product.trustScore is the authoritative target. When trustScore == 0 the validator
+      short-circuits and pays a flat 100/len(responses) to every responder.
+
+aggregation:
+  method: weighted_average
+  composition: hybrid
+  normalization: l1
+  temperature: null
+  decay_rate: null
+  min_weight_floor: null
+  burn_allocation:
+    enabled: false
+    address_or_uid: null
+    fraction: null
+    dynamic: false
+    notes: ""
+  notes: >-
+    Per-prediction perf_score = accuracy_score + sentiment_score + keyword_score + coherence_score
+    (additive, each capped). Gating overlays: deviation>10% => 0.0; malicious => -inf (blacklist).
+    After per-miner rewards, only the top 90% by reward are kept (keep_count = ceil(0.9*N)), the rest
+    set to 0. Per-product rewards accumulate into rewards[idx] across reward_items. In set_weights the
+    scores vector is L1-normalized (raw_weights = scores / ||scores||_1) before emission.
+
+weight_setting:
+  cadence: per_epoch
+  method: >-
+    update_scores() does EMA: scores = alpha*scattered_rewards + (1-alpha)*scores. set_weights()
+    L1-normalizes scores, runs process_weights_for_netuid, converts to uint16 and calls
+    subtensor.set_weights with version_key=spec_version. should_set_weights() fires when
+    blocks-since-last-update > epoch_length and neuron is a validator.
+  on_chain_call: set_weights
+  tempo_or_interval: "epoch_length = 100 (12-second blocks); forward sleeps 25 min per cycle"
+  smoothing:
+    kind: ema
+    alpha: 0.1
+    window: null
+    notes: >-
+      config default neuron.moving_average_alpha = 0.1. update_to_last_scores() falls back to
+      last_scores when there is nothing to reward this cycle.
+
+anti_gaming:
+  - kind: deduplication
+    enforcement: rejection
+    description: >-
+      filter_duplicate_predictions: predictions matching to 3 decimal places (int(pred*1000)/1000)
+      are grouped and only one randomly-chosen miner per identical value is kept.
+  - kind: honeypot
+    enforcement: elimination
+    description: >-
+      LLM sentiment == "malicious" (prompt injection / manipulation) returns -math.inf, and the
+      miner is added to the blacklist (add_or_update_blacklisted_miner). Blacklisted hotkeys are
+      excluded from future uid selection in get_filtered_uids.
+  - kind: deterministic_check
+    enforcement: rejection
+    description: >-
+      Hard deviation gate: get_deviation_percentage(prediction, actual) > 10 returns reward 0.0
+      before any LLM analysis.
+  - kind: rate_limit
+    enforcement: barrier
+    description: >-
+      get_filtered_uids caps miners per coldkey at max_per_key=15, limiting sybil concentration
+      per coldkey.
+  - kind: stake_weighting
+    enforcement: barrier
+    description: >-
+      get_stake_score maps stake in [500, 2000] to [0,1] (1.0 above 2000). NOTE: defined in
+      reward.py but not observed wired into the final reward() return; recorded as present-but-unused.
+
+sub_competitions:
+  structure: none
+  stages: []
+  count: null
+  notes: ""
+
+per_miner_state:
+  tracked: true
+  state_kinds: [cumulative_score, status_enum]
+  status_values: [blacklisted]
+  reset_policy: >-
+    scores zeroed for a uid when its hotkey is replaced in the metagraph (resync_metagraph);
+    blacklist is a persistent DB table of malicious miners.
+  notes: >-
+    self.scores is an EMA-accumulated per-uid score vector persisted to state.npz (load_state/
+    save_state); last_scores enables fallback. Blacklisted miners stored in DB and filtered out.
+
+documentation:
+  status: docs_and_code
+  source_version: null
+  primary_docs:
+    - "README.md"
+    - "docs/running_miner_or_vali.md"
+    - "https://docs.checkerchain.com/whitepaper/checkerchain-whitepaper-v2.0"
+  completeness: medium
+
+provenance:
+  extracted_by: "im-extract (Opus 4.8)"
+  confidence_overall: high
+  evidence:
+    - claim_field: "/subnet/netuid"
+      source_path: "README.md"
+      line_ref: "312"
+      quote: "--netuid 87"
+    - claim_field: "/subnet/implementation_lang"
+      source_path: "checkerchain/validator/reward.py"
+      line_ref: "19-22"
+      quote: "import numpy as np\nimport bittensor as bt\nimport asyncio"
+    - claim_field: "/task/summary"
+      source_path: "README.md"
+      line_ref: "77-92"
+      quote: "Miner is responsible for LLM-based evaluation of products to generate and submit the prediction of Trust Score for each reviewed product."
+    - claim_field: "/scoring_signals/0/weight"
+      source_path: "checkerchain/validator/reward.py"
+      line_ref: "91"
+      quote: "accuracy_score = min(analysis_result[\"score_accuracy\"], 40)"
+    - claim_field: "/scoring_signals/0/notes"
+      source_path: "checkerchain/miner/llm.py"
+      line_ref: "509-514"
+      quote: "Score Accuracy (0-40): How close is the predicted score to actual? - 40: Within 2% ... - 0: More than 10% deviation"
+    - claim_field: "/scoring_signals/1/weight"
+      source_path: "checkerchain/validator/reward.py"
+      line_ref: "88"
+      quote: "sentiment_score = 20 if analysis_result[\"sentiment\"] != \"unknown\" else 5"
+    - claim_field: "/scoring_signals/2/weight"
+      source_path: "checkerchain/validator/reward.py"
+      line_ref: "89"
+      quote: "keyword_score = min(analysis_result[\"keyword_verification_score\"], 5)"
+    - claim_field: "/scoring_signals/3/weight"
+      source_path: "checkerchain/validator/reward.py"
+      line_ref: "90"
+      quote: "coherence_score = min(analysis_result[\"coherence_score\"], 20)  # Cap at 20"
+    - claim_field: "/aggregation/notes"
+      source_path: "checkerchain/validator/reward.py"
+      line_ref: "92-94"
+      quote: "perf_score = accuracy_score + sentiment_score + keyword_score + coherence_score\n\n    total_score = perf_score"
+    - claim_field: "/aggregation/composition"
+      source_path: "checkerchain/validator/reward.py"
+      line_ref: "134-147"
+      quote: "# Keep top 90% of miners\n    keep_count = int(np.ceil(0.9 * len(rewards_dict)))"
+    - claim_field: "/aggregation/normalization"
+      source_path: "checkerchain/base/validator.py"
+      line_ref: "238-245"
+      quote: "norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True) ... raw_weights = self.scores / norm"
+    - claim_field: "/ground_truth_sources/0/description"
+      source_path: "checkerchain/validator/forward.py"
+      line_ref: "174"
+      quote: "\"actualScore\": reward_product.trustScore,"
+    - claim_field: "/ground_truth_sources/0/notes"
+      source_path: "checkerchain/validator/reward.py"
+      line_ref: "109-110"
+      quote: "if reviewed_product.trustScore == 0:\n        return np.full(len(responses), 100 / len(responses))"
+    - claim_field: "/weight_setting/smoothing/alpha"
+      source_path: "checkerchain/utils/config.py"
+      line_ref: "216-221"
+      quote: "\"--neuron.moving_average_alpha\" ... default=0.1"
+    - claim_field: "/weight_setting/method"
+      source_path: "checkerchain/base/validator.py"
+      line_ref: "370-371"
+      quote: "alpha: float = self.config.neuron.moving_average_alpha\n        self.scores: np.ndarray = alpha * scattered_rewards + (1 - alpha) * self.scores"
+    - claim_field: "/weight_setting/on_chain_call"
+      source_path: "checkerchain/base/validator.py"
+      line_ref: "274-282"
+      quote: "result, msg = self.subtensor.set_weights(\n            wallet=self.wallet,\n            netuid=self.config.netuid,"
+    - claim_field: "/weight_setting/tempo_or_interval"
+      source_path: "checkerchain/utils/config.py"
+      line_ref: "89-94"
+      quote: "\"--neuron.epoch_length\" ... \"how often we set weights, measured in 12 second blocks\" ... default=100"
+    - claim_field: "/weight_setting/cadence"
+      source_path: "checkerchain/base/neuron.py"
+      line_ref: "147-159"
+      quote: "def should_set_weights(self) -> bool: ... ) > self.config.neuron.epoch_length and self.neuron_type != \"MinerNeuron\""
+    - claim_field: "/anti_gaming/0/description"
+      source_path: "checkerchain/utils/filter_miners.py"
+      line_ref: "21-22"
+      quote: "precision_three_pred = int(pred.prediction * 1000) / 1000"
+    - claim_field: "/anti_gaming/1/description"
+      source_path: "checkerchain/validator/reward.py"
+      line_ref: "80-86"
+      quote: "if analysis_result[\"sentiment\"] == \"malicious\": ... return -math.inf"
+    - claim_field: "/anti_gaming/2/description"
+      source_path: "checkerchain/validator/reward.py"
+      line_ref: "71-75"
+      quote: "if get_deviation_percentage(prediction.prediction, actual) > 10: ... return 0.0"
+    - claim_field: "/anti_gaming/3/description"
+      source_path: "checkerchain/utils/uids.py"
+      line_ref: "65-89"
+      quote: "def get_filtered_uids(self, max_per_key: int = 15) -> np.ndarray: ... if cnt < max_per_key:"
+    - claim_field: "/anti_gaming/4/description"
+      source_path: "checkerchain/validator/reward.py"
+      line_ref: "31-47"
+      quote: "def get_stake_score(self: Validator, miner_uid: int):\n    max_stake = 2000\n    min_stake = 500"
+    - claim_field: "/per_miner_state/notes"
+      source_path: "checkerchain/base/validator.py"
+      line_ref: "385-391"
+      quote: "np.savez(\n            self.config.neuron.full_path + \"/state.npz\",\n            step=self.step,\n            scores=self.scores,"
+    - claim_field: "/per_miner_state/reset_policy"
+      source_path: "checkerchain/base/validator.py"
+      line_ref: "302-304"
+      quote: "if hotkey != self.metagraph.hotkeys[uid]:\n                self.scores[uid] = 0  # hotkey has been replaced"
+    - claim_field: "/mechanism_status"
+      source_path: "checkerchain/validator/forward.py"
+      line_ref: "238"
+      quote: "self.update_scores(filtered_rewards, filtered_miner_ids)"
+    - claim_field: "/documentation/primary_docs"
+      source_path: "README.md"
+      line_ref: "5"
+      quote: "Check our [Whitepaper](https://docs.checkerchain.com/whitepaper/checkerchain-whitepaper-v2.0)"
+  unresolved:
+    - "calculate_reward() in reward.py uses different weights (0.4/2.0/4.0/2.0, /100 normalize) but is not called by reward()/get_rewards(); the live path is perf_score additive caps. Dead/alt code."
+    - "get_stake_score (max_stake=2000,min_stake=500) is defined but not observed combined into the returned reward; effect on emissions unconfirmed."
+    - "process_weights_for_netuid min/max weight limits not inspected; any min_weight_floor from subtensor limits is unknown."
+    - "Flat-payout branch 100/len(responses) when trustScore==0 — interaction with top-90% trimming and EMA not fully traced for emission share."
