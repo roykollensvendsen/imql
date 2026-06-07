@@ -22,7 +22,7 @@
     
     
       
-        <title>Coding conventions - IMQL</title>
+        <title>Coding conventions - IMML</title>
       
     
     
@@ -76,7 +76,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#imql-coding-conventions" class="md-skip">
+        <a href="#imml-coding-conventions" class="md-skip">
           Skip to content
         </a>
       
@@ -94,7 +94,7 @@
 
 <header class="md-header" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="../.." title="IMQL" class="md-header__button md-logo" aria-label="IMQL" data-md-component="logo">
+    <a href="../.." title="IMML" class="md-header__button md-logo" aria-label="IMML" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -108,7 +108,7 @@
       <div class="md-header__ellipsis">
         <div class="md-header__topic">
           <span class="md-ellipsis">
-            IMQL
+            IMML
           </span>
         </div>
         <div class="md-header__topic" data-md-component="header-topic">
@@ -379,13 +379,13 @@
 
 <nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="../.." title="IMQL" class="md-nav__button md-logo" aria-label="IMQL" data-md-component="logo">
+    <a href="../.." title="IMML" class="md-nav__button md-logo" aria-label="IMML" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
 
     </a>
-    IMQL
+    IMML
   </label>
   
     <div class="md-nav__source">
@@ -5827,20 +5827,20 @@
   
 
 
-<h1 id="imql-coding-conventions">IMQL coding conventions<a class="headerlink" href="#imql-coding-conventions" title="Permanent link">&para;</a></h1>
+<h1 id="imml-coding-conventions">IMML coding conventions<a class="headerlink" href="#imml-coding-conventions" title="Permanent link">&para;</a></h1>
 <p>These follow Qt's <a href="https://doc.qt.io/qt-6/qml-codingconventions.html">QML Coding Conventions</a> as closely
-as IMQL's structure allows, and are <strong>enforced by a formatter</strong> — <code>tooling/fmt.py</code> (imql-fmt), the analog
+as IMML's structure allows, and are <strong>enforced by a formatter</strong> — <code>tooling/fmt.py</code> (imml-fmt), the analog
 of <a href="https://doc.qt.io/qt-6/qtqml-tooling-qmlformat.html"><code>qmlformat</code></a>. Write a mechanism, then run
-<code>fmt.py -i your.imql</code>; gate in CI with <code>fmt.py --check</code>.</p>
+<code>fmt.py -i your.imml</code>; gate in CI with <code>fmt.py --check</code>.</p>
 <h2 id="member-ordering">Member ordering<a class="headerlink" href="#member-ordering" title="Permanent link">&para;</a></h2>
 <p>QML orders an object's members as: <strong>id → property declarations → signal declarations → JavaScript
-functions → object properties → child objects</strong>, with <em>"an empty line"</em> separating the groups. IMQL has
+functions → object properties → child objects</strong>, with <em>"an empty line"</em> separating the groups. IMML has
 no signals or JavaScript, so the mapping is:</p>
 <table>
 <thead>
 <tr>
 <th>QML</th>
-<th>IMQL</th>
+<th>IMML</th>
 </tr>
 </thead>
 <tbody>
@@ -5862,13 +5862,13 @@ no signals or JavaScript, so the mapping is:</p>
 </tr>
 </tbody>
 </table>
-<p>The three IMQL groups are separated by a single blank line, exactly as QML separates its member groups.</p>
+<p>The three IMML groups are separated by a single blank line, exactly as QML separates its member groups.</p>
 <h2 id="indentation-layout">Indentation &amp; layout<a class="headerlink" href="#indentation-layout" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong>4-space indentation</strong>, never tabs (the <code>qmlformat</code> default).</li>
 <li><strong>One property per line</strong> in the header — <em>"we generally declare each property on a separate line, even
   for simple expressions."</em></li>
-<li>One mechanism per file, extension <code>.imql</code>; the mechanism name is PascalCase.</li>
+<li>One mechanism per file, extension <code>.imml</code>; the mechanism name is PascalCase.</li>
 </ul>
 <h2 id="grouped-properties-semicolons">Grouped properties — semicolons<a class="headerlink" href="#grouped-properties-semicolons" title="Permanent link">&para;</a></h2>
 <p>A grouped-property block is written inline with <strong>semicolons</strong>, matching QML exactly
@@ -5930,12 +5930,12 @@ properties are omitted</strong> (an absent property <em>is</em> null; spelling o
 <a id="__codelineno-3-21" name="__codelineno-3-21" href="#__codelineno-3-21"></a>}
 </code></pre></div>
 <h2 id="comments">Comments<a class="headerlink" href="#comments" title="Permanent link">&para;</a></h2>
-<p><code># …</code> runs to end of line and is ignored by the tooling. Because IMQL is purely structural, the
+<p><code># …</code> runs to end of line and is ignored by the tooling. Because IMML is purely structural, the
 <strong>formatter does not preserve comments</strong> (like <code>qmlformat</code> historically reformatted aggressively) — keep
-commentary in surrounding prose/docs, not inside canonical <code>.imql</code>.</p>
+commentary in surrounding prose/docs, not inside canonical <code>.imml</code>.</p>
 <h2 id="the-formatter">The formatter<a class="headerlink" href="#the-formatter" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>./.venv/bin/python<span class="w"> </span>tooling/fmt.py<span class="w"> </span>mechanism.imql<span class="w">        </span><span class="c1"># print formatted</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>./.venv/bin/python<span class="w"> </span>tooling/fmt.py<span class="w"> </span>-i<span class="w"> </span>mechanism.imql<span class="w">     </span><span class="c1"># rewrite in place (cf. qmlformat -i)</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>./.venv/bin/python<span class="w"> </span>tooling/fmt.py<span class="w"> </span>mechanism.imml<span class="w">        </span><span class="c1"># print formatted</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>./.venv/bin/python<span class="w"> </span>tooling/fmt.py<span class="w"> </span>-i<span class="w"> </span>mechanism.imml<span class="w">     </span><span class="c1"># rewrite in place (cf. qmlformat -i)</span>
 <a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>./.venv/bin/python<span class="w"> </span>tooling/fmt.py<span class="w"> </span>--check<span class="w"> </span>examples/<span class="w">     </span><span class="c1"># CI gate: non-zero if any file is unformatted</span>
 </code></pre></div>
 

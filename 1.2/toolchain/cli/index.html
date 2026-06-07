@@ -22,7 +22,7 @@
     
     
       
-        <title>CLI reference - IMQL</title>
+        <title>CLI reference - IMML</title>
       
     
     
@@ -94,7 +94,7 @@
 
 <header class="md-header" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="../.." title="IMQL" class="md-header__button md-logo" aria-label="IMQL" data-md-component="logo">
+    <a href="../.." title="IMML" class="md-header__button md-logo" aria-label="IMML" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -108,7 +108,7 @@
       <div class="md-header__ellipsis">
         <div class="md-header__topic">
           <span class="md-ellipsis">
-            IMQL
+            IMML
           </span>
         </div>
         <div class="md-header__topic" data-md-component="header-topic">
@@ -379,13 +379,13 @@
 
 <nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="../.." title="IMQL" class="md-nav__button md-logo" aria-label="IMQL" data-md-component="logo">
+    <a href="../.." title="IMML" class="md-nav__button md-logo" aria-label="IMML" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
 
     </a>
-    IMQL
+    IMML
   </label>
   
     <div class="md-nav__source">
@@ -5611,9 +5611,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#imql_corepy" class="md-nav__link">
+  <a href="#imml_corepy" class="md-nav__link">
     <span class="md-ellipsis">
-      imql_core.py
+      imml_core.py
     </span>
   </a>
   
@@ -5801,9 +5801,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#imql_corepy" class="md-nav__link">
+  <a href="#imml_corepy" class="md-nav__link">
     <span class="md-ellipsis">
-      imql_core.py
+      imml_core.py
     </span>
   </a>
   
@@ -5825,7 +5825,7 @@
 
 
 <h1 id="cli-reference">CLI reference<a class="headerlink" href="#cli-reference" title="Permanent link">&para;</a></h1>
-<p>The IMQL toolchain. All scripts run under the project venv (<code>./.venv/bin/python tooling/&lt;script&gt;.py</code>).</p>
+<p>The IMML toolchain. All scripts run under the project venv (<code>./.venv/bin/python tooling/&lt;script&gt;.py</code>).</p>
 <h2 id="validatepy"><code>validate.py</code><a class="headerlink" href="#validatepy" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>Validate incentive-mechanism YAML instances against the canonical JSON Schema.
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
@@ -5837,32 +5837,32 @@
 <a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>match schema/VERSION. Designed to be the CI-style gate for the project.
 </code></pre></div>
 <h2 id="liftpy"><code>lift.py</code><a class="headerlink" href="#liftpy" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>Lift an IR instance (YAML) to IMQL text. Usage: lift.py &lt;instance.yaml&gt; [...]
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>Lift an IR instance (YAML) to IMML text. Usage: lift.py &lt;instance.yaml&gt; [...]
 </code></pre></div>
 <h2 id="compilepy"><code>compile.py</code><a class="headerlink" href="#compilepy" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>Compile IMQL text to an IR instance (YAML on stdout).
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>Compile IMML text to an IR instance (YAML on stdout).
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>Usage: compile.py &lt;file.imql&gt;           # or &#39;-&#39; for stdin
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>Usage: compile.py &lt;file.imml&gt;           # or &#39;-&#39; for stdin
 <a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>The emitted IR carries the structural signature; run validate.py on it to confirm schema-validity.
 </code></pre></div>
 <h2 id="fmtpy"><code>fmt.py</code><a class="headerlink" href="#fmtpy" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>imql-fmt — the canonical formatter for IMQL (in the spirit of qmlformat / gofmt).
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>imml-fmt — the canonical formatter for IMML (in the spirit of qmlformat / gofmt).
 <a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>Reformats .imql files to the IMQL coding conventions (spec/05-imql-style.md) by parsing each file
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>Reformats .imml files to the IMML coding conventions (spec/05-imml-style.md) by parsing each file
 <a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>and re-emitting it canonically. Idempotent: formatting an already-formatted file is a no-op.
 <a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>
-<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>  fmt.py &lt;file.imql&gt; [...]       print the formatted result to stdout
-<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>  fmt.py -i  &lt;file|dir&gt; [...]    rewrite files in place (recurses directories for *.imql)
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>  fmt.py &lt;file.imml&gt; [...]       print the formatted result to stdout
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>  fmt.py -i  &lt;file|dir&gt; [...]    rewrite files in place (recurses directories for *.imml)
 <a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>  fmt.py --check &lt;file|dir&gt; [...]  exit non-zero and list files that are NOT canonically formatted
 <a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>                                   (use in CI, like `gofmt -l` / `black --check`)
 <a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>
-<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>Note: IMQL is structural and the parser ignores `# comments`, so the formatter does not preserve
-<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a>comments. Keep commentary in surrounding prose/docs, not inside canonical .imql files.
+<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>Note: IMML is structural and the parser ignores `# comments`, so the formatter does not preserve
+<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a>comments. Keep commentary in surrounding prose/docs, not inside canonical .imml files.
 </code></pre></div>
 <h2 id="coveragepy"><code>coverage.py</code><a class="headerlink" href="#coveragepy" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>IMQL descriptive-completeness gate over the corpus.
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>IMML descriptive-completeness gate over the corpus.
 <a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>For each instance: lift IR -&gt; IMQL, compile IMQL -&gt; IR&#39;, compare structural signatures.
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>For each instance: lift IR -&gt; IMML, compile IMML -&gt; IR&#39;, compare structural signatures.
 <a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>Reports, overall and per archetype (composition.shape):
 <a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>  - round-trip fidelity   : signature(ir) == signature(compile(lift(ir)))  (MUST be 100%)
 <a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>  - structural-expressibility : fraction of scoring leaves that are NOT extern
@@ -5870,7 +5870,7 @@
 <a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>
 <a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>Gate: 100% fidelity, &gt;=90% structural corpus-wide, &gt;=80% within every archetype.
 <a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>
-<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>Usage: coverage.py &lt;dir&gt; [--out reports/imql-coverage.md]
+<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>Usage: coverage.py &lt;dir&gt; [--out reports/imml-coverage.md]
 </code></pre></div>
 <h2 id="canonicalizepy"><code>canonicalize.py</code><a class="headerlink" href="#canonicalizepy" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>Canonicalize bespoke metric strings into the 3-level ontology (raw -&gt; specific -&gt; family).
@@ -5910,7 +5910,7 @@
 <h2 id="derive-compositionpy"><code>derive-composition.py</code><a class="headerlink" href="#derive-compositionpy" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>Backfill the `composition` block on incentive-mechanism instances.
 <a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>
-<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>The composition (the IMQL combinator structure) is almost entirely DERIVABLE from fields the
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>The composition (the IMML combinator structure) is almost entirely DERIVABLE from fields the
 <a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>extraction already produced — so we compute it rather than re-extract. To keep the carefully
 <a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>formatted, provenance-bearing instance files intact, this tool does NOT re-serialize the YAML:
 <a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>it parses read-only to compute the values, then APPENDS a top-level `composition:` block as text
@@ -5953,8 +5953,8 @@
 <a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a>The output feeds the v0 -&gt; v1 refinement (M4). A stress signal recurring across &gt;= 2
 <a id="__codelineno-8-15" name="__codelineno-8-15" href="#__codelineno-8-15"></a>instances is the bar for a schema change (per CHANGELOG governance).
 </code></pre></div>
-<h2 id="imql_corepy"><code>imql_core.py</code><a class="headerlink" href="#imql_corepy" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>IMQL core: the structural signature, IR-&gt;IMQL (lift), and IMQL-&gt;IR (compile).
+<h2 id="imml_corepy"><code>imml_core.py</code><a class="headerlink" href="#imml_corepy" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>IMML core: the structural signature, IR-&gt;IMML (lift), and IMML-&gt;IR (compile).
 <a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>
 <a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>The round-trip success criterion is over the mechanism&#39;s STRUCTURAL SIGNATURE — the design:
 <a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>enums, numeric params, typed primitive nodes, the metric leaves, and the composition tree.
@@ -5962,7 +5962,7 @@
 <a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a>free-text), which are extraction bookkeeping, not part of a design language. &quot;100% fidelity&quot;
 <a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a>means: signature(ir) == signature(compile(lift(ir))) for every corpus instance.
 <a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a>
-<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a>lift(ir)        -&gt; IMQL text capturing the full signature
+<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a>lift(ir)        -&gt; IMML text capturing the full signature
 <a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a>compile(text)   -&gt; a MINIMAL IR dict populated with only the structural fields
 <a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a>signature(ir)   -&gt; the normalized projection used for comparison (works on full or minimal IR)
 </code></pre></div>

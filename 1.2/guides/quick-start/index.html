@@ -22,7 +22,7 @@
     
     
       
-        <title>Quick start - IMQL</title>
+        <title>Quick start - IMML</title>
       
     
     
@@ -94,7 +94,7 @@
 
 <header class="md-header" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="../.." title="IMQL" class="md-header__button md-logo" aria-label="IMQL" data-md-component="logo">
+    <a href="../.." title="IMML" class="md-header__button md-logo" aria-label="IMML" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -108,7 +108,7 @@
       <div class="md-header__ellipsis">
         <div class="md-header__topic">
           <span class="md-ellipsis">
-            IMQL
+            IMML
           </span>
         </div>
         <div class="md-header__topic" data-md-component="header-topic">
@@ -379,13 +379,13 @@
 
 <nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="../.." title="IMQL" class="md-nav__button md-logo" aria-label="IMQL" data-md-component="logo">
+    <a href="../.." title="IMML" class="md-nav__button md-logo" aria-label="IMML" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
 
     </a>
-    IMQL
+    IMML
   </label>
   
     <div class="md-nav__source">
@@ -5744,8 +5744,8 @@
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>./.venv/bin/pip<span class="w"> </span>install<span class="w"> </span>-r<span class="w"> </span>tooling/requirements.txt
 </code></pre></div>
 <h2 id="author-a-mechanism">Author a mechanism<a class="headerlink" href="#author-a-mechanism" title="Permanent link">&para;</a></h2>
-<p>Write a <code>.imql</code> file:</p>
-<div class="highlight"><span class="filename">my-mechanism.imql</span><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>mechanism MyMechanism {
+<p>Write a <code>.imml</code> file:</p>
+<div class="highlight"><span class="filename">my-mechanism.imml</span><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>mechanism MyMechanism {
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>    netuid: 123
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    lang: python
 <a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    status: active
@@ -5763,7 +5763,7 @@
 <a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a>}
 </code></pre></div>
 <h2 id="compile-validate">Compile → validate<a class="headerlink" href="#compile-validate" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>./.venv/bin/python<span class="w"> </span>tooling/compile.py<span class="w"> </span>my-mechanism.imql<span class="w"> </span>&gt;<span class="w"> </span>my-mechanism.yaml
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>./.venv/bin/python<span class="w"> </span>tooling/compile.py<span class="w"> </span>my-mechanism.imml<span class="w"> </span>&gt;<span class="w"> </span>my-mechanism.yaml
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>./.venv/bin/python<span class="w"> </span>tooling/validate.py<span class="w"> </span>my-mechanism.yaml<span class="w">      </span><span class="c1"># -&gt; 1/1 valid</span>
 </code></pre></div>
 <p>A clean compile + validate means the <strong>structure</strong> of your mechanism is complete. Any <code>extern "…"</code>
@@ -5775,7 +5775,7 @@ leaf is the bespoke judgment you must hand-write — surfaced explicitly, never 
 scoring signal a <code>score_i()</code> — a real primitive from the metric library when the family resolves, or a
 clearly-marked <code>NotImplementedError</code> for a bespoke metric.</p>
 <h2 id="read-an-existing-subnet">Read an existing subnet<a class="headerlink" href="#read-an-existing-subnet" title="Permanent link">&para;</a></h2>
-<p>Every corpus subnet lifts to IMQL:</p>
+<p>Every corpus subnet lifts to IMML:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>./.venv/bin/python<span class="w"> </span>tooling/lift.py<span class="w"> </span>instances/corpus/&lt;Owner&gt;__&lt;repo&gt;.yaml
 </code></pre></div>
 <p>Browse all 189 in the <strong><a href="../../examples/">Examples gallery</a></strong>.</p>

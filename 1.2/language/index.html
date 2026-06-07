@@ -22,7 +22,7 @@
     
     
       
-        <title>The IMQL language - IMQL</title>
+        <title>The IMML language - IMML</title>
       
     
     
@@ -76,7 +76,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#imql-the-incentive-mechanism-language" class="md-skip">
+        <a href="#imml-the-incentive-mechanism-language" class="md-skip">
           Skip to content
         </a>
       
@@ -94,7 +94,7 @@
 
 <header class="md-header" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href=".." title="IMQL" class="md-header__button md-logo" aria-label="IMQL" data-md-component="logo">
+    <a href=".." title="IMML" class="md-header__button md-logo" aria-label="IMML" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -108,13 +108,13 @@
       <div class="md-header__ellipsis">
         <div class="md-header__topic">
           <span class="md-ellipsis">
-            IMQL
+            IMML
           </span>
         </div>
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              The IMQL language
+              The IMML language
             
           </span>
         </div>
@@ -379,13 +379,13 @@
 
 <nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href=".." title="IMQL" class="md-nav__button md-logo" aria-label="IMQL" data-md-component="logo">
+    <a href=".." title="IMML" class="md-nav__button md-logo" aria-label="IMML" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
 
     </a>
-    IMQL
+    IMML
   </label>
   
     <div class="md-nav__source">
@@ -5626,9 +5626,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#how-imql-maps-to-the-ir-round-trip" class="md-nav__link">
+  <a href="#how-imml-maps-to-the-ir-round-trip" class="md-nav__link">
     <span class="md-ellipsis">
-      How IMQL maps to the IR (round-trip)
+      How IMML maps to the IR (round-trip)
     </span>
   </a>
   
@@ -5670,13 +5670,13 @@
   
 
 
-<h1 id="imql-the-incentive-mechanism-language">IMQL — the incentive-mechanism language<a class="headerlink" href="#imql-the-incentive-mechanism-language" title="Permanent link">&para;</a></h1>
-<p>IMQL is a <strong>declarative composition language</strong> for Bittensor incentive mechanisms: a textual surface you
+<h1 id="imml-the-incentive-mechanism-language">IMML — the incentive-mechanism language<a class="headerlink" href="#imml-the-incentive-mechanism-language" title="Permanent link">&para;</a></h1>
+<p>IMML is a <strong>declarative composition language</strong> for Bittensor incentive mechanisms: a textual surface you
 write by hand to <em>design</em> a mechanism, that compiles to the IR (the JSON-Schema YAML instance) and can
 <strong>fully describe every existing subnet</strong> and (Phase B) <strong>generate a runnable validator scaffold</strong>.</p>
 <p>It is to the IR what QML is to its scene graph — you compose typed nodes by nesting, decorate them with
 orthogonal overlays, and leave the one per-subnet thing (the leaf metric) as a typed hole. There is no
-control flow; the four empirical combinators are the only composition operators. Grammar: <code>lang/imql.ebnf</code>.</p>
+control flow; the four empirical combinators are the only composition operators. Grammar: <code>lang/imml.ebnf</code>.</p>
 <h2 id="the-model-in-one-breath">The model in one breath<a class="headerlink" href="#the-model-in-one-breath" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>mechanism = overlays( combinator )
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>combinator ∈ { pipeline, multiplex, gate/product, leaf }
@@ -5689,10 +5689,10 @@ control flow; the four empirical combinators are the only composition operators.
 - <strong>4 combinators</strong> cover the corpus: pipeline (90.5% as inner shape), overlay/wrapper (96.8%), parallel
   multiplex / sub-competitions (55.6%), gated/multiplicative (27%).
 - <strong>~50 reusable primitives</strong> (9 aggregators, 5 smoothers, 16 guards, 9 ground-truth sources, 7 state
-  kinds, burn) — each IMQL primitive name is a closed enum value in the IR schema, so the vocabulary is
+  kinds, burn) — each IMML primitive name is a closed enum value in the IR schema, so the vocabulary is
   governed by the same ≥2× bar.
 - <strong>The bespoke axis is one leaf</strong>: the metric. Everything else recurs and composes; the metric is the
-  irreducible per-subnet judgment. IMQL makes that boundary explicit via the <code>extern</code> hole.</p>
+  irreducible per-subnet judgment. IMML makes that boundary explicit via the <code>extern</code> hole.</p>
 <h2 id="worked-example">Worked example<a class="headerlink" href="#worked-example" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>mechanism PairwiseArena {
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>    netuid: 42
@@ -5747,12 +5747,12 @@ control flow; the four empirical combinators are the only composition operators.
 <p><code>raw</code> is always the verbatim source string and is never lost. <code>coverage.py</code> counts <code>extern</code> leaves;
 their total IS the measured long tail. An <code>extern</code> that recurs ≥2× is a promotion candidate for the
 ontology, not a permanent hole.</p>
-<h2 id="how-imql-maps-to-the-ir-round-trip">How IMQL maps to the IR (round-trip)<a class="headerlink" href="#how-imql-maps-to-the-ir-round-trip" title="Permanent link">&para;</a></h2>
-<p><code>.imql</code> ⇄ YAML instance is lossless. The mapping:</p>
+<h2 id="how-imml-maps-to-the-ir-round-trip">How IMML maps to the IR (round-trip)<a class="headerlink" href="#how-imml-maps-to-the-ir-round-trip" title="Permanent link">&para;</a></h2>
+<p><code>.imml</code> ⇄ YAML instance is lossless. The mapping:</p>
 <table>
 <thead>
 <tr>
-<th>IMQL</th>
+<th>IMML</th>
 <th>IR field</th>
 </tr>
 </thead>
@@ -5817,14 +5817,14 @@ ontology, not a permanent hole.</p>
 </table>
 <h2 id="tooling-built-across-m2m4">Tooling (built across M2–M4)<a class="headerlink" href="#tooling-built-across-m2m4" title="Permanent link">&para;</a></h2>
 <ul>
-<li><code>tooling/lift.py</code> — IR → IMQL (one corpus instance to a <code>.imql</code>).</li>
-<li><code>tooling/compile.py</code> — IMQL → IR (the parser; validates against the schema).</li>
+<li><code>tooling/lift.py</code> — IR → IMML (one corpus instance to a <code>.imml</code>).</li>
+<li><code>tooling/compile.py</code> — IMML → IR (the parser; validates against the schema).</li>
 <li><code>tooling/coverage.py</code> — round-trips all 189; reports fidelity, structural-expressibility, and the
   extern residual (the gate: 100% fidelity, ≥90% structural, ≥80% per archetype).</li>
 <li><code>tooling/generate.py</code> (Phase B) — IR → runnable Python validator scaffold for the pipeline archetype.</li>
 </ul>
 <h2 id="authoring-a-new-mechanism-the-prescriptive-path">Authoring a new mechanism (the prescriptive path)<a class="headerlink" href="#authoring-a-new-mechanism-the-prescriptive-path" title="Permanent link">&para;</a></h2>
-<p>Write a <code>.imql</code> file, then <code>compile.py mything.imql &gt; mything.yaml &amp;&amp; validate.py mything.yaml</code>. A clean
+<p>Write a <code>.imml</code> file, then <code>compile.py mything.imml &gt; mything.yaml &amp;&amp; validate.py mything.yaml</code>. A clean
 compile + validate means the design is structurally complete; any <code>extern</code> leaf is the part you must
 hand-write (the actual <code>score()</code>), surfaced explicitly rather than hidden.</p>
 

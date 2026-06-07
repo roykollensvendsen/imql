@@ -20,7 +20,7 @@
     
     
       
-        <title>IMQL</title>
+        <title>IMML</title>
       
     
     
@@ -74,7 +74,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#imql" class="md-skip">
+        <a href="#imml" class="md-skip">
           Skip to content
         </a>
       
@@ -92,7 +92,7 @@
 
 <header class="md-header" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="." title="IMQL" class="md-header__button md-logo" aria-label="IMQL" data-md-component="logo">
+    <a href="." title="IMML" class="md-header__button md-logo" aria-label="IMML" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -106,7 +106,7 @@
       <div class="md-header__ellipsis">
         <div class="md-header__topic">
           <span class="md-ellipsis">
-            IMQL
+            IMML
           </span>
         </div>
         <div class="md-header__topic" data-md-component="header-topic">
@@ -377,13 +377,13 @@
 
 <nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="." title="IMQL" class="md-nav__button md-logo" aria-label="IMQL" data-md-component="logo">
+    <a href="." title="IMML" class="md-nav__button md-logo" aria-label="IMML" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
 
     </a>
-    IMQL
+    IMML
   </label>
   
     <div class="md-nav__source">
@@ -471,9 +471,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#a-mechanism-in-imql" class="md-nav__link">
+  <a href="#a-mechanism-in-imml" class="md-nav__link">
     <span class="md-ellipsis">
-      A mechanism in IMQL
+      A mechanism in IMML
     </span>
   </a>
   
@@ -5668,9 +5668,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#a-mechanism-in-imql" class="md-nav__link">
+  <a href="#a-mechanism-in-imml" class="md-nav__link">
     <span class="md-ellipsis">
-      A mechanism in IMQL
+      A mechanism in IMML
     </span>
   </a>
   
@@ -5694,8 +5694,8 @@
   
 
 
-<h1 id="imql">IMQL<a class="headerlink" href="#imql" title="Permanent link">&para;</a></h1>
-<p><strong>IMQL</strong> is a declarative language for <strong>Bittensor incentive-mechanism design, description, and
+<h1 id="imml">IMML<a class="headerlink" href="#imml" title="Permanent link">&para;</a></h1>
+<p><strong>IMML</strong> is a declarative language for <strong>Bittensor incentive-mechanism design, description, and
 generation</strong> — a QML-style surface where you compose a mechanism from typed primitives, and the one
 per-subnet thing (the scoring metric) is an explicit hole.</p>
 <p>It is derived inductively from a corpus of <strong>189 real Bittensor subnets</strong>: every one round-trips through
@@ -5704,7 +5704,7 @@ the language losslessly, and the language compiles to a runnable validator scaff
 <ul>
 <li>
 <p>:material-book-open-variant: <strong><a href="guides/overview/">Guides</a></strong></p>
-<p>What IMQL is, how to author a mechanism, and how mechanisms were reverse-engineered from real subnets.</p>
+<p>What IMML is, how to author a mechanism, and how mechanisms were reverse-engineered from real subnets.</p>
 </li>
 <li>
 <p>:material-code-braces: <strong><a href="language/">Language reference</a></strong></p>
@@ -5712,7 +5712,7 @@ the language losslessly, and the language compiles to a runnable validator scaff
 </li>
 <li>
 <p>:material-view-gallery: <strong><a href="examples/">Examples</a></strong></p>
-<p>All 189 corpus subnets, each lifted to IMQL — filter by archetype, language, or burn status.</p>
+<p>All 189 corpus subnets, each lifted to IMML — filter by archetype, language, or burn status.</p>
 </li>
 <li>
 <p>:material-tools: <strong><a href="toolchain/cli/">Toolchain</a></strong></p>
@@ -5721,7 +5721,7 @@ the language losslessly, and the language compiles to a runnable validator scaff
 </ul>
 </div>
 <h2 id="the-loop">The loop<a class="headerlink" href="#the-loop" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a> Extract ─▶ Lift ─▶ IMQL (.imql) ─▶ Compile ─▶ IR (YAML) ─▶ Generate ─▶ validator.py
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a> Extract ─▶ Lift ─▶ IMML (.imml) ─▶ Compile ─▶ IR (YAML) ─▶ Generate ─▶ validator.py
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a> (faithful)         (declarative)              (= the schema)          (runnable scaffold)
 </code></pre></div>
 <h2 id="at-a-glance">At a glance<a class="headerlink" href="#at-a-glance" title="Permanent link">&para;</a></h2>
@@ -5755,7 +5755,7 @@ the language losslessly, and the language compiles to a runnable validator scaff
 </tr>
 </tbody>
 </table>
-<h2 id="a-mechanism-in-imql">A mechanism in IMQL<a class="headerlink" href="#a-mechanism-in-imql" title="Permanent link">&para;</a></h2>
+<h2 id="a-mechanism-in-imml">A mechanism in IMML<a class="headerlink" href="#a-mechanism-in-imml" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>mechanism PairwiseArena {
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>    netuid: 42
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    lang: python
