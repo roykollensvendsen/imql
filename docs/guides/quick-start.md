@@ -38,7 +38,9 @@ Mechanism {
         aggregate: WeightedAverage {
             normalization: sum_to_one
         }
-        smooth: smoother ema(alpha: 0.1)
+        smooth: Ema {
+            alpha: 0.1
+        }
         publish: SetWeights {
             cadence: per_epoch
         }

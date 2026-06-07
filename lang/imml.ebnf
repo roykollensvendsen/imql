@@ -79,10 +79,10 @@ agg_prop     = ( "normalization"    , ":" , agg_norm_val )
              | ( "decay_rate"       , ":" , number )
              | ( "min_weight_floor" , ":" , number ) ;
 
-smoother     = "smoother" , ( "none"
-                            | "ema" , "(" , "alpha" , ":" , number , ")"
-                            | "sma" , "(" , "window" , ":" , int , ")"
-                            | "other" ) ;
+smoother     = smoother_kind , [ "{" , smoother_prop { ";" smoother_prop } "}" ] ;
+                            (* PascalCase type, e.g. Ema { alpha: 0.1 }, Sma { window: 10 }, None *)
+smoother_kind = PascalIdent ;  (* weight_setting.smoothing.kind: None|Ema|Sma|Other *)
+smoother_prop = ( "alpha" , ":" , number ) | ( "window" , ":" , int ) ;
 
 weight_setter = "SetWeights" , [ "{" , ws_prop { ";" ws_prop } "}" ]
               | "CommitReveal" , [ "{" , ws_prop { ";" ws_prop } "}" ] ;

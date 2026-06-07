@@ -28,12 +28,14 @@ groups — including the `id`, which sits alone above the header properties.
   for simple expressions."*
 - One mechanism per file, extension `.imml`; the `id` is camelCase (QML ids are camelCase; PascalCase is
   reserved for types — here the root type `Mechanism`).
-- **Casing follows QML's type-vs-value split: child objects are PascalCase, everything else is lowercase.**
-  Child objects (a `TypeName { … }` instantiation) — the combinator (`Pipeline`, `Multiplex<single>`,
-  `Gated`, `Multiplicative`, `OverlayOnly`, `Opaque`) and the guards (`CommitReveal`, `ProofOfWork`, …) —
-  are PascalCase. Property names (`score`, `aggregate`, `publish`, `direction`) and enum values
-  (`weighted_average`, `set_weights`, `rejection`, `higher_is_better`) stay lowercase. The IR keeps its
-  lowercase snake_case enums; the PascalCase is purely the surface (lift/compile convert).
+- **Casing follows QML's type-vs-value split: types are PascalCase, everything else is lowercase.** A type
+  is anything written as a `TypeName { … }` object — whether it's a child object or assigned to a property:
+  the combinator (`Pipeline`, `Multiplex<single>`, `Gated`, `Multiplicative`, `OverlayOnly`, `Opaque`),
+  the guards (`CommitReveal`, `ProofOfWork`, …), and the property-valued types (`groundTruth: LlmJudgment`,
+  `aggregate: WeightedAverage`, `smooth: Ema`, `publish: SetWeights`). Property *names* (`score`,
+  `aggregate`, `smooth`, `publish`, `direction`) and enum *values* (`rejection`, `higher_is_better`,
+  `per_epoch`) stay lowercase. The IR keeps its lowercase snake_case enums; the PascalCase is purely the
+  surface (lift/compile convert via `_pascal`/`_snake`).
 
 ## Grouped properties — one per line
 
@@ -144,7 +146,9 @@ Mechanism {
         aggregate: WeightedAverage {
             normalization: sum_to_one
         }
-        smooth: smoother ema(alpha: 0.1)
+        smooth: Ema {
+            alpha: 0.1
+        }
         publish: SetWeights {
             cadence: per_epoch
             tempo: "360 blocks"

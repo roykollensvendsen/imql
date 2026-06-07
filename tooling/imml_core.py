@@ -270,14 +270,8 @@ def lift(ir: dict) -> str:
         L.append(f"{IND2}aggregate: {_pascal(agg.get('method') or 'proportional')} "
                  f"{pb([('composition', rv(agg.get('composition'))), ('normalization', rv(agg.get('normalization'))), ('temperature', rv(agg.get('temperature'))), ('decay_rate', rv(agg.get('decay_rate'))), ('min_weight_floor', rv(agg.get('min_weight_floor')))])}")
     if sm:
-        k = sm.get("kind") or "none"
-        params = []
-        if sm.get("alpha") is not None:
-            params.append(f"alpha: {rv(sm.get('alpha'))}")
-        if sm.get("window") is not None:
-            params.append(f"window: {rv(sm.get('window'))}")
-        ptxt = f"({', '.join(params)})" if params else ""
-        L.append(f"{IND2}smooth: smoother {k}{ptxt}")
+        L.append(f"{IND2}smooth: {_pascal(sm.get('kind') or 'none')} "
+                 f"{pb([('alpha', rv(sm.get('alpha'))), ('window', rv(sm.get('window')))])}")
     if ws:
         L.append(f"{IND2}publish: {_pascal(ws.get('on_chain_call') or 'set_weights')} "
                  f"{pb([('cadence', rv(ws.get('cadence') or 'unknown')), ('tempo', rv(ws.get('tempo_or_interval'), quote=True))])}")
@@ -319,7 +313,7 @@ shape: "Pipeline" -> pipeline
 item: "score" ":" scorer [propblock]               -> signal
     | "groundTruth" ":" NAME [propblock]            -> gt          // NAME is a PascalCase type
     | "aggregate" ":" NAME [propblock]              -> aggregate   // NAME is a PascalCase type
-    | "smooth" ":" "smoother" smoother              -> smooth
+    | "smooth" ":" NAME [propblock]                 -> smooth        // NAME is a PascalCase type
     | "publish" ":" NAME [propblock]                -> emit        // NAME is a PascalCase type
     | "tracks" propblock                            -> tracks
 
@@ -329,9 +323,6 @@ mopt: "fam" NAME            -> mfam
     | "raw" ESCAPED_STRING  -> mraw
     | "extern"              -> mext
 
-smoother: NAME [ "(" smparam ("," smparam)* ")" ]  -> smoothing
-smparam: "alpha" ":" value  -> salpha
-       | "window" ":" value -> swindow
 
 propblock: "{" [prop (";"? prop)*] "}"  // grouped-property; one per line (newline or ';', no commas)
 prop: NAME ":" value
@@ -428,17 +419,9 @@ class _T(Transformer):
         return ("gt", _snake(kind), (props or {}).get("trust_model"))
     def aggregate(self, method, props=None):
         return ("aggregate", _snake(method), props or {})
-    def salpha(self, v):
-        return ("alpha", v)
-    def swindow(self, v):
-        return ("window", v)
-    def smoothing(self, kind, *params):
-        sm = {"kind": str(kind), "alpha": None, "window": None}
-        for tag, val in params:
-            sm[tag] = val
-        return ("smoothing", sm)
-    def smooth(self, sm):
-        return ("smooth", sm[1])
+    def smooth(self, kind, props=None):
+        p = props or {}
+        return ("smooth", {"kind": _snake(kind), "alpha": p.get("alpha"), "window": p.get("window")})
     def emit(self, call, props=None):
         p = props or {}
         return ("emit", _snake(call), p.get("cadence"), p.get("tempo"))

@@ -62,7 +62,9 @@ Mechanism {
         aggregate: WeightedAverage {
             normalization: sum_to_one
         }
-        smooth: smoother ema(alpha: 0.1)
+        smooth: Ema {
+            alpha: 0.1
+        }
         publish: SetWeights {
             cadence: per_epoch
             tempo: "360 blocks"
@@ -101,7 +103,7 @@ ontology, not a permanent hole.
 | `extern "raw"` | `scoring_signals[].{extern:true, metric_kind:other, metric_kind_other:"raw"}` |
 | `groundTruth: KIND {…}` | `ground_truth_sources[]` |
 | `aggregate: METHOD {…}` | `aggregation.{method,…}` |
-| `smooth: smoother ema(alpha)` | `weight_setting.smoothing` |
+| `smooth: Ema { alpha: … }` | `weight_setting.smoothing` |
 | `publish: SetWeights / CommitReveal {…}` | `weight_setting.{on_chain_call,cadence,tempo_or_interval}` |
 
 ## Tooling (built across M2–M4)
