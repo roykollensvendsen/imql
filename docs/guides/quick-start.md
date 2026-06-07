@@ -32,7 +32,7 @@ Mechanism {
             direction: higher_is_better
             normalization: none
         }
-        gt: DeterministicDataset {
+        groundTruth: DeterministicDataset {
             trust_model: trusted
         }
         aggregate: WeightedAverage {

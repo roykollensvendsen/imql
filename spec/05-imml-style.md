@@ -98,7 +98,7 @@ submission: [model_weights, commitment_hash]   # several
 
 ## The combinator body
 
-Items appear in canonical order — `score` (per signal), `gt` (per ground-truth source), `aggregate`,
+Items appear in canonical order — `score` (per signal), `groundTruth` (per ground-truth source), `aggregate`,
 `smooth`, `emit`, `tracks` — one per line. The metric leaf reads left to right:
 `metric <kind> [fam <family>] [spec <specific>] [raw "…"] [extern]`.
 
@@ -138,7 +138,7 @@ Mechanism {
             direction: higher_is_better
             normalization: none
         }
-        gt: LlmJudgment {
+        groundTruth: LlmJudgment {
             trust_model: adversarial
         }
         aggregate: WeightedAverage {

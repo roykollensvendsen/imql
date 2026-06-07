@@ -264,7 +264,7 @@ def lift(ir: dict) -> str:
 
     for g in (ir.get("ground_truth_sources") or []):
         if isinstance(g, dict):
-            L.append(f"{IND2}gt: {_pascal(g.get('kind'))} {pb([('trust_model', rv(g.get('trust_model') or 'unknown'))])}")
+            L.append(f"{IND2}groundTruth: {_pascal(g.get('kind'))} {pb([('trust_model', rv(g.get('trust_model') or 'unknown'))])}")
 
     if agg:
         L.append(f"{IND2}aggregate: {_pascal(agg.get('method') or 'proportional')} "
@@ -317,7 +317,7 @@ shape: "Pipeline" -> pipeline
      | "Opaque" -> opaque
 
 item: "score" ":" scorer [propblock]               -> signal
-    | "gt" ":" NAME [propblock]                     -> gt          // NAME is a PascalCase type
+    | "groundTruth" ":" NAME [propblock]            -> gt          // NAME is a PascalCase type
     | "aggregate" ":" NAME [propblock]              -> aggregate   // NAME is a PascalCase type
     | "smooth" ":" "smoother" smoother              -> smooth
     | "emit" ":" NAME [propblock]                   -> emit        // NAME is a PascalCase type

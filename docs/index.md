@@ -71,7 +71,7 @@ Mechanism {
             direction: higher_is_better
             normalization: none
         }
-        gt: LlmJudgment {
+        groundTruth: LlmJudgment {
             trust_model: adversarial
         }
         aggregate: WeightedAverage {

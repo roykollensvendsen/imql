@@ -56,7 +56,7 @@ Mechanism {
             direction: higher_is_better
             normalization: none
         }
-        gt: LlmJudgment {
+        groundTruth: LlmJudgment {
             trust_model: adversarial
         }
         aggregate: WeightedAverage {
@@ -99,7 +99,7 @@ ontology, not a permanent hole.
 | `Multiplex<structure>{track…}` | `sub_competitions` (+ tracks) |
 | `metric FAMILY(SPECIFIC)` | `scoring_signals[].{metric_family, metric_specific, metric_kind/_other}` |
 | `extern "raw"` | `scoring_signals[].{extern:true, metric_kind:other, metric_kind_other:"raw"}` |
-| `gt: KIND {…}` | `ground_truth_sources[]` |
+| `groundTruth: KIND {…}` | `ground_truth_sources[]` |
 | `aggregate: METHOD {…}` | `aggregation.{method,…}` |
 | `smooth: smoother ema(alpha)` | `weight_setting.smoothing` |
 | `emit: SetWeights / CommitReveal {…}` | `weight_setting.{on_chain_call,cadence,tempo_or_interval}` |
