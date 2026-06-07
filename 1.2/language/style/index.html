@@ -5858,7 +5858,7 @@ no signals or JavaScript, so the mapping is:</p>
 </tr>
 <tr>
 <td>child objects</td>
-<td>the combinator block (<code>pipeline</code> / <code>multiplex</code> / …)</td>
+<td>the combinator block (<code>Pipeline</code> / <code>Multiplex</code> / …) and guards — PascalCase, like QML types</td>
 </tr>
 </tbody>
 </table>
@@ -5871,6 +5871,12 @@ groups — including the <code>id</code>, which sits alone above the header prop
   for simple expressions."</em></li>
 <li>One mechanism per file, extension <code>.imml</code>; the <code>id</code> is camelCase (QML ids are camelCase; PascalCase is
   reserved for types — here the root type <code>Mechanism</code>).</li>
+<li><strong>Casing follows QML's type-vs-value split: child objects are PascalCase, everything else is lowercase.</strong>
+  Child objects (a <code>TypeName { … }</code> instantiation) — the combinator (<code>Pipeline</code>, <code>Multiplex&lt;single&gt;</code>,
+  <code>Gated</code>, <code>Multiplicative</code>, <code>OverlayOnly</code>, <code>Opaque</code>) and the guards (<code>CommitReveal</code>, <code>ProofOfWork</code>, …) —
+  are PascalCase. Property names (<code>score</code>, <code>aggregate</code>, <code>emit</code>, <code>direction</code>) and enum values
+  (<code>weighted_average</code>, <code>set_weights</code>, <code>rejection</code>, <code>higher_is_better</code>) stay lowercase. The IR keeps its
+  lowercase snake_case enums; the PascalCase is purely the surface (lift/compile convert).</li>
 </ul>
 <h2 id="grouped-properties-one-per-line">Grouped properties — one per line<a class="headerlink" href="#grouped-properties-one-per-line" title="Permanent link">&para;</a></h2>
 <p>A grouped-property block puts <strong>one property per line</strong>, each indented four spaces under its owner, with
@@ -5913,10 +5919,10 @@ noise). An empty block collapses to <code>{}</code>.</p>
 <li><code>@guards</code> holds <em>child objects</em> (guards), one per line; each guard's own property block expands too:</li>
 </ul>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>@guards {
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>    commit_reveal {
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>    CommitReveal {
 <a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>        enforcement: rejection
 <a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    }
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    deterministic_check {
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    DeterministicCheck {
 <a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>        enforcement: rejection
 <a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>    }
 <a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>}
@@ -5945,16 +5951,16 @@ noise). An empty block collapses to <code>{}</code>.</p>
 <a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>        fraction: dynamic
 <a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>    }
 <a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a>    @guards {
-<a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>        commit_reveal {
+<a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>        CommitReveal {
 <a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a>            enforcement: rejection
 <a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a>        }
-<a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a>        deterministic_check {
+<a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a>        DeterministicCheck {
 <a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a>            enforcement: rejection
 <a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a>        }
 <a id="__codelineno-4-20" name="__codelineno-4-20" href="#__codelineno-4-20"></a>    }
 <a id="__codelineno-4-21" name="__codelineno-4-21" href="#__codelineno-4-21"></a>    @state { cumulative_score }
 <a id="__codelineno-4-22" name="__codelineno-4-22" href="#__codelineno-4-22"></a>
-<a id="__codelineno-4-23" name="__codelineno-4-23" href="#__codelineno-4-23"></a>    pipeline {
+<a id="__codelineno-4-23" name="__codelineno-4-23" href="#__codelineno-4-23"></a>    Pipeline {
 <a id="__codelineno-4-24" name="__codelineno-4-24" href="#__codelineno-4-24"></a>        score: metric win_rate fam classification_quality spec pairwise_win_rate {
 <a id="__codelineno-4-25" name="__codelineno-4-25" href="#__codelineno-4-25"></a>            direction: higher_is_better
 <a id="__codelineno-4-26" name="__codelineno-4-26" href="#__codelineno-4-26"></a>            normalization: none

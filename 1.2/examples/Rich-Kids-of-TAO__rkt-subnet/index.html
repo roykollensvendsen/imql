@@ -5674,16 +5674,16 @@
 <a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>        fraction: 0.9
 <a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    }
 <a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>    @guards {
-<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>        deduplication {
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>        Deduplication {
 <a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>            enforcement: penalty
 <a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>        }
-<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>        stake_weighting {
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>        StakeWeighting {
 <a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>            enforcement: rejection
 <a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>        }
 <a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>    }
 <a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>    @state { cumulative_score }
 <a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>
-<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>    pipeline {
+<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>    Pipeline {
 <a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>        score: metric other fam cross_subnet_aggregate spec cross_subnet_incentive raw &quot;Total emission value across voted external subnets: sum(emission * alpha_price * subnet_weight).&quot; {
 <a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>            direction: higher_is_better
 <a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a>            normalization: min_max

@@ -5670,25 +5670,25 @@
 <a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    submission: [content_link, commitment_hash]
 <a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>
 <a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    @guards {
-<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>        honeypot {
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>        Honeypot {
 <a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>            enforcement: rejection
 <a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>        }
-<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>        plagiarism_detection {
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>        PlagiarismDetection {
 <a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>            enforcement: rejection
 <a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>        }
-<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>        rate_limit {
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>        RateLimit {
 <a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>            enforcement: barrier
 <a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>        }
-<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>        deterministic_check {
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>        DeterministicCheck {
 <a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>            enforcement: penalty
 <a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>        }
-<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>        rate_limit {
+<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>        RateLimit {
 <a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>            enforcement: barrier
 <a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>        }
 <a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>    }
 <a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a>    @state { performance_ledger }
 <a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a>
-<a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a>    multiplicative {
+<a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a>    Multiplicative {
 <a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a>        score: metric engagement {
 <a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a>            direction: higher_is_better
 <a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a>            normalization: other

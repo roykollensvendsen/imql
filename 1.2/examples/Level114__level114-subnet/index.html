@@ -5670,22 +5670,22 @@
 <a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    submission: api_response
 <a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>
 <a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    @guards {
-<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>        deterministic_check {
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>        DeterministicCheck {
 <a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>            enforcement: rejection
 <a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>        }
-<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>        liveness_check {
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>        LivenessCheck {
 <a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>            enforcement: penalty
 <a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>        }
-<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>        commit_reveal {
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>        CommitReveal {
 <a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>            enforcement: rejection
 <a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>        }
-<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>        rate_limit {
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>        RateLimit {
 <a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>            enforcement: barrier
 <a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>        }
 <a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>    }
 <a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>    @state { cumulative_score }
 <a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>
-<a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>    multiplex&lt;multi_mechanism&gt; {
+<a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>    Multiplex&lt;multi_mechanism&gt; {
 <a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a>        score: metric throughput {
 <a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a>            direction: higher_is_better
 <a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a>            normalization: min_max

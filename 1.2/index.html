@@ -5769,13 +5769,13 @@ the language losslessly, and the language compiles to a runnable validator scaff
 <a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>        fraction: dynamic
 <a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>    }
 <a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>    @guards {
-<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>        commit_reveal {
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>        CommitReveal {
 <a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>            enforcement: rejection
 <a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a>        }
 <a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a>    }
 <a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a>    @state { cumulative_score }
 <a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a>
-<a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a>    pipeline {
+<a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a>    Pipeline {
 <a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a>        score: metric win_rate fam classification_quality spec pairwise_win_rate {
 <a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a>            direction: higher_is_better
 <a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a>            normalization: none
