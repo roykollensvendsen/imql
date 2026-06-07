@@ -5676,14 +5676,14 @@
 <a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>    @state { cumulative_score, performance_ledger }
 <a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>
 <a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>    multiplex&lt;multi_mechanism&gt; {
-<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>        score: metric vlm_judgment { direction: higher_is_better, normalization: none }
-<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>        score: metric composite { direction: higher_is_better, normalization: none }
-<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>        score: metric composite { direction: higher_is_better, normalization: none }
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>        score: metric vlm_judgment { direction: higher_is_better; normalization: none }
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>        score: metric composite { direction: higher_is_better; normalization: none }
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>        score: metric composite { direction: higher_is_better; normalization: none }
 <a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>        gt: reference_model { trust_model: trusted }
-<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>        aggregate: aggregator winner_take_all { composition: hybrid, normalization: l1 }
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>        aggregate: aggregator winner_take_all { composition: hybrid; normalization: l1 }
 <a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>        smooth: smoother none
-<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>        emit: set_weights { cadence: per_round, tempo: &quot;SESSION_WINDOW_BLOCKS = 1805 blocks (EPOCH_BLOCKS 361 * 5)&quot; }
-<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>        tracks { structure: multi_mechanism, count: 2 }
+<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>        emit: set_weights { cadence: per_round; tempo: &quot;SESSION_WINDOW_BLOCKS = 1805 blocks (EPOCH_BLOCKS 361 * 5)&quot; }
+<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>        tracks { structure: multi_mechanism; count: 2 }
 <a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>    }
 <a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>}
 </code></pre></div>

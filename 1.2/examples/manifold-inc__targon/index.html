@@ -5665,9 +5665,9 @@
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    netuid: 4
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    lang: go
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    status: partial_burn
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    submission: [compute_service]
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    submission: compute_service
 <a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    @burn { uid: &quot;uids 28, 15, 243&quot;, fraction: dynamic }
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    @burn { uid: &quot;uids 28, 15, 243&quot;; fraction: dynamic }
 <a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    @guards {
 <a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>        hardware_validation { enforcement: rejection }
 <a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>        deduplication { enforcement: rejection }
@@ -5675,12 +5675,12 @@
 <a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    }
 <a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>
 <a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>    multiplex&lt;per_task_type&gt; {
-<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>        score: metric other fam hardware_authenticity spec remote_attestation raw &quot;confidential_compute_remote_attestation_pass&quot; { direction: higher_is_better, normalization: none }
-<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>        score: metric other raw &quot;demand_driven_auction_emission_share&quot; { direction: higher_is_better, normalization: none }
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>        score: metric other fam hardware_authenticity spec remote_attestation raw &quot;confidential_compute_remote_attestation_pass&quot; { direction: higher_is_better; normalization: none }
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>        score: metric other raw &quot;demand_driven_auction_emission_share&quot; { direction: higher_is_better; normalization: none }
 <a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>        gt: hardware_probe { trust_model: oracle }
-<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>        aggregate: aggregator proportional { composition: gated, normalization: none }
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>        aggregate: aggregator proportional { composition: gated; normalization: none }
 <a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>        smooth: smoother none
-<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>        emit: set_weights { cadence: per_epoch, tempo: &quot;360 blocks&quot; }
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>        emit: set_weights { cadence: per_epoch; tempo: &quot;360 blocks&quot; }
 <a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>        tracks { structure: per_task_type }
 <a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>    }
 <a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>}

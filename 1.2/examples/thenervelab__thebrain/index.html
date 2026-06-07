@@ -5665,9 +5665,9 @@
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    netuid: 75
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    lang: rust
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    status: partial_burn
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    submission: [compute_service]
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    submission: compute_service
 <a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    @burn { uid: &quot;0&quot;, fraction: dynamic }
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    @burn { uid: &quot;0&quot;; fraction: dynamic }
 <a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    @guards {
 <a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>        stake_weighting { enforcement: barrier }
 <a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>        liveness_check { enforcement: penalty }
@@ -5677,15 +5677,15 @@
 <a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>    @state { reputation, cumulative_score, registration_age, status_enum, performance_ledger }
 <a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>
 <a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>    multiplex&lt;per_task_type&gt; {
-<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>        score: metric throughput { direction: higher_is_better, normalization: other }
-<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>        score: metric throughput { direction: higher_is_better, normalization: other }
-<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>        score: metric uptime { direction: higher_is_better, normalization: other }
-<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>        score: metric other raw &quot;validator-issued strike penalty&quot; { direction: lower_is_better, normalization: none }
-<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>        score: metric other fam classification_quality spec data_integrity raw &quot;data-integrity failure penalty&quot; { direction: lower_is_better, normalization: none }
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>        score: metric throughput { direction: higher_is_better; normalization: other }
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>        score: metric throughput { direction: higher_is_better; normalization: other }
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>        score: metric uptime { direction: higher_is_better; normalization: other }
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>        score: metric other raw &quot;validator-issued strike penalty&quot; { direction: lower_is_better; normalization: none }
+<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>        score: metric other fam classification_quality spec data_integrity raw &quot;data-integrity failure penalty&quot; { direction: lower_is_better; normalization: none }
 <a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>        gt: hardware_probe { trust_model: trusted }
-<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>        aggregate: aggregator weighted_average { composition: hybrid, normalization: other, decay_rate: 0.8, min_weight_floor: 10 }
+<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>        aggregate: aggregator weighted_average { composition: hybrid; normalization: other; decay_rate: 0.8; min_weight_floor: 10 }
 <a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>        smooth: smoother ema(alpha: 0.3)
-<a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>        emit: set_weights { cadence: continuous, tempo: &quot;BittensorCallSubmission interval (offchain worker); rewards every BlocksPerEra = HOURS*6 (~3600 blocks / 6h)&quot; }
+<a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>        emit: set_weights { cadence: continuous; tempo: &quot;BittensorCallSubmission interval (offchain worker); rewards every BlocksPerEra = HOURS*6 (~3600 blocks / 6h)&quot; }
 <a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a>        tracks { structure: per_task_type }
 <a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a>    }
 <a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a>}

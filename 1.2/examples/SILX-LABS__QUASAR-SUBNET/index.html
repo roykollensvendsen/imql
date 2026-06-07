@@ -5677,30 +5677,30 @@
 <a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>    @state { status_enum, cumulative_score, reputation }
 <a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>
 <a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>    pipeline {
-<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>        score: metric similarity { direction: lower_is_better, normalization: none }
-<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>        score: metric similarity { direction: lower_is_better, normalization: none }
-<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>        score: metric accuracy { direction: higher_is_better, normalization: none }
-<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>        score: metric other fam content_quality spec length_penalty raw &quot;length_penalty&quot; { direction: higher_is_better, normalization: none }
-<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>        score: metric other fam generative_reward spec generation_discipline raw &quot;generation_discipline&quot; { direction: higher_is_better, normalization: none }
-<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>        score: metric llm_judgment { direction: higher_is_better, normalization: none }
-<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>        score: metric llm_judgment { direction: higher_is_better, normalization: none }
-<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>        score: metric accuracy { direction: higher_is_better, normalization: none }
-<a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>        score: metric accuracy { direction: higher_is_better, normalization: none }
-<a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a>        score: metric accuracy { direction: higher_is_better, normalization: none }
-<a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a>        score: metric accuracy { direction: higher_is_better, normalization: none }
-<a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a>        score: metric accuracy { direction: higher_is_better, normalization: none }
-<a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a>        score: metric accuracy { direction: higher_is_better, normalization: none }
-<a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a>        score: metric accuracy { direction: higher_is_better, normalization: none }
-<a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a>        score: metric accuracy { direction: higher_is_better, normalization: none }
-<a id="__codelineno-0-32" name="__codelineno-0-32" href="#__codelineno-0-32"></a>        score: metric accuracy { direction: higher_is_better, normalization: none }
-<a id="__codelineno-0-33" name="__codelineno-0-33" href="#__codelineno-0-33"></a>        score: metric other fam throughput_latency spec efficiency raw &quot;efficiency&quot; { direction: higher_is_better, normalization: none }
-<a id="__codelineno-0-34" name="__codelineno-0-34" href="#__codelineno-0-34"></a>        score: metric accuracy { direction: higher_is_better, normalization: none }
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>        score: metric similarity { direction: lower_is_better; normalization: none }
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>        score: metric similarity { direction: lower_is_better; normalization: none }
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>        score: metric accuracy { direction: higher_is_better; normalization: none }
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>        score: metric other fam content_quality spec length_penalty raw &quot;length_penalty&quot; { direction: higher_is_better; normalization: none }
+<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>        score: metric other fam generative_reward spec generation_discipline raw &quot;generation_discipline&quot; { direction: higher_is_better; normalization: none }
+<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>        score: metric llm_judgment { direction: higher_is_better; normalization: none }
+<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>        score: metric llm_judgment { direction: higher_is_better; normalization: none }
+<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>        score: metric accuracy { direction: higher_is_better; normalization: none }
+<a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>        score: metric accuracy { direction: higher_is_better; normalization: none }
+<a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a>        score: metric accuracy { direction: higher_is_better; normalization: none }
+<a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a>        score: metric accuracy { direction: higher_is_better; normalization: none }
+<a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a>        score: metric accuracy { direction: higher_is_better; normalization: none }
+<a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a>        score: metric accuracy { direction: higher_is_better; normalization: none }
+<a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a>        score: metric accuracy { direction: higher_is_better; normalization: none }
+<a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a>        score: metric accuracy { direction: higher_is_better; normalization: none }
+<a id="__codelineno-0-32" name="__codelineno-0-32" href="#__codelineno-0-32"></a>        score: metric accuracy { direction: higher_is_better; normalization: none }
+<a id="__codelineno-0-33" name="__codelineno-0-33" href="#__codelineno-0-33"></a>        score: metric other fam throughput_latency spec efficiency raw &quot;efficiency&quot; { direction: higher_is_better; normalization: none }
+<a id="__codelineno-0-34" name="__codelineno-0-34" href="#__codelineno-0-34"></a>        score: metric accuracy { direction: higher_is_better; normalization: none }
 <a id="__codelineno-0-35" name="__codelineno-0-35" href="#__codelineno-0-35"></a>        gt: reference_model { trust_model: trusted }
 <a id="__codelineno-0-36" name="__codelineno-0-36" href="#__codelineno-0-36"></a>        gt: deterministic_dataset { trust_model: trusted }
 <a id="__codelineno-0-37" name="__codelineno-0-37" href="#__codelineno-0-37"></a>        gt: reference_model { trust_model: trusted }
-<a id="__codelineno-0-38" name="__codelineno-0-38" href="#__codelineno-0-38"></a>        aggregate: aggregator winner_take_all { composition: hybrid, normalization: none }
+<a id="__codelineno-0-38" name="__codelineno-0-38" href="#__codelineno-0-38"></a>        aggregate: aggregator winner_take_all { composition: hybrid; normalization: none }
 <a id="__codelineno-0-39" name="__codelineno-0-39" href="#__codelineno-0-39"></a>        smooth: smoother none
-<a id="__codelineno-0-40" name="__codelineno-0-40" href="#__codelineno-0-40"></a>        emit: set_weights { cadence: per_epoch, tempo: &quot;360 blocks&quot; }
+<a id="__codelineno-0-40" name="__codelineno-0-40" href="#__codelineno-0-40"></a>        emit: set_weights { cadence: per_epoch; tempo: &quot;360 blocks&quot; }
 <a id="__codelineno-0-41" name="__codelineno-0-41" href="#__codelineno-0-41"></a>        tracks { structure: single }
 <a id="__codelineno-0-42" name="__codelineno-0-42" href="#__codelineno-0-42"></a>    }
 <a id="__codelineno-0-43" name="__codelineno-0-43" href="#__codelineno-0-43"></a>}

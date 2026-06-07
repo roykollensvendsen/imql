@@ -5676,15 +5676,15 @@
 <a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>    @state { status_enum, cumulative_score, reputation }
 <a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>
 <a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>    gated {
-<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>        score: metric accuracy { direction: higher_is_better, normalization: none }
-<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>        score: metric latency { direction: higher_is_better, normalization: none }
-<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>        score: metric throughput { direction: higher_is_better, normalization: none }
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>        score: metric accuracy { direction: higher_is_better; normalization: none }
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>        score: metric latency { direction: higher_is_better; normalization: none }
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>        score: metric throughput { direction: higher_is_better; normalization: none }
 <a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>        gt: reference_model { trust_model: trusted }
 <a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>        gt: deterministic_dataset { trust_model: trusted }
-<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>        aggregate: aggregator winner_take_all { composition: gated, normalization: sum_to_one }
+<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>        aggregate: aggregator winner_take_all { composition: gated; normalization: sum_to_one }
 <a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>        smooth: smoother none
-<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>        emit: set_weights { cadence: continuous, tempo: &quot;36s poll interval (CACHEON_POLL_INTERVAL_S)&quot; }
-<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>        tracks { structure: single, count: 1 }
+<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>        emit: set_weights { cadence: continuous; tempo: &quot;36s poll interval (CACHEON_POLL_INTERVAL_S)&quot; }
+<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>        tracks { structure: single; count: 1 }
 <a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>    }
 <a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a>}
 </code></pre></div>

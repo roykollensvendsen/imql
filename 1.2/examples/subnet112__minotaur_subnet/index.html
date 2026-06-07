@@ -5667,7 +5667,7 @@
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    status: full_burn
 <a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    submission: [source_code, compute_service]
 <a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    @burn { uid: &quot;subnet owner hotkey (SUBNET_OWNER_HOTKEY / OWNER_HOTKEY env)&quot;, fraction: 1 }
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    @burn { uid: &quot;subnet owner hotkey (SUBNET_OWNER_HOTKEY / OWNER_HOTKEY env)&quot;; fraction: 1 }
 <a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    @guards {
 <a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>        code_inspection { enforcement: rejection }
 <a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>        commit_reveal { enforcement: rejection }
@@ -5677,14 +5677,14 @@
 <a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>    @state { status_enum, cumulative_score }
 <a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>
 <a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>    pipeline {
-<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>        score: metric llm_judgment { direction: higher_is_better, normalization: none }
-<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>        score: metric accuracy { direction: higher_is_better, normalization: none }
-<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>        score: metric other raw &quot;on_chain_constraint_score_bps&quot; { direction: higher_is_better, normalization: none }
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>        score: metric llm_judgment { direction: higher_is_better; normalization: none }
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>        score: metric accuracy { direction: higher_is_better; normalization: none }
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>        score: metric other raw &quot;on_chain_constraint_score_bps&quot; { direction: higher_is_better; normalization: none }
 <a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>        gt: market_data { trust_model: oracle }
 <a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>        gt: deterministic_dataset { trust_model: trusted }
-<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>        aggregate: aggregator exponential_decay_ema { composition: hybrid, normalization: sum_to_one, decay_rate: 0.6 }
+<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>        aggregate: aggregator exponential_decay_ema { composition: hybrid; normalization: sum_to_one; decay_rate: 0.6 }
 <a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>        smooth: smoother none
-<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>        emit: set_weights { cadence: per_epoch, tempo: &quot;epoch (README default 5 minutes; ChampionWeights epoch_seconds default 60)&quot; }
+<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>        emit: set_weights { cadence: per_epoch; tempo: &quot;epoch (README default 5 minutes; ChampionWeights epoch_seconds default 60)&quot; }
 <a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>        tracks { structure: single }
 <a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a>    }
 <a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a>}

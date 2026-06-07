@@ -5675,12 +5675,12 @@
 <a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    @state { performance_ledger, status_enum, cumulative_score }
 <a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>
 <a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>    multiplex&lt;multi_mechanism&gt; {
-<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>        score: metric loss { direction: lower_is_better, normalization: none }
-<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>        score: metric win_rate { direction: higher_is_better, normalization: none }
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>        score: metric loss { direction: lower_is_better; normalization: none }
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>        score: metric win_rate { direction: higher_is_better; normalization: none }
 <a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>        gt: deterministic_dataset { trust_model: trusted }
-<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>        aggregate: aggregator proportional { composition: hybrid, normalization: sum_to_one, decay_rate: 0.995 }
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>        aggregate: aggregator proportional { composition: hybrid; normalization: sum_to_one; decay_rate: 0.995 }
 <a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>        smooth: smoother ema(alpha: 0.5)
-<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>        emit: set_weights { cadence: rate_limited, tempo: &quot;WEIGHT_SET_MIN_INTERVAL = 35*60 seconds (min interval)&quot; }
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>        emit: set_weights { cadence: rate_limited; tempo: &quot;WEIGHT_SET_MIN_INTERVAL = 35*60 seconds (min interval)&quot; }
 <a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>        tracks { structure: multi_mechanism }
 <a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>    }
 <a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>}

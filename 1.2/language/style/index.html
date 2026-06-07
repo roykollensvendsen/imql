@@ -702,27 +702,45 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#layout" class="md-nav__link">
+  <a href="#member-ordering" class="md-nav__link">
     <span class="md-ellipsis">
-      Layout
+      Member ordering
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#property-blocks" class="md-nav__link">
+  <a href="#indentation-layout" class="md-nav__link">
     <span class="md-ellipsis">
-      Property blocks
+      Indentation &amp; layout
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#overlays" class="md-nav__link">
+  <a href="#grouped-properties-semicolons" class="md-nav__link">
     <span class="md-ellipsis">
-      Overlays
+      Grouped properties — semicolons
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#lists-omit-brackets-for-a-single-element" class="md-nav__link">
+    <span class="md-ellipsis">
+      Lists — omit brackets for a single element
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#overlays-child-objects" class="md-nav__link">
+    <span class="md-ellipsis">
+      Overlays &amp; child objects
     </span>
   </a>
   
@@ -738,9 +756,18 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#literals" class="md-nav__link">
+  <a href="#literals-whitespace" class="md-nav__link">
     <span class="md-ellipsis">
-      Literals
+      Literals &amp; whitespace
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#worked-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      Worked example
     </span>
   </a>
   
@@ -5693,27 +5720,45 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#layout" class="md-nav__link">
+  <a href="#member-ordering" class="md-nav__link">
     <span class="md-ellipsis">
-      Layout
+      Member ordering
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#property-blocks" class="md-nav__link">
+  <a href="#indentation-layout" class="md-nav__link">
     <span class="md-ellipsis">
-      Property blocks
+      Indentation &amp; layout
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#overlays" class="md-nav__link">
+  <a href="#grouped-properties-semicolons" class="md-nav__link">
     <span class="md-ellipsis">
-      Overlays
+      Grouped properties — semicolons
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#lists-omit-brackets-for-a-single-element" class="md-nav__link">
+    <span class="md-ellipsis">
+      Lists — omit brackets for a single element
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#overlays-child-objects" class="md-nav__link">
+    <span class="md-ellipsis">
+      Overlays &amp; child objects
     </span>
   </a>
   
@@ -5729,9 +5774,18 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#literals" class="md-nav__link">
+  <a href="#literals-whitespace" class="md-nav__link">
     <span class="md-ellipsis">
-      Literals
+      Literals &amp; whitespace
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#worked-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      Worked example
     </span>
   </a>
   
@@ -5774,79 +5828,116 @@
 
 
 <h1 id="imql-coding-conventions">IMQL coding conventions<a class="headerlink" href="#imql-coding-conventions" title="Permanent link">&para;</a></h1>
-<p>Conventions for writing <code>.imql</code>, in the spirit of the <a href="https://doc.qt.io/qt-6/qml-codingconventions.html">QML coding
-conventions</a>. They are <strong>enforced by a formatter</strong> —
-<code>tooling/fmt.py</code> (imql-fmt) — so you rarely apply them by hand: write a mechanism, then run
-<code>fmt.py -i your.imql</code>. CI can gate with <code>fmt.py --check</code>.</p>
-<h2 id="layout">Layout<a class="headerlink" href="#layout" title="Permanent link">&para;</a></h2>
+<p>These follow Qt's <a href="https://doc.qt.io/qt-6/qml-codingconventions.html">QML Coding Conventions</a> as closely
+as IMQL's structure allows, and are <strong>enforced by a formatter</strong> — <code>tooling/fmt.py</code> (imql-fmt), the analog
+of <a href="https://doc.qt.io/qt-6/qtqml-tooling-qmlformat.html"><code>qmlformat</code></a>. Write a mechanism, then run
+<code>fmt.py -i your.imql</code>; gate in CI with <code>fmt.py --check</code>.</p>
+<h2 id="member-ordering">Member ordering<a class="headerlink" href="#member-ordering" title="Permanent link">&para;</a></h2>
+<p>QML orders an object's members as: <strong>id → property declarations → signal declarations → JavaScript
+functions → object properties → child objects</strong>, with <em>"an empty line"</em> separating the groups. IMQL has
+no signals or JavaScript, so the mapping is:</p>
+<table>
+<thead>
+<tr>
+<th>QML</th>
+<th>IMQL</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>id (first line)</td>
+<td><code>mechanism &lt;Name&gt;</code> + the identifying <code>netuid</code></td>
+</tr>
+<tr>
+<td>property declarations</td>
+<td>header properties: <code>netuid</code>, <code>lang</code>, <code>status</code>, <code>submission</code></td>
+</tr>
+<tr>
+<td>object properties</td>
+<td>overlays: <code>@burn</code>, <code>@guards</code>, <code>@state</code> (attached-property style)</td>
+</tr>
+<tr>
+<td>child objects</td>
+<td>the combinator block (<code>pipeline</code> / <code>multiplex</code> / …)</td>
+</tr>
+</tbody>
+</table>
+<p>The three IMQL groups are separated by a single blank line, exactly as QML separates its member groups.</p>
+<h2 id="indentation-layout">Indentation &amp; layout<a class="headerlink" href="#indentation-layout" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>4-space indentation.</strong> Never tabs.</li>
-<li><strong>One mechanism per file</strong>, extension <code>.imql</code>. The mechanism name is PascalCase.</li>
-<li>A mechanism body is written in three groups, separated by a single blank line, in this order
-  (the QML "id → properties → children" idea):</li>
+<li><strong>4-space indentation</strong>, never tabs (the <code>qmlformat</code> default).</li>
+<li><strong>One property per line</strong> in the header — <em>"we generally declare each property on a separate line, even
+  for simple expressions."</em></li>
+<li>One mechanism per file, extension <code>.imql</code>; the mechanism name is PascalCase.</li>
 </ul>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>mechanism PairwiseArena {
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    netuid: 42                    # 1. header properties — one per line, canonical order:
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    lang: python                  #    netuid, lang, status, submission
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    status: active
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    submission: [model_weights]
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    @burn { uid: 0, fraction: dynamic }          # 2. overlays — @burn, @guards, @state
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    @guards {
-<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>        commit_reveal { enforcement: rejection }
-<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>        deterministic_check { enforcement: rejection }
-<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    }
-<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    @state { cumulative_score }
-<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>
-<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>    pipeline {                                   # 3. the combinator block
-<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>        score: metric win_rate fam classification_quality spec pairwise_win_rate { direction: higher_is_better, normalization: none }
-<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>        gt: llm_judgment { trust_model: adversarial }
-<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>        aggregate: aggregator weighted_average { normalization: sum_to_one }
-<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>        smooth: smoother ema(alpha: 0.1)
-<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>        emit: set_weights { cadence: per_epoch, tempo: &quot;360 blocks&quot; }
-<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>    }
-<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>}
+<h2 id="grouped-properties-semicolons">Grouped properties — semicolons<a class="headerlink" href="#grouped-properties-semicolons" title="Permanent link">&para;</a></h2>
+<p>A grouped-property block is written inline with <strong>semicolons</strong>, matching QML exactly
+(<code>anchors { left: parent.left; top: parent.top; leftMargin: 20 }</code>):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>score: metric win_rate fam classification_quality spec pairwise_win_rate { direction: higher_is_better; normalization: none }
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>aggregate: aggregator weighted_average { composition: weighted_sum; normalization: sum_to_one }
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>emit: set_weights { cadence: per_epoch; tempo: &quot;360 blocks&quot; }
 </code></pre></div>
-<h2 id="property-blocks">Property blocks<a class="headerlink" href="#property-blocks" title="Permanent link">&para;</a></h2>
+<p>Single space after each <code>:</code>, <code>;</code> between entries, a space inside the braces, and <strong>null-valued
+properties are omitted</strong> (an absent property <em>is</em> null; spelling out <code>decay_rate: -</code> is noise).</p>
+<h2 id="lists-omit-brackets-for-a-single-element">Lists — omit brackets for a single element<a class="headerlink" href="#lists-omit-brackets-for-a-single-element" title="Permanent link">&para;</a></h2>
+<p>Per the QML list convention, <em>a list with one element omits the square brackets</em>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>submission: signals                 # one element
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>submission: [model_weights, commitment_hash]   # several
+</code></pre></div>
+<h2 id="overlays-child-objects">Overlays &amp; child objects<a class="headerlink" href="#overlays-child-objects" title="Permanent link">&para;</a></h2>
 <ul>
-<li>A property block is <code>{ key: value, key: value }</code> — a single space inside the braces, <code>,</code> between
-  entries, one space after each colon.</li>
-<li><strong>Omit properties whose value is null.</strong> Write <code>aggregator other { composition: rank, temperature: 0.01 }</code>,
-  not <code>... { composition: rank, normalization: -, temperature: 0.01, decay_rate: -, min_weight_floor: - }</code>.
-  An absent property <em>is</em> null; spelling it out is noise.</li>
-</ul>
-<h2 id="overlays">Overlays<a class="headerlink" href="#overlays" title="Permanent link">&para;</a></h2>
-<ul>
-<li><code>@burn</code> and <code>@state</code> are written <strong>inline</strong>: <code>@burn { uid: 0, fraction: dynamic }</code>,
+<li><code>@burn</code> and <code>@state</code> are inline grouped properties: <code>@burn { uid: 0; fraction: dynamic }</code>,
   <code>@state { cumulative_score, registration_age }</code>.</li>
-<li><code>@guards</code> holds <em>elements</em>, not properties: a single guard is inline
-  (<code>@guards { commit_reveal { enforcement: rejection } }</code>); <strong>two or more guards go one per line</strong>.</li>
+<li><code>@guards</code> holds <em>child objects</em> (guards), so it follows the child-object rule: a single guard is inline
+  (<code>@guards { commit_reveal { enforcement: rejection } }</code>); <strong>two or more go one per line</strong>:</li>
 </ul>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>@guards {
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>    commit_reveal { enforcement: rejection }
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>    deterministic_check { enforcement: rejection }
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>}
+</code></pre></div>
 <h2 id="the-combinator-body">The combinator body<a class="headerlink" href="#the-combinator-body" title="Permanent link">&para;</a></h2>
+<p>Items appear in canonical order — <code>score</code> (per signal), <code>gt</code> (per ground-truth source), <code>aggregate</code>,
+<code>smooth</code>, <code>emit</code>, <code>tracks</code> — one per line. The metric leaf reads left to right:
+<code>metric &lt;kind&gt; [fam &lt;family&gt;] [spec &lt;specific&gt;] [raw "…"] [extern]</code>.</p>
+<h2 id="literals-whitespace">Literals &amp; whitespace<a class="headerlink" href="#literals-whitespace" title="Permanent link">&para;</a></h2>
 <ul>
-<li>Items appear in canonical order — <code>score</code> (one per signal), <code>gt</code> (one per ground-truth source),
-  <code>aggregate</code>, <code>smooth</code>, <code>emit</code>, <code>tracks</code> — one per line.</li>
-<li>The metric leaf reads left to right: <code>metric &lt;kind&gt; [fam &lt;family&gt;] [spec &lt;specific&gt;] [raw "…"] [extern]</code>.
-  A fully opaque metric is <code>extern "…"</code> (or <code>metric &lt;kind&gt; raw "…" extern</code>).</li>
-</ul>
-<h2 id="literals">Literals<a class="headerlink" href="#literals" title="Permanent link">&para;</a></h2>
-<ul>
-<li><code>null</code> is written <code>-</code>. The dynamic burn fraction is the keyword <code>dynamic</code>.</li>
+<li><code>null</code> is <code>-</code>; the dynamic burn fraction is the keyword <code>dynamic</code>.</li>
 <li>Strings are double-quoted; identifiers and enum values are bare.</li>
 <li>Files end with a single newline and carry no trailing whitespace.</li>
 </ul>
+<h2 id="worked-example">Worked example<a class="headerlink" href="#worked-example" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>mechanism PairwiseArena {
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>    netuid: 42
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    lang: python
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    status: active
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    submission: model_weights
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>    @burn { uid: 0; fraction: dynamic }
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>    @guards {
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>        commit_reveal { enforcement: rejection }
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>        deterministic_check { enforcement: rejection }
+<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>    }
+<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a>    @state { cumulative_score }
+<a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a>
+<a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a>    pipeline {
+<a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a>        score: metric win_rate fam classification_quality spec pairwise_win_rate { direction: higher_is_better; normalization: none }
+<a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a>        gt: llm_judgment { trust_model: adversarial }
+<a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a>        aggregate: aggregator weighted_average { normalization: sum_to_one }
+<a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a>        smooth: smoother ema(alpha: 0.1)
+<a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a>        emit: set_weights { cadence: per_epoch; tempo: &quot;360 blocks&quot; }
+<a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a>    }
+<a id="__codelineno-3-21" name="__codelineno-3-21" href="#__codelineno-3-21"></a>}
+</code></pre></div>
 <h2 id="comments">Comments<a class="headerlink" href="#comments" title="Permanent link">&para;</a></h2>
 <p><code># …</code> runs to end of line and is ignored by the tooling. Because IMQL is purely structural, the
-<strong>formatter does not preserve comments</strong> — keep commentary in surrounding prose/docs, not inside
-canonical <code>.imql</code> files.</p>
+<strong>formatter does not preserve comments</strong> (like <code>qmlformat</code> historically reformatted aggressively) — keep
+commentary in surrounding prose/docs, not inside canonical <code>.imql</code>.</p>
 <h2 id="the-formatter">The formatter<a class="headerlink" href="#the-formatter" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>./.venv/bin/python<span class="w"> </span>tooling/fmt.py<span class="w"> </span>mechanism.imql<span class="w">        </span><span class="c1"># print formatted</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>./.venv/bin/python<span class="w"> </span>tooling/fmt.py<span class="w"> </span>-i<span class="w"> </span>mechanism.imql<span class="w">     </span><span class="c1"># rewrite in place</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>./.venv/bin/python<span class="w"> </span>tooling/fmt.py<span class="w"> </span>--check<span class="w"> </span>examples/<span class="w">     </span><span class="c1"># CI gate: non-zero if any file is unformatted</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>./.venv/bin/python<span class="w"> </span>tooling/fmt.py<span class="w"> </span>mechanism.imql<span class="w">        </span><span class="c1"># print formatted</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>./.venv/bin/python<span class="w"> </span>tooling/fmt.py<span class="w"> </span>-i<span class="w"> </span>mechanism.imql<span class="w">     </span><span class="c1"># rewrite in place (cf. qmlformat -i)</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>./.venv/bin/python<span class="w"> </span>tooling/fmt.py<span class="w"> </span>--check<span class="w"> </span>examples/<span class="w">     </span><span class="c1"># CI gate: non-zero if any file is unformatted</span>
 </code></pre></div>
-<p>It works by parsing and re-emitting, so its output is the single source of truth for "formatted" —
-there is nothing to argue about. Every <code>.imql</code> lifted from a corpus instance (<code>tooling/lift.py</code>) is
-already in canonical form.</p>
 
 
 

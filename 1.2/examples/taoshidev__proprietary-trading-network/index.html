@@ -5665,7 +5665,7 @@
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    netuid: 8
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    lang: python
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    status: unknown
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    submission: [signals]
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    submission: signals
 <a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>
 <a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    @burn { uid: &quot;229&quot; }
 <a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    @guards {
@@ -5678,17 +5678,17 @@
 <a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>    @state { debt_ledger, performance_ledger, status_enum, cumulative_score }
 <a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>
 <a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>    multiplex&lt;multi_asset&gt; {
-<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>        score: metric pnl { direction: higher_is_better, normalization: rank }
-<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>        score: metric other fam risk_adjusted_ratio spec calmar_ratio raw &quot;calmar_ratio&quot; { direction: higher_is_better, normalization: rank }
-<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>        score: metric other fam risk_adjusted_ratio spec sharpe_ratio raw &quot;sharpe_ratio&quot; { direction: higher_is_better, normalization: rank }
-<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>        score: metric other fam risk_adjusted_ratio spec omega_ratio raw &quot;omega_ratio&quot; { direction: higher_is_better, normalization: rank }
-<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>        score: metric other fam risk_adjusted_ratio spec sortino_ratio raw &quot;sortino_ratio&quot; { direction: higher_is_better, normalization: rank }
-<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>        score: metric other fam risk_adjusted_ratio spec statistical_confidence raw &quot;statistical_confidence&quot; { direction: higher_is_better, normalization: rank }
-<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>        score: metric other fam risk_adjusted_ratio spec max_drawdown raw &quot;max_drawdown_penalty&quot; { direction: lower_is_better, normalization: none }
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>        score: metric pnl { direction: higher_is_better; normalization: rank }
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>        score: metric other fam risk_adjusted_ratio spec calmar_ratio raw &quot;calmar_ratio&quot; { direction: higher_is_better; normalization: rank }
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>        score: metric other fam risk_adjusted_ratio spec sharpe_ratio raw &quot;sharpe_ratio&quot; { direction: higher_is_better; normalization: rank }
+<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>        score: metric other fam risk_adjusted_ratio spec omega_ratio raw &quot;omega_ratio&quot; { direction: higher_is_better; normalization: rank }
+<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>        score: metric other fam risk_adjusted_ratio spec sortino_ratio raw &quot;sortino_ratio&quot; { direction: higher_is_better; normalization: rank }
+<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>        score: metric other fam risk_adjusted_ratio spec statistical_confidence raw &quot;statistical_confidence&quot; { direction: higher_is_better; normalization: rank }
+<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>        score: metric other fam risk_adjusted_ratio spec max_drawdown raw &quot;max_drawdown_penalty&quot; { direction: lower_is_better; normalization: none }
 <a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>        gt: market_data { trust_model: trusted }
-<a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a>        aggregate: aggregator proportional { normalization: sum_to_one, decay_rate: 0.075, min_weight_floor: 1.5e-05 }
-<a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a>        emit: set_weights { cadence: weekly, tempo: &quot;weekly payout period ending Sunday 00:00:00 UTC; weight refresh every 5 minutes&quot; }
-<a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a>        tracks { structure: multi_asset, count: 3 }
+<a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a>        aggregate: aggregator proportional { normalization: sum_to_one; decay_rate: 0.075; min_weight_floor: 1.5e-05 }
+<a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a>        emit: set_weights { cadence: weekly; tempo: &quot;weekly payout period ending Sunday 00:00:00 UTC; weight refresh every 5 minutes&quot; }
+<a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a>        tracks { structure: multi_asset; count: 3 }
 <a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a>    }
 <a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a>}
 </code></pre></div>

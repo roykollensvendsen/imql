@@ -5675,12 +5675,12 @@
 <a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    }
 <a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>
 <a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>    multiplex&lt;multi_mechanism&gt; {
-<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>        score: metric other raw &quot;Opaque per-hotkey weight returned by each challenge&#39;s get_weights endpoint; the master does not know how it was computed (challenge-internal scoring lives out of tree).&quot; { direction: higher_is_better, normalization: min_max }
-<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>        score: metric other raw &quot;Fixed per-challenge emission share (Decimal, &gt;= 0) configured at challenge registration; determines how much of total emission each challenge&#39;s normalized weights contribute.&quot; { direction: higher_is_better, normalization: min_max }
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>        score: metric other raw &quot;Opaque per-hotkey weight returned by each challenge&#39;s get_weights endpoint; the master does not know how it was computed (challenge-internal scoring lives out of tree).&quot; { direction: higher_is_better; normalization: min_max }
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>        score: metric other raw &quot;Fixed per-challenge emission share (Decimal, &gt;= 0) configured at challenge registration; determines how much of total emission each challenge&#39;s normalized weights contribute.&quot; { direction: higher_is_better; normalization: min_max }
 <a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>        gt: other { trust_model: trusted }
-<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>        aggregate: aggregator weighted_average { composition: weighted_sum, normalization: sum_to_one }
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>        aggregate: aggregator weighted_average { composition: weighted_sum; normalization: sum_to_one }
 <a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>        smooth: smoother none
-<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>        emit: set_weights { cadence: per_epoch, tempo: 360 }
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>        emit: set_weights { cadence: per_epoch; tempo: 360 }
 <a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>        tracks { structure: multi_mechanism }
 <a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>    }
 <a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>}

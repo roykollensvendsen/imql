@@ -5665,7 +5665,7 @@
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    netuid: 1
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    lang: python
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    status: unknown
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    submission: [source_code]
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    submission: source_code
 <a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>
 <a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    @burn {}
 <a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    @guards {
@@ -5675,10 +5675,10 @@
 <a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    @state { cumulative_score, status_enum, registration_age }
 <a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>
 <a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>    multiplex&lt;multi_mechanism&gt; {
-<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>        score: metric other raw &quot;per-competition scalar score from sandboxed execution of the submitted algorithm (e.g. simulated total_profit for energy_arbitrage; fewer turns for RL Battleship)&quot; { direction: higher_is_better, normalization: rank }
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>        score: metric other raw &quot;per-competition scalar score from sandboxed execution of the submitted algorithm (e.g. simulated total_profit for energy_arbitrage; fewer turns for RL Battleship)&quot; { direction: higher_is_better; normalization: rank }
 <a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>        gt: deterministic_dataset { trust_model: trusted }
 <a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>        aggregate: aggregator rank_based { normalization: other }
-<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>        emit: set_weights { cadence: continuous, tempo: &quot;WEIGHT_SUBMIT_INTERVAL = 60*21 (every 21 minutes) in production&quot; }
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>        emit: set_weights { cadence: continuous; tempo: &quot;WEIGHT_SUBMIT_INTERVAL = 60*21 (every 21 minutes) in production&quot; }
 <a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>        tracks { structure: multi_mechanism }
 <a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>    }
 <a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>}
