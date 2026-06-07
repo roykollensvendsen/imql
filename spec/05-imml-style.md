@@ -49,7 +49,8 @@ emit: set_weights {
 }
 ```
 
-Single space after each `:`, no separator between lines (`;` and `,` are still accepted by the parser),
+Single space after each `:`, no separator between lines (`;` is also accepted by the parser; commas are
+not — they are reserved for genuine lists like `@state` and `submission`),
 and **null-valued properties are omitted** (an absent property *is* null; spelling out `decay_rate: -` is
 noise). An empty block collapses to `{}`.
 

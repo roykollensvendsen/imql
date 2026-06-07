@@ -322,7 +322,7 @@ smoother: NAME [ "(" smparam ("," smparam)* ")" ]  -> smoothing
 smparam: "alpha" ":" value  -> salpha
        | "window" ":" value -> swindow
 
-propblock: "{" [prop ((";" | ",")? prop)*] "}"  // grouped-property; one per line (sep optional), ';'/',' also ok
+propblock: "{" [prop (";"? prop)*] "}"  // grouped-property; one per line (newline or ';', no commas)
 prop: NAME ":" value
 value: SIGNED_NUMBER  -> number
      | "-"            -> nullval

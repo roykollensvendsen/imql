@@ -23,11 +23,11 @@ doc          = "doc"        , ":" , doc_val ;       (* code_authoritative|docs_o
 
 (* ---- overlays: three orthogonal decorators (composition.overlays) ---- *)
 overlay      = burn_overlay | guards_overlay | state_overlay ;
-burn_overlay = "@burn"   , "{" , burn_arg { "," burn_arg } "}" ;
+burn_overlay = "@burn"   , "{" , burn_arg { ";" burn_arg } "}" ;  (* grouped property: ';' or newline, no commas *)
 burn_arg     = ( "uid" , ":" , ( int | string ) )
              | ( "fraction" , ":" , ( number | "dynamic" ) ) ;
 guards_overlay = "@guards" , "{" , guard+ , "}" ;
-guard        = guard_kind , [ "{" , guard_prop { "," guard_prop } "}" ] ;
+guard        = guard_kind , [ "{" , guard_prop { ";" guard_prop } "}" ] ;
 guard_prop   = "enforcement" , ":" , enforce_val ;  (* elimination|penalty|rejection|barrier|other *)
 state_overlay = "@state" , "{" , state_kind { "," state_kind } "}" ;
 
@@ -57,7 +57,7 @@ leaf         = scorer ;   (* degenerate: a bare metric is a mechanism *)
 
 (* ---- scorer = metric (the typed hole) + optional ground-truth ---- *)
 scorer       = metric_expr , [ "from" , groundtruth ] , [ scorer_props ] ;
-scorer_props = "{" , scorer_prop { "," scorer_prop } "}" ;
+scorer_props = "{" , scorer_prop { ";" scorer_prop } "}" ;
 scorer_prop  = ( "direction"     , ":" , direction_val )
              | ( "weight"        , ":" , ( number | "null" ) )
              | ( "normalization" , ":" , norm_val ) ;
@@ -68,12 +68,12 @@ extern_hole  = "extern" , string ;                        (* the irreducible lon
 family       = ident ;   (* a metric_family enum value (vocab/metric-ontology.yaml) *)
 specific     = ident ;   (* a canonical metric_specific id *)
 
-groundtruth  = "groundtruth" , gt_kind , [ "{" , gt_prop { "," gt_prop } "}" ] ;
+groundtruth  = "groundtruth" , gt_kind , [ "{" , gt_prop { ";" gt_prop } "}" ] ;
 gt_prop      = ( "trust_model" , ":" , trust_val )
              | ( "source"      , ":" , string ) ;
 
 (* ---- primitive operators (closed enums from the IR) ---- *)
-aggregator   = "aggregator" , agg_method , [ "{" , agg_prop { "," agg_prop } "}" ] ;
+aggregator   = "aggregator" , agg_method , [ "{" , agg_prop { ";" agg_prop } "}" ] ;
 agg_prop     = ( "normalization"    , ":" , agg_norm_val )
              | ( "temperature"      , ":" , number )
              | ( "decay_rate"       , ":" , number )
@@ -84,8 +84,8 @@ smoother     = "smoother" , ( "none"
                             | "sma" , "(" , "window" , ":" , int , ")"
                             | "other" ) ;
 
-weight_setter = "set_weights" , [ "{" , ws_prop { "," ws_prop } "}" ]
-              | "commit_reveal" , [ "{" , ws_prop { "," ws_prop } "}" ] ;
+weight_setter = "set_weights" , [ "{" , ws_prop { ";" ws_prop } "}" ]
+              | "commit_reveal" , [ "{" , ws_prop { ";" ws_prop } "}" ] ;
 ws_prop      = ( "cadence" , ":" , cadence_val )
              | ( "tempo"   , ":" , ( string | int ) ) ;
 

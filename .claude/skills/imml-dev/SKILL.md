@@ -52,7 +52,8 @@ Run all tooling with `./.venv/bin/python`. A git **pre-commit hook** (`tooling/p
 - `tooling/imml_core.py` — the heart: `signature()`, `lift()` (IR→IMML), `compile_text()` (IMML→IR, lark
   grammar `GRAMMAR`), `resolve_metric()` (ontology lookup). **lift and compile must stay inverse over the
   signature.** Property blocks are generic `{ k: v }` written one property per line (the parser also
-  accepts `;`/`,` separators); `pb(pairs, indent)` in `lift()` emits them, indent-aware.
+  accepts a `;` separator, but not commas — those are reserved for lists); `pb(pairs, indent)` in
+  `lift()` emits them, indent-aware.
 - `tooling/{lift,compile,coverage,fmt,canonicalize,generate,derive-composition,validate,stress-report}.py`
   — CLIs (thin wrappers over imml_core + the schema).
 - `vocab/metric-ontology.yaml` — 3-level metric vocab (raw→specific→family); single source for the IR's
