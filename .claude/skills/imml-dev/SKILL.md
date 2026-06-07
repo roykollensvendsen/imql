@@ -37,6 +37,15 @@ the site on push). Don't let changes from several tasks pile up uncommitted, and
 If you finish a task whose edits would intermingle with the next one in shared files, commit it *before*
 starting the next.
 
+**Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/):**
+`<type>[(scope)][!]: <description>`. Types: `feat fix docs style refactor perf test build ci chore
+revert`; scope is the area (`lang`, `tooling`, `schema`, `vocab`, `skill`, `docs`); `!` marks a breaking
+change. E.g. `feat(lang): add multiplex combinator`, `refactor(lang)!: drop comma separator`.
+- Enforced locally by the **`commit-msg` hook** (`tooling/commit-msg.sh` → `tooling/lint-commit-msg.sh`)
+  and in CI by `.github/workflows/commitlint.yml` (same validator — they can't drift).
+- Install both hooks: `ln -sf ../../tooling/pre-commit.sh .git/hooks/pre-commit && ln -sf
+  ../../tooling/commit-msg.sh .git/hooks/commit-msg`.
+
 ## Hard invariants (do not break)
 - **Round-trip fidelity = 100%.** `coverage.py` lifts every IR to IMML, compiles back, and compares the
   **structural signature** (`imml_core.signature` — enums, params, typed nodes, composition; it

@@ -32,7 +32,12 @@ Also read `spec/04-imml-language.md` (the language) and `spec/05-imml-style.md` 
 ./.venv/bin/mkdocs build --strict                                                  # docs clean (~205 pages)
 ```
 A pre-commit hook (`tooling/pre-commit.sh`) enforces `validate.py` on any `instances|schema|templates`
-change. Install: `ln -sf ../../tooling/pre-commit.sh .git/hooks/pre-commit`.
+change; a commit-msg hook (`tooling/commit-msg.sh`) enforces [Conventional Commits](https://www.conventionalcommits.org/)
+(also checked in CI by `.github/workflows/commitlint.yml`). Install both:
+`ln -sf ../../tooling/pre-commit.sh .git/hooks/pre-commit && ln -sf ../../tooling/commit-msg.sh .git/hooks/commit-msg`.
+
+Commits follow `<type>[(scope)][!]: <description>` (e.g. `feat(lang): …`, `fix(tooling): …`, `docs: …`),
+one commit per completed task.
 
 ## Current state (handoff)
 Phases complete and committed: schema→IR v1.2.0; the IMML language (grammar + lift/compile round-trip at
