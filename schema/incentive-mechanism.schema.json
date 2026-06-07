@@ -36,7 +36,7 @@
         "metric_kind_other": { "type": "string", "description": "Required when metric_kind == 'other'. The RAW level of the 3-level metric vocabulary; immutable, set by extraction, never overwritten by canonicalization." },
         "metric_family": {
           "type": "string",
-          "description": "Abstract metric FAMILY (the IMQL metric type). Governed enum, single-sourced from vocab/metric-ontology.yaml. Set by tooling/canonicalize.py, not by extraction.",
+          "description": "Abstract metric FAMILY (the IMML metric type). Governed enum, single-sourced from vocab/metric-ontology.yaml. Set by tooling/canonicalize.py, not by extraction.",
           "enum": ["loss_eval", "classification_quality", "similarity_match", "risk_adjusted_ratio", "financial_pnl", "market_outcome", "probabilistic_forecast", "predictive_contribution", "generative_reward", "content_quality", "engagement", "throughput_latency", "uptime_availability", "hardware_authenticity", "cryptographic_auth", "model_architecture", "data_freshness", "cross_subnet_aggregate", "volume", "other"]
         },
         "metric_specific": { "type": ["string", "null"], "description": "Canonical SPECIFIC metric id (e.g. 'sharpe_ratio', 'f1_score', 'crps'), null if unresolved. The middle level; canonicalized from metric_kind_other via the ontology." },
@@ -305,7 +305,7 @@
     },
     "composition": {
       "type": "object",
-      "description": "The IMQL combinator structure of the mechanism — how it is built from primitives. Mostly derivable from aggregation.composition, sub_competitions.structure, mechanism_status, and the presence of burn/guards/state. This block is the bridge between the descriptive schema and the IMQL language.",
+      "description": "The IMML combinator structure of the mechanism — how it is built from primitives. Mostly derivable from aggregation.composition, sub_competitions.structure, mechanism_status, and the presence of burn/guards/state. This block is the bridge between the descriptive schema and the IMML language.",
       "properties": {
         "shape": {
           "type": "string",

@@ -1,4 +1,4 @@
-"""Canonical metric primitives — the generable score() implementations for IMQL metric families.
+"""Canonical metric primitives — the generable score() implementations for IMML metric families.
 
 Each function maps a metric FAMILY (and where useful, a SPECIFIC) to a real, parameterized
 scoring implementation. Generated validator scaffolds import from here. Families with no closed-form

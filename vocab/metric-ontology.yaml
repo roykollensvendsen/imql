@@ -1,5 +1,5 @@
 # Metric ontology — the 3-level metric vocabulary (raw -> specific -> family).
-# Single source for the IR's scoring_signals[].metric_family enum AND IMQL metric types.
+# Single source for the IR's scoring_signals[].metric_family enum AND IMML metric types.
 # Governed: a new family/specific/alias needs >=2x recurrence + CHANGELOG + VERSION bump
 # + re-canonicalize. Authored families-first; the raw level lives in the instances (immutable).
 

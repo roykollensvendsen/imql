@@ -1,31 +1,31 @@
-# IMQL coding conventions
+# IMML coding conventions
 
 These follow Qt's [QML Coding Conventions](https://doc.qt.io/qt-6/qml-codingconventions.html) as closely
-as IMQL's structure allows, and are **enforced by a formatter** — `tooling/fmt.py` (imql-fmt), the analog
+as IMML's structure allows, and are **enforced by a formatter** — `tooling/fmt.py` (imml-fmt), the analog
 of [`qmlformat`](https://doc.qt.io/qt-6/qtqml-tooling-qmlformat.html). Write a mechanism, then run
-`fmt.py -i your.imql`; gate in CI with `fmt.py --check`.
+`fmt.py -i your.imml`; gate in CI with `fmt.py --check`.
 
 ## Member ordering
 
 QML orders an object's members as: **id → property declarations → signal declarations → JavaScript
-functions → object properties → child objects**, with *"an empty line"* separating the groups. IMQL has
+functions → object properties → child objects**, with *"an empty line"* separating the groups. IMML has
 no signals or JavaScript, so the mapping is:
 
-| QML | IMQL |
+| QML | IMML |
 |---|---|
 | id (first line) | `mechanism <Name>` + the identifying `netuid` |
 | property declarations | header properties: `netuid`, `lang`, `status`, `submission` |
 | object properties | overlays: `@burn`, `@guards`, `@state` (attached-property style) |
 | child objects | the combinator block (`pipeline` / `multiplex` / …) |
 
-The three IMQL groups are separated by a single blank line, exactly as QML separates its member groups.
+The three IMML groups are separated by a single blank line, exactly as QML separates its member groups.
 
 ## Indentation & layout
 
 - **4-space indentation**, never tabs (the `qmlformat` default).
 - **One property per line** in the header — *"we generally declare each property on a separate line, even
   for simple expressions."*
-- One mechanism per file, extension `.imql`; the mechanism name is PascalCase.
+- One mechanism per file, extension `.imml`; the mechanism name is PascalCase.
 
 ## Grouped properties — semicolons
 
@@ -104,14 +104,14 @@ mechanism PairwiseArena {
 
 ## Comments
 
-`# …` runs to end of line and is ignored by the tooling. Because IMQL is purely structural, the
+`# …` runs to end of line and is ignored by the tooling. Because IMML is purely structural, the
 **formatter does not preserve comments** (like `qmlformat` historically reformatted aggressively) — keep
-commentary in surrounding prose/docs, not inside canonical `.imql`.
+commentary in surrounding prose/docs, not inside canonical `.imml`.
 
 ## The formatter
 
 ```bash
-./.venv/bin/python tooling/fmt.py mechanism.imql        # print formatted
-./.venv/bin/python tooling/fmt.py -i mechanism.imql     # rewrite in place (cf. qmlformat -i)
+./.venv/bin/python tooling/fmt.py mechanism.imml        # print formatted
+./.venv/bin/python tooling/fmt.py -i mechanism.imml     # rewrite in place (cf. qmlformat -i)
 ./.venv/bin/python tooling/fmt.py --check examples/     # CI gate: non-zero if any file is unformatted
 ```

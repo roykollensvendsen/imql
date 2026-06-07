@@ -1,4 +1,4 @@
-(* IMQL — Incentive-Mechanism Query/composition Language
+(* IMML — Incentive Mechanism Modeling Language
    Grammar v0.1 (targets IR schema 1.2.0). EBNF; implementable with lark.
 
    Design: no control flow. The four empirical combinators (pipeline, multiplex,

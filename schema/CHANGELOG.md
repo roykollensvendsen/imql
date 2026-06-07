@@ -5,13 +5,13 @@ corresponding entry here citing the schema-stress observation (from `reports/sch
 that motivated it. Version is mirrored in `schema/VERSION` and in the `$id` of
 `incentive-mechanism.schema.json`.
 
-## 1.2.0 — IR evolution for IMQL
+## 1.2.0 — IR evolution for IMML
 
-The schema becomes the **Intermediate Representation** for IMQL (the declarative incentive-mechanism
+The schema becomes the **Intermediate Representation** for IMML (the declarative incentive-mechanism
 language). Three additive blocks; every existing instance stays valid (additive only ⇒ a `schema_version`
 bump to 1.2.0 and nothing else required).
 
-- **`composition` (new top-level object)** — the IMQL combinator structure of a mechanism:
+- **`composition` (new top-level object)** — the IMML combinator structure of a mechanism:
   `shape` (pipeline | multiplex | gated | multiplicative | overlay_only | opaque), `overlays`
   (⊆ {burn, guards, state}), `extern_count`. Mostly derivable from existing fields
   (`aggregation.composition`, `sub_competitions.structure`, `mechanism_status`, presence of
@@ -26,7 +26,7 @@ bump to 1.2.0 and nothing else required).
 
 Rationale: the census showed incentive mechanisms decompose into 4 combinators over ~50 reusable
 primitives, with the per-subnet judgment isolated to a single leaf (the metric). These fields make that
-structure first-class so IMQL can round-trip every instance and the long tail can be measured, not hidden.
+structure first-class so IMML can round-trip every instance and the long tail can be measured, not hidden.
 
 ## 1.1.0 — corpus refinement
 

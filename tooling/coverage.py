@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""IMQL descriptive-completeness gate over the corpus.
+"""IMML descriptive-completeness gate over the corpus.
 
-For each instance: lift IR -> IMQL, compile IMQL -> IR', compare structural signatures.
+For each instance: lift IR -> IMML, compile IMML -> IR', compare structural signatures.
 Reports, overall and per archetype (composition.shape):
   - round-trip fidelity   : signature(ir) == signature(compile(lift(ir)))  (MUST be 100%)
   - structural-expressibility : fraction of scoring leaves that are NOT extern
@@ -9,7 +9,7 @@ Reports, overall and per archetype (composition.shape):
 
 Gate: 100% fidelity, >=90% structural corpus-wide, >=80% within every archetype.
 
-Usage: coverage.py <dir> [--out reports/imql-coverage.md]
+Usage: coverage.py <dir> [--out reports/imml-coverage.md]
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from collections import defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import imql_core as C  # noqa: E402
+import imml_core as C  # noqa: E402
 
 try:
     import yaml
@@ -103,7 +103,7 @@ def main(argv):
     gate_arch = worst_arch[1] >= 80.0
     passed = gate_fid and gate_struct and gate_arch
 
-    lines = ["# IMQL coverage report\n"]
+    lines = ["# IMML coverage report\n"]
     lines.append(f"Instances: **{n}**  •  round-trip fidelity: **{fid_pct:.1f}%** ({fid_ok}/{n})  "
                  f"•  structural-expressibility: **{struct_pct:.1f}%** "
                  f"({leaves_total - leaves_extern}/{leaves_total} leaves)\n")

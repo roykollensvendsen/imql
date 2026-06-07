@@ -3,13 +3,13 @@
 The ontology is the canonicalization layer for the bespoke metric tail. Governed like the schema: a
 new family / specific / alias needs **≥2× recurrence + a CHANGELOG entry + a VERSION bump +
 re-running coverage**. Instances keep the raw metric string immutable; resolution happens at read time
-(`imql_core.resolve_metric`), so canonicalization is non-destructive and reversible.
+(`imml_core.resolve_metric`), so canonicalization is non-destructive and reversible.
 
 ## 0.1.0 — initial ontology
 
 Authored families-first from the corpus census of the 75 distinct bespoke (`metric_kind: other`)
 metric strings. 15 families, 51 aliases. Resolves **51/75 (68%)** of bespoke leaves, lifting
-IMQL structural-expressibility from 87.0% → **95.8%** (coverage gate PASS).
+IMML structural-expressibility from 87.0% → **95.8%** (coverage gate PASS).
 
 Families: classification_quality, content_quality, cross_subnet_aggregate, cryptographic_auth,
 data_freshness, financial_pnl, generative_reward, hardware_authenticity, market_outcome,

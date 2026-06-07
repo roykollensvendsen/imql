@@ -1,12 +1,12 @@
-# IMQL — the incentive-mechanism language
+# IMML — the incentive-mechanism language
 
-IMQL is a **declarative composition language** for Bittensor incentive mechanisms: a textual surface you
+IMML is a **declarative composition language** for Bittensor incentive mechanisms: a textual surface you
 write by hand to *design* a mechanism, that compiles to the IR (the JSON-Schema YAML instance) and can
 **fully describe every existing subnet** and (Phase B) **generate a runnable validator scaffold**.
 
 It is to the IR what QML is to its scene graph — you compose typed nodes by nesting, decorate them with
 orthogonal overlays, and leave the one per-subnet thing (the leaf metric) as a typed hole. There is no
-control flow; the four empirical combinators are the only composition operators. Grammar: `lang/imql.ebnf`.
+control flow; the four empirical combinators are the only composition operators. Grammar: `lang/imml.ebnf`.
 
 ## The model in one breath
 ```
@@ -22,13 +22,13 @@ Derived inductively from all 189 corpus subnets:
 - **4 combinators** cover the corpus: pipeline (90.5% as inner shape), overlay/wrapper (96.8%), parallel
   multiplex / sub-competitions (55.6%), gated/multiplicative (27%).
 - **~50 reusable primitives** (9 aggregators, 5 smoothers, 16 guards, 9 ground-truth sources, 7 state
-  kinds, burn) — each IMQL primitive name is a closed enum value in the IR schema, so the vocabulary is
+  kinds, burn) — each IMML primitive name is a closed enum value in the IR schema, so the vocabulary is
   governed by the same ≥2× bar.
 - **The bespoke axis is one leaf**: the metric. Everything else recurs and composes; the metric is the
-  irreducible per-subnet judgment. IMQL makes that boundary explicit via the `extern` hole.
+  irreducible per-subnet judgment. IMML makes that boundary explicit via the `extern` hole.
 
 ## Worked example
-```imql
+```imml
 mechanism PairwiseArena {
     netuid: 42
     lang: python
@@ -65,10 +65,10 @@ A `metric` leaf has three resolution states, mirroring `vocab/metric-ontology.ya
 their total IS the measured long tail. An `extern` that recurs ≥2× is a promotion candidate for the
 ontology, not a permanent hole.
 
-## How IMQL maps to the IR (round-trip)
-`.imql` ⇄ YAML instance is lossless. The mapping:
+## How IMML maps to the IR (round-trip)
+`.imml` ⇄ YAML instance is lossless. The mapping:
 
-| IMQL | IR field |
+| IMML | IR field |
 |---|---|
 | `mechanism NAME { netuid, task, submission }` | `subnet`, `task` |
 | `status: …` | `mechanism_status` |
@@ -86,13 +86,13 @@ ontology, not a permanent hole.
 | `set_weights/commit_reveal {…}` | `weight_setting.{on_chain_call,cadence,tempo_or_interval}` |
 
 ## Tooling (built across M2–M4)
-- `tooling/lift.py` — IR → IMQL (one corpus instance to a `.imql`).
-- `tooling/compile.py` — IMQL → IR (the parser; validates against the schema).
+- `tooling/lift.py` — IR → IMML (one corpus instance to a `.imml`).
+- `tooling/compile.py` — IMML → IR (the parser; validates against the schema).
 - `tooling/coverage.py` — round-trips all 189; reports fidelity, structural-expressibility, and the
   extern residual (the gate: 100% fidelity, ≥90% structural, ≥80% per archetype).
 - `tooling/generate.py` (Phase B) — IR → runnable Python validator scaffold for the pipeline archetype.
 
 ## Authoring a new mechanism (the prescriptive path)
-Write a `.imql` file, then `compile.py mything.imql > mything.yaml && validate.py mything.yaml`. A clean
+Write a `.imml` file, then `compile.py mything.imml > mything.yaml && validate.py mything.yaml`. A clean
 compile + validate means the design is structurally complete; any `extern` leaf is the part you must
 hand-write (the actual `score()`), surfaced explicitly rather than hidden.

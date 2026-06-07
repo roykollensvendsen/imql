@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Git pre-commit gate for the IMQL corpus.
+# Git pre-commit gate for the IMML corpus.
 #
 # Blocks the commit unless every YAML instance under instances/ validates against the
 # schema AND its schema_version matches schema/VERSION.

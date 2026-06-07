@@ -25,7 +25,7 @@ from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import imql_core as C  # noqa: E402
+import imml_core as C  # noqa: E402
 
 try:
     import yaml

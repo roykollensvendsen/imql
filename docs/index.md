@@ -1,6 +1,6 @@
-# IMQL
+# IMML
 
-**IMQL** is a declarative language for **Bittensor incentive-mechanism design, description, and
+**IMML** is a declarative language for **Bittensor incentive-mechanism design, description, and
 generation** — a QML-style surface where you compose a mechanism from typed primitives, and the one
 per-subnet thing (the scoring metric) is an explicit hole.
 
@@ -11,7 +11,7 @@ the language losslessly, and the language compiles to a runnable validator scaff
 
 -   :material-book-open-variant: **[Guides](guides/overview.md)**
 
-    What IMQL is, how to author a mechanism, and how mechanisms were reverse-engineered from real subnets.
+    What IMML is, how to author a mechanism, and how mechanisms were reverse-engineered from real subnets.
 
 -   :material-code-braces: **[Language reference](language/index.md)**
 
@@ -19,7 +19,7 @@ the language losslessly, and the language compiles to a runnable validator scaff
 
 -   :material-view-gallery: **[Examples](examples/index.md)**
 
-    All 189 corpus subnets, each lifted to IMQL — filter by archetype, language, or burn status.
+    All 189 corpus subnets, each lifted to IMML — filter by archetype, language, or burn status.
 
 -   :material-tools: **[Toolchain](toolchain/cli.md)**
 
@@ -30,7 +30,7 @@ the language losslessly, and the language compiles to a runnable validator scaff
 ## The loop
 
 ```
- Extract ─▶ Lift ─▶ IMQL (.imql) ─▶ Compile ─▶ IR (YAML) ─▶ Generate ─▶ validator.py
+ Extract ─▶ Lift ─▶ IMML (.imml) ─▶ Compile ─▶ IR (YAML) ─▶ Generate ─▶ validator.py
  (faithful)         (declarative)              (= the schema)          (runnable scaffold)
 ```
 
@@ -44,7 +44,7 @@ the language losslessly, and the language compiles to a runnable validator scaff
 | Reusable primitives | ~50 (9 aggregators, 5 smoothers, 16 guards, 9 ground-truth sources, …) |
 | Combinators | 4 (pipeline · multiplex · gate/product · overlay) |
 
-## A mechanism in IMQL
+## A mechanism in IMML
 
 ```text
 mechanism PairwiseArena {

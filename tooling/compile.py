@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Compile IMQL text to an IR instance (YAML on stdout).
+"""Compile IMML text to an IR instance (YAML on stdout).
 
-Usage: compile.py <file.imql>           # or '-' for stdin
+Usage: compile.py <file.imml>           # or '-' for stdin
 The emitted IR carries the structural signature; run validate.py on it to confirm schema-validity.
 """
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import imql_core as C  # noqa: E402
+import imml_core as C  # noqa: E402
 import yaml  # noqa: E402
 
 if len(sys.argv) != 2:
@@ -21,7 +21,7 @@ ir.setdefault("instance_kind", "authored")
 ir.setdefault("documentation", {"status": "sparse"})
 # Required-but-prose fields the structural language doesn't carry — placeholders so the IR validates.
 ir.setdefault("task", {})
-ir["task"].setdefault("summary", "(authored via IMQL)")
+ir["task"].setdefault("summary", "(authored via IMML)")
 ir["task"].setdefault("submission_format", ["signals"])
 ir.setdefault("scoring_signals", [])
 
@@ -29,7 +29,7 @@ ir.setdefault("scoring_signals", [])
 def _satisfy_conditionals(ir):
     """Add placeholder *_other free-text where the schema requires it (enum == 'other').
     These are prose the structural language doesn't carry; placeholders keep the IR valid."""
-    PH = "(unspecified in IMQL)"
+    PH = "(unspecified in IMML)"
     t = ir.get("task") or {}
     if "other" in (t.get("submission_format") or []):
         t.setdefault("submission_format_other", PH)

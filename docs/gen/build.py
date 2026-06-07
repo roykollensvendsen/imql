@@ -3,8 +3,8 @@
 Everything reference is generated from the canonical artifacts so the docs never drift:
   - schema/incentive-mechanism.schema.json  -> the primitives reference (+ corpus frequencies)
   - vocab/metric-ontology.yaml               -> the metric families reference
-  - lang/imql.ebnf (core rules)              -> railroad diagrams
-  - instances/*                              -> the 189-example gallery (via tooling/imql_core.lift)
+  - lang/imml.ebnf (core rules)              -> railroad diagrams
+  - instances/*                              -> the 189-example gallery (via tooling/imml_core.lift)
   - tooling/*.py docstrings                  -> the CLI reference
   - reports/*.md                             -> the status pages
 """
@@ -21,7 +21,7 @@ import mkdocs_gen_files
 
 ROOT = Path(__file__).resolve().parents[2]  # incentive-schema/
 sys.path.insert(0, str(ROOT / "tooling"))
-import imql_core as C  # noqa: E402
+import imml_core as C  # noqa: E402
 
 SCHEMA = json.loads((ROOT / "schema" / "incentive-mechanism.schema.json").read_text())
 ONTO = yaml.safe_load((ROOT / "vocab" / "metric-ontology.yaml").read_text())
@@ -161,7 +161,7 @@ def gen_primitives():
                  _vtable(sh, fc)))
 
     body = [f"# Primitives reference\n",
-            f"The closed vocabulary of IMQL — every primitive is an enum value in the IR schema "
+            f"The closed vocabulary of IMML — every primitive is an enum value in the IR schema "
             f"(`v{VERSION}`), governed by the same ≥2× evidence bar. The **used by** column is the "
             f"number of the {len(IRS)} corpus subnets that use each value.\n"]
     for title, blurb, tbl in cats:
@@ -197,7 +197,7 @@ def gen_metric_families():
     body = [f"# Metric families\n",
             f"The metric **type system** — the 3-level vocabulary (raw → specific → family) from "
             f"`vocab/metric-ontology.yaml` (`v{ONTO_VERSION}`). The bespoke per-subnet metric is the one "
-            f"part IMQL cannot make fully structural; families are how it is typed where possible. "
+            f"part IMML cannot make fully structural; families are how it is typed where possible. "
             f"Unresolvable metrics stay `extern` (see the [coverage report](../status/index.md)).\n",
             "\n| family | used by | specifics | description |",
             "|---|---|---|---|"]
@@ -254,9 +254,9 @@ def gen_grammar():
             Sequence(Terminal("extern"), NonTerminal("\"raw\"")))),
     }
     body = [f"# Grammar\n",
-            f"IMQL has no control flow — the four combinators are the only composition operators. The "
+            f"IMML has no control flow — the four combinators are the only composition operators. The "
             f"core productions are below; the full grammar is in "
-            f"[`lang/imql.ebnf`](https://github.com/fx-integral/academia). Targets IR `v{VERSION}`.\n"]
+            f"[`lang/imml.ebnf`](https://github.com/fx-integral/academia). Targets IR `v{VERSION}`.\n"]
     for name, d in diagrams.items():
         body.append(f"\n## `{name}`\n\n<div class=\"railroad\" markdown>\n{svg(d)}\n</div>\n")
     w("language/grammar.md", "\n".join(body))
@@ -278,9 +278,9 @@ def gen_examples():
         name = sub.get("name") or repo
         netuid = sub.get("netuid")
         try:
-            imql = C.lift(ir)
+            imml = C.lift(ir)
         except Exception as exc:  # noqa: BLE001
-            imql = f"# lift failed: {exc}"
+            imml = f"# lift failed: {exc}"
         ir_yaml = yaml.safe_dump({k: v for k, v in ir.items() if k != "__path"}, sort_keys=False, width=100, allow_unicode=True)
 
         page = [f"# {name}\n",
@@ -291,9 +291,9 @@ def gen_examples():
                 f"| Language | `{lang}` |",
                 f"| Mechanism status | `{status}` |",
                 f"| Task | {(ir.get('task') or {}).get('summary', '')[:300]} |\n",
-                '=== "IMQL"\n',
+                '=== "IMML"\n',
                 "    ```text",
-                *(f"    {ln}" for ln in imql.splitlines()),
+                *(f"    {ln}" for ln in imml.splitlines()),
                 "    ```\n",
                 '=== "IR (YAML)"\n',
                 "    ```yaml",
@@ -305,7 +305,7 @@ def gen_examples():
 
     # index with a sortable-ish table
     idx = [f"# Examples\n",
-           f"All **{len(IRS)}** corpus subnets, each reverse-engineered into the IR and lifted to IMQL. "
+           f"All **{len(IRS)}** corpus subnets, each reverse-engineered into the IR and lifted to IMML. "
            f"Grouped in the nav by archetype. Use search to filter by name, primitive, or metric.\n",
            "\n| subnet | netuid | archetype | lang | status |",
            "|---|---|---|---|---|"]
@@ -329,10 +329,10 @@ def gen_examples():
 def gen_toolchain():
     import ast
     body = ["# CLI reference\n",
-            "The IMQL toolchain. All scripts run under the project venv "
+            "The IMML toolchain. All scripts run under the project venv "
             "(`./.venv/bin/python tooling/<script>.py`).\n"]
     order = ["validate.py", "lift.py", "compile.py", "fmt.py", "coverage.py", "canonicalize.py",
-             "generate.py", "derive-composition.py", "stress-report.py", "imql_core.py"]
+             "generate.py", "derive-composition.py", "stress-report.py", "imml_core.py"]
     for fn in order:
         p = ROOT / "tooling" / fn
         if not p.exists():
@@ -345,8 +345,8 @@ def gen_toolchain():
 def gen_status():
     body = [f"# Status & reports\n",
             f"Live, auto-generated reports over the {len(IRS)}-subnet corpus.\n",
-            "\n## IMQL coverage\n",
-            '--8<-- "reports/imql-coverage.md"\n',
+            "\n## IMML coverage\n",
+            '--8<-- "reports/imml-coverage.md"\n',
             "\n## Metric vocabulary candidates\n",
             '--8<-- "reports/vocab-candidates.md"\n',
             "\n## Corpus extraction summary\n",

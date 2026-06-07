@@ -10,9 +10,9 @@ python3 -m venv .venv
 
 ## Author a mechanism
 
-Write a `.imql` file:
+Write a `.imml` file:
 
-```text title="my-mechanism.imql"
+```text title="my-mechanism.imml"
 mechanism MyMechanism {
     netuid: 123
     lang: python
@@ -34,7 +34,7 @@ mechanism MyMechanism {
 ## Compile → validate
 
 ```bash
-./.venv/bin/python tooling/compile.py my-mechanism.imql > my-mechanism.yaml
+./.venv/bin/python tooling/compile.py my-mechanism.imml > my-mechanism.yaml
 ./.venv/bin/python tooling/validate.py my-mechanism.yaml      # -> 1/1 valid
 ```
 
@@ -53,7 +53,7 @@ clearly-marked `NotImplementedError` for a bespoke metric.
 
 ## Read an existing subnet
 
-Every corpus subnet lifts to IMQL:
+Every corpus subnet lifts to IMML:
 
 ```bash
 ./.venv/bin/python tooling/lift.py instances/corpus/<Owner>__<repo>.yaml

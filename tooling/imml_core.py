@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""IMQL core: the structural signature, IR->IMQL (lift), and IMQL->IR (compile).
+"""IMML core: the structural signature, IR->IMML (lift), and IMML->IR (compile).
 
 The round-trip success criterion is over the mechanism's STRUCTURAL SIGNATURE — the design:
 enums, numeric params, typed primitive nodes, the metric leaves, and the composition tree.
@@ -7,7 +7,7 @@ It deliberately EXCLUDES prose and provenance (task.summary, *.notes, provenance
 free-text), which are extraction bookkeeping, not part of a design language. "100% fidelity"
 means: signature(ir) == signature(compile(lift(ir))) for every corpus instance.
 
-lift(ir)        -> IMQL text capturing the full signature
+lift(ir)        -> IMML text capturing the full signature
 compile(text)   -> a MINIMAL IR dict populated with only the structural fields
 signature(ir)   -> the normalized projection used for comparison (works on full or minimal IR)
 """
@@ -117,11 +117,11 @@ def signature_diff(a: dict, b: dict) -> list[str]:
 
 
 # --------------------------------------------------------------------------- #
-# lift: IR -> IMQL text
+# lift: IR -> IMML text
 # --------------------------------------------------------------------------- #
 
 def _s(x):
-    """emit a scalar as IMQL token; None -> '-'."""
+    """emit a scalar as IMML token; None -> '-'."""
     if x is None:
         return "-"
     if isinstance(x, bool):
@@ -158,7 +158,7 @@ def lift(ir: dict) -> str:
     shape = comp.get("shape") or "pipeline"
     overlays = set(comp.get("overlays") or [])
 
-    IND, IND2 = "    ", "        "   # 4-space indentation (IMQL coding conventions)
+    IND, IND2 = "    ", "        "   # 4-space indentation (IMML coding conventions)
 
     def rv(v, quote=False):
         """render a scalar value; None -> None (omit). quote=True double-quotes strings."""
@@ -264,7 +264,7 @@ def lift(ir: dict) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# compile: IMQL text -> minimal IR
+# compile: IMML text -> minimal IR
 # --------------------------------------------------------------------------- #
 
 GRAMMAR = r"""
@@ -434,7 +434,7 @@ def _unesc(tok) -> str:
 
 
 def compile_text(text: str) -> dict:
-    """Parse IMQL text into a minimal IR dict (structural fields only)."""
+    """Parse IMML text into a minimal IR dict (structural fields only)."""
     tree = _parser.parse(text)
     _, name, headers, block = _T().transform(tree)
 

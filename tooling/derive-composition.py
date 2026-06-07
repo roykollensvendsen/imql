@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Backfill the `composition` block on incentive-mechanism instances.
 
-The composition (the IMQL combinator structure) is almost entirely DERIVABLE from fields the
+The composition (the IMML combinator structure) is almost entirely DERIVABLE from fields the
 extraction already produced — so we compute it rather than re-extract. To keep the carefully
 formatted, provenance-bearing instance files intact, this tool does NOT re-serialize the YAML:
 it parses read-only to compute the values, then APPENDS a top-level `composition:` block as text

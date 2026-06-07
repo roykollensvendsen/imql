@@ -5,7 +5,7 @@
     - [Authoring a mechanism](guides/authoring.md)
     - [Extraction guide](guides/extraction.md)
 - Language
-    - [The IMQL language](language/index.md)
+    - [The IMML language](language/index.md)
     - [Grammar](language/grammar.md)
     - [Coding conventions](language/style.md)
 - Reference

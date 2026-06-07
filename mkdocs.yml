@@ -1,4 +1,4 @@
-site_name: IMQL
+site_name: IMML
 site_description: A declarative language for Bittensor incentive-mechanism design, description, and generation.
 docs_dir: docs
 site_dir: site

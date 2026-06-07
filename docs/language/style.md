@@ -1,1 +1,1 @@
---8<-- "spec/05-imql-style.md"
+--8<-- "spec/05-imml-style.md"

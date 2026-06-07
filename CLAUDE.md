@@ -1,19 +1,19 @@
-# CLAUDE.md — IMQL
+# CLAUDE.md — IMML
 
-Guidance for working in this repository: **IMQL**, a declarative language for Bittensor incentive
+Guidance for working in this repository: **IMML**, a declarative language for Bittensor incentive
 mechanisms (a versioned JSON Schema / IR, a textual surface + grammar, lift/compile/format/generate
 tooling, a metric ontology, a 189-subnet corpus, and a Qt-style docs site).
 
 **Start here:** the repo-scoped skills capture the workflows and invariants —
-- **`imql-dev`** — extend the language (schema/grammar/ontology/generator/tooling); the hard invariants
+- **`imml-dev`** — extend the language (schema/grammar/ontology/generator/tooling); the hard invariants
   and the gates every change must pass.
-- **`imql-docs`** — build / preview / deploy the documentation site.
+- **`imml-docs`** — build / preview / deploy the documentation site.
 
-Also read `spec/04-imql-language.md` (the language) and `spec/05-imql-style.md` (coding conventions).
+Also read `spec/04-imml-language.md` (the language) and `spec/05-imml-style.md` (coding conventions).
 
 ## Hard invariants (do not break)
-- **Round-trip fidelity = 100%.** `tooling/coverage.py` lifts every IR to IMQL, compiles back, and
-  compares the *structural signature* (`imql_core.signature`, which excludes prose/provenance). `lift`
+- **Round-trip fidelity = 100%.** `tooling/coverage.py` lifts every IR to IMML, compiles back, and
+  compares the *structural signature* (`imml_core.signature`, which excludes prose/provenance). `lift`
   and `compile` must stay inverse over that signature.
 - **Governed versioning.** No schema field / enum value / ontology entry without ≥2× evidence + a
   CHANGELOG entry + a VERSION (and `$id`) bump + re-stamping & re-validating all instances.
@@ -35,19 +35,19 @@ A pre-commit hook (`tooling/pre-commit.sh`) enforces `validate.py` on any `insta
 change. Install: `ln -sf ../../tooling/pre-commit.sh .git/hooks/pre-commit`.
 
 ## Current state (handoff)
-Phases complete and committed: schema→IR v1.2.0; the IMQL language (grammar + lift/compile round-trip at
+Phases complete and committed: schema→IR v1.2.0; the IMML language (grammar + lift/compile round-trip at
 100% over 189 subnets); the metric ontology (95.8% structural); the generator (53/53 pipeline scaffolds);
-QML-faithful coding conventions + `imql-fmt`; the docs site (live at
-https://roykollensvendsen.github.io/imql/). This repo was extracted from a workspace and is the source of
+QML-faithful coding conventions + `imml-fmt`; the docs site (live at
+https://roykollensvendsen.github.io/imml/). This repo was extracted from a workspace and is the source of
 truth; it is referenced as the `incentive-schema` submodule in `~/mining/sn109` (a Bittensor mining
 workspace that also holds the `academia-archives` corpus).
 
 ## Backlog / next work
-1. Reconcile `lang/imql.ebnf` with the live lark grammar (the EBNF documents `from groundtruth` /
+1. Reconcile `lang/imml.ebnf` with the live lark grammar (the EBNF documents `from groundtruth` /
    `metric family(specific)`; the parser uses `gt:` items / `metric <kind> fam X spec Y`).
 2. Comment-preserving formatter (`fmt.py` currently drops `#` comments).
 3. Generation beyond the pipeline archetype (multiplex/gated/tournament).
-4. **Mechanism simulator** — instantiate an IMQL spec against strategic miner policies to *measure*
+4. **Mechanism simulator** — instantiate an IMML spec against strategic miner policies to *measure*
    incentive-compatibility (the big next phase; the language is the substrate).
 5. Full-subnet description — extend the IR to facets (chain_config/architecture/economics/health);
    chain facets need `btcli`/`bittensor` (not installed).

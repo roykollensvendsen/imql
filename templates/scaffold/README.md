@@ -1,6 +1,6 @@
 # Generation scaffold
 
-`tooling/generate.py` compiles an IMQL IR instance into a runnable Python validator scaffold here's
+`tooling/generate.py` compiles an IMML IR instance into a runnable Python validator scaffold here's
 shape:
 
 - `metric_library.py` — canonical, reusable `score()` primitives keyed by metric **family**

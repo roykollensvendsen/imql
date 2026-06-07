@@ -1,1 +1,1 @@
---8<-- "spec/04-imql-language.md"
+--8<-- "spec/04-imml-language.md"

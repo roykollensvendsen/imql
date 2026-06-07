@@ -1,6 +1,6 @@
 name: docs
 
-# Builds the IMQL documentation site and deploys it (versioned, via mike) to gh-pages.
+# Builds the IMML documentation site and deploys it (versioned, via mike) to gh-pages.
 # The docs version label tracks the IR schema version (schema/VERSION), so e.g. schema
 # 1.2.0 publishes to /1.2/ with the `latest` alias.
 

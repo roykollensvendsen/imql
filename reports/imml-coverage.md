@@ -1,4 +1,4 @@
-# IMQL coverage report
+# IMML coverage report
 
 Instances: **189**  •  round-trip fidelity: **100.0%** (189/189)  •  structural-expressibility: **95.8%** (554/578 leaves)
 
