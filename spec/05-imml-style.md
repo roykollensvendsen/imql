@@ -46,11 +46,11 @@ score: metric win_rate fam classification_quality spec pairwise_win_rate {
     direction: higher_is_better
     normalization: none
 }
-aggregate: aggregator weighted_average {
+aggregate: WeightedAverage {
     composition: weighted_sum
     normalization: sum_to_one
 }
-emit: set_weights {
+emit: SetWeights {
     cadence: per_epoch
     tempo: "360 blocks"
 }
@@ -138,14 +138,14 @@ Mechanism {
             direction: higher_is_better
             normalization: none
         }
-        gt: llm_judgment {
+        gt: LlmJudgment {
             trust_model: adversarial
         }
-        aggregate: aggregator weighted_average {
+        aggregate: WeightedAverage {
             normalization: sum_to_one
         }
         smooth: smoother ema(alpha: 0.1)
-        emit: set_weights {
+        emit: SetWeights {
             cadence: per_epoch
             tempo: "360 blocks"
         }

@@ -32,14 +32,14 @@ Mechanism {
             direction: higher_is_better
             normalization: none
         }
-        gt: deterministic_dataset {
+        gt: DeterministicDataset {
             trust_model: trusted
         }
-        aggregate: aggregator weighted_average {
+        aggregate: WeightedAverage {
             normalization: sum_to_one
         }
         smooth: smoother ema(alpha: 0.1)
-        emit: set_weights {
+        emit: SetWeights {
             cadence: per_epoch
         }
     }

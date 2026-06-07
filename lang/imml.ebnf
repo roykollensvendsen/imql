@@ -73,7 +73,7 @@ gt_prop      = ( "trust_model" , ":" , trust_val )
              | ( "source"      , ":" , string ) ;
 
 (* ---- primitive operators (closed enums from the IR) ---- *)
-aggregator   = "aggregator" , agg_method , [ "{" , agg_prop { ";" agg_prop } "}" ] ;
+aggregator   = agg_method , [ "{" , agg_prop { ";" agg_prop } "}" ] ;  (* PascalCase type, e.g. WeightedAverage { … } *)
 agg_prop     = ( "normalization"    , ":" , agg_norm_val )
              | ( "temperature"      , ":" , number )
              | ( "decay_rate"       , ":" , number )
@@ -84,8 +84,8 @@ smoother     = "smoother" , ( "none"
                             | "sma" , "(" , "window" , ":" , int , ")"
                             | "other" ) ;
 
-weight_setter = "set_weights" , [ "{" , ws_prop { ";" ws_prop } "}" ]
-              | "commit_reveal" , [ "{" , ws_prop { ";" ws_prop } "}" ] ;
+weight_setter = "SetWeights" , [ "{" , ws_prop { ";" ws_prop } "}" ]
+              | "CommitReveal" , [ "{" , ws_prop { ";" ws_prop } "}" ] ;
 ws_prop      = ( "cadence" , ":" , cadence_val )
              | ( "tempo"   , ":" , ( string | int ) ) ;
 
@@ -94,14 +94,15 @@ predicate    = string ;   (* free-text gate condition; opaque *)
 (* ---- terminals / closed vocabularies (validated against the IR enums) ---- *)
 guard_kind    = PascalIdent ;  (* anti_gaming.kind, PascalCased on the surface (commit_reveal -> CommitReveal) *)
 state_kind    = ident ;  (* per_miner_state.state_kinds *)
-gt_kind       = ident ;  (* ground_truth_sources.kind *)
-agg_method    = ident ;  (* aggregation.method *)
+gt_kind       = PascalIdent ;  (* ground_truth_sources.kind, PascalCased on the surface *)
+agg_method    = PascalIdent ;  (* aggregation.method, PascalCased on the surface *)
 mux_structure = ident ;  (* sub_competitions.structure *)
 status_val    = ident ;  doc_val = ident ;  enforce_val = ident ;
 direction_val = ident ;  norm_val = ident ;  agg_norm_val = ident ;
 trust_val     = ident ;  cadence_val = ident ;
 
-ident        = letter , { letter | digit | "_" } ;
+ident        = letter , { letter | digit | "_" } ;   (* lowercase snake_case: property names + enum values *)
+PascalIdent  = "A".."Z" , { letter | digit } ;       (* child-object type names; maps to a snake_case IR enum *)
 string       = '"' , { ? any char except unescaped quote ? } , '"' ;
 int          = [ "-" ] , digit+ ;
 number       = [ "-" ] , digit+ , [ "." , digit+ ] ;

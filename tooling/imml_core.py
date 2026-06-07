@@ -264,10 +264,10 @@ def lift(ir: dict) -> str:
 
     for g in (ir.get("ground_truth_sources") or []):
         if isinstance(g, dict):
-            L.append(f"{IND2}gt: {g.get('kind')} {pb([('trust_model', rv(g.get('trust_model') or 'unknown'))])}")
+            L.append(f"{IND2}gt: {_pascal(g.get('kind'))} {pb([('trust_model', rv(g.get('trust_model') or 'unknown'))])}")
 
     if agg:
-        L.append(f"{IND2}aggregate: aggregator {agg.get('method') or 'proportional'} "
+        L.append(f"{IND2}aggregate: {_pascal(agg.get('method') or 'proportional')} "
                  f"{pb([('composition', rv(agg.get('composition'))), ('normalization', rv(agg.get('normalization'))), ('temperature', rv(agg.get('temperature'))), ('decay_rate', rv(agg.get('decay_rate'))), ('min_weight_floor', rv(agg.get('min_weight_floor')))])}")
     if sm:
         k = sm.get("kind") or "none"
@@ -279,7 +279,7 @@ def lift(ir: dict) -> str:
         ptxt = f"({', '.join(params)})" if params else ""
         L.append(f"{IND2}smooth: smoother {k}{ptxt}")
     if ws:
-        L.append(f"{IND2}emit: {ws.get('on_chain_call') or 'set_weights'} "
+        L.append(f"{IND2}emit: {_pascal(ws.get('on_chain_call') or 'set_weights')} "
                  f"{pb([('cadence', rv(ws.get('cadence') or 'unknown')), ('tempo', rv(ws.get('tempo_or_interval'), quote=True))])}")
     if subc:
         L.append(f"{IND2}tracks {pb([('structure', rv(subc.get('structure') or 'none')), ('count', rv(subc.get('count')))])}")
@@ -317,10 +317,10 @@ shape: "Pipeline" -> pipeline
      | "Opaque" -> opaque
 
 item: "score" ":" scorer [propblock]               -> signal
-    | "gt" ":" NAME [propblock]                     -> gt
-    | "aggregate" ":" "aggregator" NAME [propblock] -> aggregate
+    | "gt" ":" NAME [propblock]                     -> gt          // NAME is a PascalCase type
+    | "aggregate" ":" NAME [propblock]              -> aggregate   // NAME is a PascalCase type
     | "smooth" ":" "smoother" smoother              -> smooth
-    | "emit" ":" NAME [propblock]                   -> emit
+    | "emit" ":" NAME [propblock]                   -> emit        // NAME is a PascalCase type
     | "tracks" propblock                            -> tracks
 
 scorer: "metric" NAME mopt* -> metric
@@ -425,9 +425,9 @@ class _T(Transformer):
         p = props or {}
         return ("signal", scorer, p.get("direction"), p.get("normalization") or "none")
     def gt(self, kind, props=None):
-        return ("gt", str(kind), (props or {}).get("trust_model"))
+        return ("gt", _snake(kind), (props or {}).get("trust_model"))
     def aggregate(self, method, props=None):
-        return ("aggregate", str(method), props or {})
+        return ("aggregate", _snake(method), props or {})
     def salpha(self, v):
         return ("alpha", v)
     def swindow(self, v):
@@ -441,7 +441,7 @@ class _T(Transformer):
         return ("smooth", sm[1])
     def emit(self, call, props=None):
         p = props or {}
-        return ("emit", str(call), p.get("cadence"), p.get("tempo"))
+        return ("emit", _snake(call), p.get("cadence"), p.get("tempo"))
     def tracks(self, props):
         return ("tracks", props)
     def block(self, shape, *items):

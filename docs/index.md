@@ -71,14 +71,14 @@ Mechanism {
             direction: higher_is_better
             normalization: none
         }
-        gt: llm_judgment {
+        gt: LlmJudgment {
             trust_model: adversarial
         }
-        aggregate: aggregator weighted_average {
+        aggregate: WeightedAverage {
             normalization: sum_to_one
         }
         smooth: smoother ema(alpha: 0.1)
-        emit: set_weights {
+        emit: SetWeights {
             cadence: per_epoch
             tempo: "360 blocks"
         }

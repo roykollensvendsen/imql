@@ -56,14 +56,14 @@ Mechanism {
             direction: higher_is_better
             normalization: none
         }
-        gt: llm_judgment {
+        gt: LlmJudgment {
             trust_model: adversarial
         }
-        aggregate: aggregator weighted_average {
+        aggregate: WeightedAverage {
             normalization: sum_to_one
         }
         smooth: smoother ema(alpha: 0.1)
-        emit: set_weights {
+        emit: SetWeights {
             cadence: per_epoch
             tempo: "360 blocks"
         }
@@ -99,10 +99,10 @@ ontology, not a permanent hole.
 | `Multiplex<structure>{track…}` | `sub_competitions` (+ tracks) |
 | `metric FAMILY(SPECIFIC)` | `scoring_signals[].{metric_family, metric_specific, metric_kind/_other}` |
 | `extern "raw"` | `scoring_signals[].{extern:true, metric_kind:other, metric_kind_other:"raw"}` |
-| `from groundtruth KIND {…}` | `ground_truth_sources[]` |
-| `aggregator METHOD {…}` | `aggregation.{method,…}` |
-| `smoother ema(alpha)` | `weight_setting.smoothing` |
-| `set_weights/commit_reveal {…}` | `weight_setting.{on_chain_call,cadence,tempo_or_interval}` |
+| `gt: KIND {…}` | `ground_truth_sources[]` |
+| `aggregate: METHOD {…}` | `aggregation.{method,…}` |
+| `smooth: smoother ema(alpha)` | `weight_setting.smoothing` |
+| `emit: SetWeights / CommitReveal {…}` | `weight_setting.{on_chain_call,cadence,tempo_or_interval}` |
 
 ## Tooling (built across M2–M4)
 - `tooling/lift.py` — IR → IMML (one corpus instance to a `.imml`).
