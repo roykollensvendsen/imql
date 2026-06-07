@@ -34,24 +34,24 @@ state_overlay = "@state" , "{" , state_kind { "," state_kind } "}" ;
 (* ---- combinators (composition.shape) ---- *)
 combinator   = pipeline | multiplex | gate | product | leaf ;
 
-pipeline     = "pipeline" , "{" ,
+pipeline     = "Pipeline" , "{" ,
                  "score"     , ":" , scorer ,
                  "aggregate" , ":" , aggregator ,
                  [ "smooth"  , ":" , smoother ] ,
                  "emit"      , ":" , weight_setter ,
               "}" ;
 
-multiplex    = "multiplex" , "<" , mux_structure , ">" , "{" ,
+multiplex    = "Multiplex" , "<" , mux_structure , ">" , "{" ,
                  track+ ,
                  [ "combine" , ":" , aggregator ] ,
               "}" ;
 track        = "track" , string , [ "weight" , number ] , ":" , combinator ;
 
-gate         = "gate" , "{" ,
+gate         = "Gate" , "{" ,
                  "when" , ":" , ( guard | predicate )+ ,
                  "then" , ":" , combinator ,
               "}" ;
-product      = "product" , "(" , combinator { "," , combinator } , ")" ;  (* multiplicative; any 0 kills *)
+product      = "Product" , "(" , combinator { "," , combinator } , ")" ;  (* multiplicative; any 0 kills *)
 
 leaf         = scorer ;   (* degenerate: a bare metric is a mechanism *)
 
@@ -92,7 +92,7 @@ ws_prop      = ( "cadence" , ":" , cadence_val )
 predicate    = string ;   (* free-text gate condition; opaque *)
 
 (* ---- terminals / closed vocabularies (validated against the IR enums) ---- *)
-guard_kind    = ident ;  (* anti_gaming.kind *)
+guard_kind    = PascalIdent ;  (* anti_gaming.kind, PascalCased on the surface (commit_reveal -> CommitReveal) *)
 state_kind    = ident ;  (* per_miner_state.state_kinds *)
 gt_kind       = ident ;  (* ground_truth_sources.kind *)
 agg_method    = ident ;  (* aggregation.method *)

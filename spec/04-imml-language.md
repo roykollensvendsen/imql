@@ -42,16 +42,16 @@ Mechanism {
         fraction: dynamic
     }
     @guards {
-        commit_reveal {
+        CommitReveal {
             enforcement: rejection
         }
-        deterministic_check {
+        DeterministicCheck {
             enforcement: rejection
         }
     }
     @state { cumulative_score }
 
-    pipeline {
+    Pipeline {
         score: metric win_rate fam classification_quality spec pairwise_win_rate {
             direction: higher_is_better
             normalization: none
@@ -95,8 +95,8 @@ ontology, not a permanent hole.
 | `@guards{…}` | `anti_gaming[]` + `composition.overlays:[guards]` |
 | `@state{…}` | `per_miner_state` + `composition.overlays:[state]` |
 | top-level combinator | `composition.shape` (pipeline/multiplex/gated/multiplicative/overlay_only/opaque) |
-| `pipeline{score,aggregate,smooth,emit}` | `scoring_signals[]` + `aggregation` + `weight_setting` |
-| `multiplex<structure>{track…}` | `sub_competitions` (+ tracks) |
+| `Pipeline{score,aggregate,smooth,emit}` | `scoring_signals[]` + `aggregation` + `weight_setting` |
+| `Multiplex<structure>{track…}` | `sub_competitions` (+ tracks) |
 | `metric FAMILY(SPECIFIC)` | `scoring_signals[].{metric_family, metric_specific, metric_kind/_other}` |
 | `extern "raw"` | `scoring_signals[].{extern:true, metric_kind:other, metric_kind_other:"raw"}` |
 | `from groundtruth KIND {…}` | `ground_truth_sources[]` |

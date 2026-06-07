@@ -22,12 +22,12 @@ Mechanism {
     submission: signals
 
     @guards {
-        deterministic_check {
+        DeterministicCheck {
             enforcement: rejection
         }
     }
 
-    pipeline {
+    Pipeline {
         score: metric accuracy {
             direction: higher_is_better
             normalization: none

@@ -16,7 +16,7 @@ no signals or JavaScript, so the mapping is:
 | id (first line) | `id: <Name>` inside the `Mechanism { … }` root object |
 | property declarations | header properties: `netuid`, `lang`, `status`, `submission` |
 | object properties | overlays: `@burn`, `@guards`, `@state` (attached-property style) |
-| child objects | the combinator block (`pipeline` / `multiplex` / …) |
+| child objects | the combinator block (`Pipeline` / `Multiplex` / …) and guards — PascalCase, like QML types |
 
 Each IMML group is separated from the next by a single blank line, exactly as QML separates its member
 groups — including the `id`, which sits alone above the header properties.
@@ -28,6 +28,12 @@ groups — including the `id`, which sits alone above the header properties.
   for simple expressions."*
 - One mechanism per file, extension `.imml`; the `id` is camelCase (QML ids are camelCase; PascalCase is
   reserved for types — here the root type `Mechanism`).
+- **Casing follows QML's type-vs-value split: child objects are PascalCase, everything else is lowercase.**
+  Child objects (a `TypeName { … }` instantiation) — the combinator (`Pipeline`, `Multiplex<single>`,
+  `Gated`, `Multiplicative`, `OverlayOnly`, `Opaque`) and the guards (`CommitReveal`, `ProofOfWork`, …) —
+  are PascalCase. Property names (`score`, `aggregate`, `emit`, `direction`) and enum values
+  (`weighted_average`, `set_weights`, `rejection`, `higher_is_better`) stay lowercase. The IR keeps its
+  lowercase snake_case enums; the PascalCase is purely the surface (lift/compile convert).
 
 ## Grouped properties — one per line
 
@@ -81,10 +87,10 @@ submission: [model_weights, commitment_hash]   # several
 
 ```text
 @guards {
-    commit_reveal {
+    CommitReveal {
         enforcement: rejection
     }
-    deterministic_check {
+    DeterministicCheck {
         enforcement: rejection
     }
 }
@@ -118,16 +124,16 @@ Mechanism {
         fraction: dynamic
     }
     @guards {
-        commit_reveal {
+        CommitReveal {
             enforcement: rejection
         }
-        deterministic_check {
+        DeterministicCheck {
             enforcement: rejection
         }
     }
     @state { cumulative_score }
 
-    pipeline {
+    Pipeline {
         score: metric win_rate fam classification_quality spec pairwise_win_rate {
             direction: higher_is_better
             normalization: none

@@ -137,9 +137,19 @@ def _esc(x) -> str:
 
 
 SHAPE_KW = {
-    "pipeline": "pipeline", "multiplex": "multiplex", "gated": "gated",
-    "multiplicative": "multiplicative", "overlay_only": "overlay_only", "opaque": "opaque",
+    "pipeline": "Pipeline", "multiplex": "Multiplex", "gated": "Gated",
+    "multiplicative": "Multiplicative", "overlay_only": "OverlayOnly", "opaque": "Opaque",
 }
+
+
+def _pascal(s) -> str:
+    """snake_case -> PascalCase (child-object / type names, QML style)."""
+    return "".join(w.capitalize() for w in str(s).split("_"))
+
+
+def _snake(s) -> str:
+    """PascalCase -> snake_case (inverse of _pascal for the IR's lowercase enums)."""
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", str(s)).lower()
 
 
 # word-boundary splitter: acronym run, capitalized/lower word, all-caps run, or digit run
@@ -215,7 +225,7 @@ def lift(ir: dict) -> str:
         guards = [a for a in (ir.get("anti_gaming") or []) if isinstance(a, dict)]
 
         def grender(a):
-            return f"{a.get('kind')} {pb([('enforcement', rv(a.get('enforcement')))], IND2)}"
+            return f"{_pascal(a.get('kind'))} {pb([('enforcement', rv(a.get('enforcement')))], IND2)}"
 
         if not guards:
             ov.append(f"{IND}@guards {{}}")
@@ -231,8 +241,8 @@ def lift(ir: dict) -> str:
 
     # --- combinator block ---
     L.append("")
-    head = f"multiplex<{subc.get('structure') or 'multi_mechanism'}>" if shape == "multiplex" \
-        else SHAPE_KW.get(shape, "pipeline")
+    head = f"Multiplex<{subc.get('structure') or 'multi_mechanism'}>" if shape == "multiplex" \
+        else SHAPE_KW.get(shape, "Pipeline")
     L.append(f"{IND}{head} {{")
 
     for s in (ir.get("scoring_signals") or []):
@@ -299,12 +309,12 @@ header: "netuid" ":" value           -> netuid
 guarddef: NAME [propblock]
 
 block: shape "{" item* "}"
-shape: "pipeline" -> pipeline
-     | "multiplex" "<" NAME ">" -> multiplex
-     | "gated" -> gated
-     | "multiplicative" -> multiplicative
-     | "overlay_only" -> overlay_only
-     | "opaque" -> opaque
+shape: "Pipeline" -> pipeline
+     | "Multiplex" "<" NAME ">" -> multiplex
+     | "Gated" -> gated
+     | "Multiplicative" -> multiplicative
+     | "OverlayOnly" -> overlay_only
+     | "Opaque" -> opaque
 
 item: "score" ":" scorer [propblock]               -> signal
     | "gt" ":" NAME [propblock]                     -> gt
@@ -374,7 +384,7 @@ class _T(Transformer):
     def submission_one(self, name):
         return ("submission", [str(name)])
     def guarddef(self, kind, props=None):
-        return (str(kind), (props or {}).get("enforcement"))
+        return (_snake(kind), (props or {}).get("enforcement"))
     def guards(self, *gs):
         return ("guards", list(gs))
     def state(self, *names):

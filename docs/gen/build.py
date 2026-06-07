@@ -239,7 +239,7 @@ def gen_grammar():
             NonTerminal("pipeline"), NonTerminal("multiplex"), NonTerminal("gate"),
             NonTerminal("product"), NonTerminal("metric leaf"))),
         "pipeline": Diagram(Sequence(
-            Terminal("pipeline"), Terminal("{"),
+            Terminal("Pipeline"), Terminal("{"),
             Terminal("score:"), NonTerminal("scorer"),
             Terminal("aggregate:"), NonTerminal("aggregator"),
             Optional(Sequence(Terminal("smooth:"), NonTerminal("smoother"))),

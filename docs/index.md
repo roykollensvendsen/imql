@@ -60,13 +60,13 @@ Mechanism {
         fraction: dynamic
     }
     @guards {
-        commit_reveal {
+        CommitReveal {
             enforcement: rejection
         }
     }
     @state { cumulative_score }
 
-    pipeline {
+    Pipeline {
         score: metric win_rate fam classification_quality spec pairwise_win_rate {
             direction: higher_is_better
             normalization: none
