@@ -1,0 +1,154 @@
+# IMML metric-tail spec mapping (companion to spec/06-metric-spec-language.md).
+# Each of the corpus's distinct bespoke metric strings expressed in the Layer-2 algebra,
+# or marked extern (genuinely opaque / not-a-submission-metric). Best-effort STRUCTURAL
+# assignments (machine type-checked by tooling/metric_spec.py --report), not source-verified semantics.
+- raw: alignment_signal_per_token
+  spec: mean(submission.alignment_per_token)
+- raw: behavioral_delta_between_conditions
+  spec: error(submission.condition_a, submission.condition_b)
+- raw: payment_compliance
+  spec: gate(submission.payment_compliant)
+- raw: proof_verification_rate
+  spec: rate(submission.proofs)
+- raw: spot_check_pass_rate
+  spec: rate(submission.spot_checks)
+- raw: work_volume_confidence_ramp
+  spec: affine(submission.work_volume, 0, 1)
+- raw: Opaque per-hotkey weight emitted by each external challenge's GET /internal/v1/get_weights; the underlying metric is challenge-defined and not visible in this repo.
+  extern: true
+- raw: compression_ratio_threshold
+  spec: gate(threshold(submission.compression_ratio, 0.5))
+- raw: refund-rate multiplicative penalty
+  spec: penalty(submission.refund_rate)
+- raw: locked_liquidity_amount
+  spec: submission.locked_liquidity
+- raw: lock_duration_commitment
+  spec: submission.lock_duration
+- raw: pool_multiplier
+  spec: submission.pool_multiplier
+- raw: graph_optimization_objective_cost
+  spec: submission.objective_cost
+- raw: stake_share
+  spec: share(submission.stake, peers)
+- raw: Opaque per-hotkey weight returned by each challenge's get_weights endpoint; the master does not know how it was computed (challenge-internal scoring lives out of tree).
+  extern: true
+- raw: Fixed per-challenge emission share (Decimal, >= 0) configured at challenge registration; determines how much of total emission each challenge's normalized weights contribute.
+  extern: true
+- raw: owner_burn_allocation
+  extern: true
+- raw: 'Total emission value across voted external subnets: sum(emission * alpha_price * subnet_weight).'
+  spec: sum(submission.voted_emissions)
+- raw: length_penalty
+  spec: penalty(submission.length)
+- raw: generation_discipline
+  spec: submission.generation_discipline
+- raw: efficiency
+  spec: submission.efficiency
+- raw: response_length_and_greeting_keyword
+  spec: submission.response_length + gate(submission.has_greeting_keyword)
+- raw: liquidity_value_L_in_range
+  spec: gate(submission.liquidity_in_range)
+- raw: returned_batch_size_equals_sent
+  spec: gate(member(submission.returned_batch_size, task.sent_size))
+- raw: dollar_cost_of_tokens
+  spec: submission.dollar_cost
+- raw: deterministic_validity_gate
+  spec: gate(submission.valid)
+- raw: cryptographic_proof_of_inference
+  spec: gate(submission.proof_valid)
+- raw: model_rarity_multiplier
+  spec: submission.model_rarity
+- raw: api_cost_penalty
+  spec: penalty(submission.api_cost)
+- raw: voter-weighted liquidity contribution (server-side; formula not in repo)
+  extern: true
+- raw: geographic_distribution
+  spec: submission.geographic_distribution
+- raw: Undocumented. README alludes to probabilistic verification of "semantic compatibility" and probability of an intent "match", but no scoring metric is defined in source.
+  extern: true
+- raw: No scoring signal — validator sets a fixed weight of 1.0 on UID 0 with no miner evaluation
+  extern: true
+- raw: zk_proof_cryptographic_validity
+  spec: gate(submission.zk_proof_valid)
+- raw: data_desirability_weight
+  spec: submission.data_desirability
+- raw: freshness_decay
+  spec: submission.freshness
+- raw: validation_pass_rate_multiplier
+  spec: rate(submission.validations)
+- raw: confidential_compute_remote_attestation_pass
+  spec: gate(submission.attestation_pass)
+- raw: demand_driven_auction_emission_share
+  spec: share(submission.bid, peers)
+- raw: stake_amount_with_duration_bonus
+  spec: submission.stake * submission.duration_bonus
+- raw: binary_close_above_open
+  spec: gate(threshold(submission.close - submission.open, 0))
+- raw: cash_allocation_penalty
+  spec: penalty(submission.cash_allocation)
+- raw: validity_gate
+  spec: gate(submission.valid)
+- raw: parameter_count
+  spec: submission.param_count
+- raw: data_freshness
+  spec: submission.data_freshness
+- raw: novelty_uniqueness
+  spec: submission.novelty
+- raw: on_chain_constraint_score_bps
+  spec: submission.constraint_score_bps
+- raw: per-uid numeric value returned by external service API /sapi/node/task/validate
+  extern: true
+- raw: normalized on-chain stake share (metagraph.S[uids] / sum)
+  spec: share(submission.stake, peers)
+- raw: Not specified — no scoring code or description in this repo.
+  extern: true
+- raw: model_whitelist_membership
+  spec: gate(member(submission.model, task.whitelist))
+- raw: commercial_request_contribution
+  spec: submission.commercial_contribution
+- raw: validator-issued strike penalty
+  spec: penalty(submission.strikes)
+- raw: data-integrity failure penalty
+  spec: penalty(submission.integrity_failures)
+- raw: 'binary overfitting indicator: +1 if relative improvement on the miner''s own data exceeds that on random data, else -1; EMA-smoothed into a binary moving average'
+  spec: sign(error(submission, task.random) - error(submission, task.own))
+- raw: predictive contribution (absolute meta-model logistic coefficient |beta_j|) of a miner's signal to forecasting the realized forward price/return outcome
+  spec: submission.predictive_contribution
+- raw: false_positive_rate_complement
+  spec: affine(submission.fpr, -1, 1)
+- raw: validity_penalty_multiplier
+  spec: penalty(submission.validity)
+- raw: fixed score per successfully completed, non-cheated organic job
+  spec: count(submission.completed_jobs)
+- raw: performance_benchmark / self-validation score (CPU/GPU scoring), formula undocumented
+  extern: true
+- raw: Mean of the miner hotkey's on-chain incentive value across all other active subnets (netuid 0 and 73 excluded), scaled by 100000 to form the BMPS.
+  spec: affine(mean(submission.cross_subnet_incentive), 100000, 0)
+- raw: grpo_reward
+  spec: submission.grpo_reward
+- raw: rl_environment_reward
+  spec: submission.rl_reward
+- raw: weighted_sum_of_normalized_task_scores
+  spec: sum(submission.normalized_task_scores)
+- raw: per-competition scalar score from sandboxed execution of the submitted algorithm (e.g. simulated total_profit for energy_arbitrage; fewer turns for RL Battleship)
+  extern: true
+- raw: probabilistic_forecast_crps
+  spec: score_rule(crps, submission.forecast, groundTruth.outcome)
+- raw: calmar_ratio
+  spec: submission.annual_return / submission.max_drawdown
+- raw: sharpe_ratio
+  spec: submission.excess_return / submission.volatility
+- raw: omega_ratio
+  spec: submission.gains / submission.losses
+- raw: sortino_ratio
+  spec: submission.excess_return / submission.downside_deviation
+- raw: statistical_confidence
+  spec: submission.confidence
+- raw: max_drawdown_penalty
+  spec: penalty(submission.max_drawdown)
+- raw: liquidity_range_width_penalty
+  spec: penalty(submission.range_width)
+- raw: distance_from_pool_current_tick
+  spec: error(submission.tick, task.current_tick)
+- raw: position_liquidity
+  spec: submission.position_liquidity

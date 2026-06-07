@@ -64,26 +64,32 @@ literal   = number | STRING | NAME ;             (* NAME = a named convex genera
 
 ## Empirical MDL measurement
 
-Bucketing all **75** distinct raw tail strings from the 189-subnet corpus by structure (heuristic
-keyword pass — the ~10 "unclassified" need manual confirmation):
+All **75** distinct raw tail strings from the 189-subnet corpus were written out in this algebra in
+[`vocab/metric-tail-specs.yaml`](../vocab/metric-tail-specs.yaml) and **machine type-checked** by
+`tooling/metric_spec.py --report`. These are best-effort *structural* assignments (validated to parse +
+type-check, not source-verified for exact semantics). The measured result:
 
-| structural family | count | expressed as |
-|---|---|---|
-| `measure(submission.field)` | 16 | a bare projection |
-| `compare / score(submission, ref∣peers)` | 10 | `error` / `score_rule` / `winrate` |
-| `gate / threshold → Bool` | 10 | `gate` / `threshold` |
-| `rate = mean(gate over items)` | 7 | `rate` |
-| `penalty = transform(measure)` | 6 | `penalty` / `neg` |
-| `share = x / Σ peers` | 5 | `share` |
-| `multiplier` | 3 | **not a metric** → the `Multiplicative` combinator |
-| (unclassified, needs review) | 10 | — |
-| **`extern` (genuine opaque hole)** | **8** | `extern("…")` |
+| measure | value |
+|---|---|
+| distinct tail metrics | **75** |
+| expressible in the algebra (type-check) | **64 (85%)** |
+| genuine `extern` residual (opaque / not-a-metric) | **11 (14%)** |
+| mean generator-calls per metric | **0.7** — the MDL upper bound |
+| distinct generators actually used | **13** of 18 |
 
-**~8/75 (≈10%) are genuinely opaque; the other ~90% fall into ~8 structural families over the ~18
-generators.** This is the empirical answer to the theory question: the *surface* tail is flat (75/75
-distinct, 0 recur), but the *structural* tail is not — the diversity is in field names and prose, not in
-computation. (This is a heuristic upper bound on coverage; the real number is what a `spec:` interpreter
-would actually express — see "binding" below.)
+Generator usage (frequency): `gate` 12, `penalty` 9, `error` 4, `rate` 3, `affine` 3, `share` 3,
+`mean` 2, `threshold` 2, `sum` 2, `member` 2, `sign` 1, `count` 1, `score_rule` 1.
+
+**85% of the tail is expressible, at a mean depth of <1 generator call per metric** — most are a bare
+field projection (`submission.param_count`) or a single wrap (`penalty(submission.api_cost)`). This is
+the empirical answer to the theory question: the *surface* tail is flat (75/75 distinct, 0 recur), but
+the *structural* tail is nearly trivial — the diversity lived in field names and prose, not in
+computation. Two generators (`gate`, `penalty`) cover ~⅓ of the whole tail.
+
+Two structural by-products fall out, and they matter: several "metrics" aren't metrics at all —
+**multipliers/bonuses** belong to the existing `Multiplicative` combinator, **EMA-smoothing** belongs to
+the `smooth:` stage, and **validity gates** belong to `@guards`. The spec language sharpens *what is
+actually a metric* versus what was mis-recorded as one.
 
 Two structural by-products fall out, and they matter: several "metrics" aren't metrics at all —
 **multipliers/bonuses** belong to the existing `Multiplicative` combinator, **EMA-smoothing** belongs to
