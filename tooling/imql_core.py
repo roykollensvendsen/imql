@@ -173,16 +173,19 @@ def lift(ir: dict) -> str:
         return _esc(v) if quote else str(v)
 
     def pb(pairs):
-        """inline property block { k: v, ... } omitting null-valued props."""
+        """inline grouped-property block { k: v; ... } (QML style: ';' separators), nulls omitted."""
         items = [f"{k}: {r}" for k, r in pairs if r is not None]
-        return ("{ " + ", ".join(items) + " }") if items else "{}"
+        return ("{ " + "; ".join(items) + " }") if items else "{}"
 
     # --- header (canonical order, one per line) ---
     L = [f"mechanism {name} {{"]
     L.append(f"{IND}netuid: {rv(sub.get('netuid')) or '-'}")
     L.append(f"{IND}lang: {sub.get('implementation_lang') or 'python'}")
     L.append(f"{IND}status: {ir.get('mechanism_status') or 'unknown'}")
-    L.append(f"{IND}submission: [{', '.join((ir.get('task') or {}).get('submission_format') or [])}]")
+    formats = (ir.get("task") or {}).get("submission_format") or []
+    # single-element lists omit the brackets (QML list convention)
+    L.append(f"{IND}submission: {formats[0]}" if len(formats) == 1
+             else f"{IND}submission: [{', '.join(formats)}]")
 
     # --- overlays (@burn, @guards, @state) ---
     ov = []
@@ -272,6 +275,7 @@ header: "netuid" ":" value           -> netuid
       | "lang" ":" NAME               -> lang
       | "status" ":" NAME             -> status
       | "submission" ":" "[" [NAME ("," NAME)*] "]"  -> submission
+      | "submission" ":" NAME         -> submission_one
       | "@burn" propblock             -> burn
       | "@guards" "{" guarddef* "}"   -> guards
       | "@state" "{" [NAME ("," NAME)*] "}"  -> state
@@ -303,7 +307,7 @@ smoother: NAME [ "(" smparam ("," smparam)* ")" ]  -> smoothing
 smparam: "alpha" ":" value  -> salpha
        | "window" ":" value -> swindow
 
-propblock: "{" [prop ("," prop)*] "}"
+propblock: "{" [prop ((";" | ",") prop)*] "}"   // QML grouped-property style: ';' separators
 prop: NAME ":" value
 value: SIGNED_NUMBER  -> number
      | "-"            -> nullval
@@ -351,6 +355,8 @@ class _T(Transformer):
         return ("status", str(v))
     def submission(self, *names):
         return ("submission", [str(n) for n in names])
+    def submission_one(self, name):
+        return ("submission", [str(name)])
     def guarddef(self, kind, props=None):
         return (str(kind), (props or {}).get("enforcement"))
     def guards(self, *gs):

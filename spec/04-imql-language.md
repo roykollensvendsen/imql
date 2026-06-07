@@ -30,22 +30,25 @@ Derived inductively from all 189 corpus subnets:
 ## Worked example
 ```imql
 mechanism PairwiseArena {
-  netuid: 42
-  task: "Validators run pairwise duels; miners scored by win rate."
-  submission: [model_weights]
+    netuid: 42
+    lang: python
+    status: active
+    submission: model_weights
 
-  @burn   { uid: 0, fraction: dynamic }              # burn envelope (orthogonal overlay)
-  @guards { commit_reveal { enforcement: rejection }  # AND-composed guard bundle
-            deterministic_check { enforcement: rejection } }
-  @state  { cumulative_score }                        # per-miner state machine
+    @burn { uid: 0; fraction: dynamic }
+    @guards {
+        commit_reveal { enforcement: rejection }
+        deterministic_check { enforcement: rejection }
+    }
+    @state { cumulative_score }
 
-  pipeline {
-    score:     metric classification_quality(pairwise_win_rate)     # family(specific) typed leaf
-                 from groundtruth llm_judgment { trust_model: adversarial }
-    aggregate: aggregator weighted_average { normalization: sum_to_one }
-    smooth:    smoother ema(alpha: 0.1)
-    emit:      set_weights { cadence: per_epoch, tempo: "360 blocks" }
-  }
+    pipeline {
+        score: metric win_rate fam classification_quality spec pairwise_win_rate { direction: higher_is_better; normalization: none }
+        gt: llm_judgment { trust_model: adversarial }
+        aggregate: aggregator weighted_average { normalization: sum_to_one }
+        smooth: smoother ema(alpha: 0.1)
+        emit: set_weights { cadence: per_epoch; tempo: "360 blocks" }
+    }
 }
 ```
 

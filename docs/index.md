@@ -48,18 +48,21 @@ the language losslessly, and the language compiles to a runnable validator scaff
 
 ```text
 mechanism PairwiseArena {
-  netuid: 42
-  status: active
-  submission: [model_weights]
-  @burn   { uid: 0, fraction: dynamic }
-  @guards { commit_reveal { enforcement: rejection } }
-  @state  { cumulative_score }
-  pipeline {
-    score:     metric win_rate fam classification_quality spec pairwise_win_rate
-                 from groundtruth llm_judgment { trust_model: adversarial }
-    aggregate: aggregator weighted_average { normalization: sum_to_one }
-    smooth:    smoother ema(alpha: 0.1)
-    emit:      set_weights { cadence: per_epoch, tempo: "360 blocks" }
-  }
+    netuid: 42
+    lang: python
+    status: active
+    submission: model_weights
+
+    @burn { uid: 0; fraction: dynamic }
+    @guards { commit_reveal { enforcement: rejection } }
+    @state { cumulative_score }
+
+    pipeline {
+        score: metric win_rate fam classification_quality spec pairwise_win_rate { direction: higher_is_better; normalization: none }
+        gt: llm_judgment { trust_model: adversarial }
+        aggregate: aggregator weighted_average { normalization: sum_to_one }
+        smooth: smoother ema(alpha: 0.1)
+        emit: set_weights { cadence: per_epoch; tempo: "360 blocks" }
+    }
 }
 ```
