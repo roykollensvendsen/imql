@@ -5738,17 +5738,19 @@
 <a id="__codelineno-0-75" name="__codelineno-0-75" href="#__codelineno-0-75"></a>            composition: hybrid
 <a id="__codelineno-0-76" name="__codelineno-0-76" href="#__codelineno-0-76"></a>            normalization: sum_to_one
 <a id="__codelineno-0-77" name="__codelineno-0-77" href="#__codelineno-0-77"></a>        }
-<a id="__codelineno-0-78" name="__codelineno-0-78" href="#__codelineno-0-78"></a>        smooth: smoother ema(alpha: 0.00193)
-<a id="__codelineno-0-79" name="__codelineno-0-79" href="#__codelineno-0-79"></a>        publish: SetWeights {
-<a id="__codelineno-0-80" name="__codelineno-0-80" href="#__codelineno-0-80"></a>            cadence: rate_limited
-<a id="__codelineno-0-81" name="__codelineno-0-81" href="#__codelineno-0-81"></a>            tempo: &quot;100 blocks (MIN_WEIGHT_INTERVAL)&quot;
-<a id="__codelineno-0-82" name="__codelineno-0-82" href="#__codelineno-0-82"></a>        }
-<a id="__codelineno-0-83" name="__codelineno-0-83" href="#__codelineno-0-83"></a>        tracks {
-<a id="__codelineno-0-84" name="__codelineno-0-84" href="#__codelineno-0-84"></a>            structure: multi_mechanism
-<a id="__codelineno-0-85" name="__codelineno-0-85" href="#__codelineno-0-85"></a>            count: 2
-<a id="__codelineno-0-86" name="__codelineno-0-86" href="#__codelineno-0-86"></a>        }
-<a id="__codelineno-0-87" name="__codelineno-0-87" href="#__codelineno-0-87"></a>    }
-<a id="__codelineno-0-88" name="__codelineno-0-88" href="#__codelineno-0-88"></a>}
+<a id="__codelineno-0-78" name="__codelineno-0-78" href="#__codelineno-0-78"></a>        smooth: Ema {
+<a id="__codelineno-0-79" name="__codelineno-0-79" href="#__codelineno-0-79"></a>            alpha: 0.00193
+<a id="__codelineno-0-80" name="__codelineno-0-80" href="#__codelineno-0-80"></a>        }
+<a id="__codelineno-0-81" name="__codelineno-0-81" href="#__codelineno-0-81"></a>        publish: SetWeights {
+<a id="__codelineno-0-82" name="__codelineno-0-82" href="#__codelineno-0-82"></a>            cadence: rate_limited
+<a id="__codelineno-0-83" name="__codelineno-0-83" href="#__codelineno-0-83"></a>            tempo: &quot;100 blocks (MIN_WEIGHT_INTERVAL)&quot;
+<a id="__codelineno-0-84" name="__codelineno-0-84" href="#__codelineno-0-84"></a>        }
+<a id="__codelineno-0-85" name="__codelineno-0-85" href="#__codelineno-0-85"></a>        tracks {
+<a id="__codelineno-0-86" name="__codelineno-0-86" href="#__codelineno-0-86"></a>            structure: multi_mechanism
+<a id="__codelineno-0-87" name="__codelineno-0-87" href="#__codelineno-0-87"></a>            count: 2
+<a id="__codelineno-0-88" name="__codelineno-0-88" href="#__codelineno-0-88"></a>        }
+<a id="__codelineno-0-89" name="__codelineno-0-89" href="#__codelineno-0-89"></a>    }
+<a id="__codelineno-0-90" name="__codelineno-0-90" href="#__codelineno-0-90"></a>}
 </code></pre></div>
 </div>
 <div class="tabbed-block">

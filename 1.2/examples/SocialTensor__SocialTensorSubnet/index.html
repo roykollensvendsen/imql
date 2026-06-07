@@ -5727,17 +5727,19 @@
 <a id="__codelineno-0-64" name="__codelineno-0-64" href="#__codelineno-0-64"></a>            composition: hybrid
 <a id="__codelineno-0-65" name="__codelineno-0-65" href="#__codelineno-0-65"></a>            normalization: sum_to_one
 <a id="__codelineno-0-66" name="__codelineno-0-66" href="#__codelineno-0-66"></a>        }
-<a id="__codelineno-0-67" name="__codelineno-0-67" href="#__codelineno-0-67"></a>        smooth: smoother sma(window: 10)
-<a id="__codelineno-0-68" name="__codelineno-0-68" href="#__codelineno-0-68"></a>        publish: SetWeights {
-<a id="__codelineno-0-69" name="__codelineno-0-69" href="#__codelineno-0-69"></a>            cadence: rate_limited
-<a id="__codelineno-0-70" name="__codelineno-0-70" href="#__codelineno-0-70"></a>            tempo: &quot;loop_base_time 600 seconds; epoch_length default 100 (12s blocks)&quot;
-<a id="__codelineno-0-71" name="__codelineno-0-71" href="#__codelineno-0-71"></a>        }
-<a id="__codelineno-0-72" name="__codelineno-0-72" href="#__codelineno-0-72"></a>        tracks {
-<a id="__codelineno-0-73" name="__codelineno-0-73" href="#__codelineno-0-73"></a>            structure: multi_mechanism
-<a id="__codelineno-0-74" name="__codelineno-0-74" href="#__codelineno-0-74"></a>            count: 5
-<a id="__codelineno-0-75" name="__codelineno-0-75" href="#__codelineno-0-75"></a>        }
-<a id="__codelineno-0-76" name="__codelineno-0-76" href="#__codelineno-0-76"></a>    }
-<a id="__codelineno-0-77" name="__codelineno-0-77" href="#__codelineno-0-77"></a>}
+<a id="__codelineno-0-67" name="__codelineno-0-67" href="#__codelineno-0-67"></a>        smooth: Sma {
+<a id="__codelineno-0-68" name="__codelineno-0-68" href="#__codelineno-0-68"></a>            window: 10
+<a id="__codelineno-0-69" name="__codelineno-0-69" href="#__codelineno-0-69"></a>        }
+<a id="__codelineno-0-70" name="__codelineno-0-70" href="#__codelineno-0-70"></a>        publish: SetWeights {
+<a id="__codelineno-0-71" name="__codelineno-0-71" href="#__codelineno-0-71"></a>            cadence: rate_limited
+<a id="__codelineno-0-72" name="__codelineno-0-72" href="#__codelineno-0-72"></a>            tempo: &quot;loop_base_time 600 seconds; epoch_length default 100 (12s blocks)&quot;
+<a id="__codelineno-0-73" name="__codelineno-0-73" href="#__codelineno-0-73"></a>        }
+<a id="__codelineno-0-74" name="__codelineno-0-74" href="#__codelineno-0-74"></a>        tracks {
+<a id="__codelineno-0-75" name="__codelineno-0-75" href="#__codelineno-0-75"></a>            structure: multi_mechanism
+<a id="__codelineno-0-76" name="__codelineno-0-76" href="#__codelineno-0-76"></a>            count: 5
+<a id="__codelineno-0-77" name="__codelineno-0-77" href="#__codelineno-0-77"></a>        }
+<a id="__codelineno-0-78" name="__codelineno-0-78" href="#__codelineno-0-78"></a>    }
+<a id="__codelineno-0-79" name="__codelineno-0-79" href="#__codelineno-0-79"></a>}
 </code></pre></div>
 </div>
 <div class="tabbed-block">

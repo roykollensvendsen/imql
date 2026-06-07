@@ -5727,13 +5727,15 @@ control flow; the four empirical combinators are the only composition operators.
 <a id="__codelineno-1-31" name="__codelineno-1-31" href="#__codelineno-1-31"></a>        aggregate: WeightedAverage {
 <a id="__codelineno-1-32" name="__codelineno-1-32" href="#__codelineno-1-32"></a>            normalization: sum_to_one
 <a id="__codelineno-1-33" name="__codelineno-1-33" href="#__codelineno-1-33"></a>        }
-<a id="__codelineno-1-34" name="__codelineno-1-34" href="#__codelineno-1-34"></a>        smooth: smoother ema(alpha: 0.1)
-<a id="__codelineno-1-35" name="__codelineno-1-35" href="#__codelineno-1-35"></a>        publish: SetWeights {
-<a id="__codelineno-1-36" name="__codelineno-1-36" href="#__codelineno-1-36"></a>            cadence: per_epoch
-<a id="__codelineno-1-37" name="__codelineno-1-37" href="#__codelineno-1-37"></a>            tempo: &quot;360 blocks&quot;
-<a id="__codelineno-1-38" name="__codelineno-1-38" href="#__codelineno-1-38"></a>        }
-<a id="__codelineno-1-39" name="__codelineno-1-39" href="#__codelineno-1-39"></a>    }
-<a id="__codelineno-1-40" name="__codelineno-1-40" href="#__codelineno-1-40"></a>}
+<a id="__codelineno-1-34" name="__codelineno-1-34" href="#__codelineno-1-34"></a>        smooth: Ema {
+<a id="__codelineno-1-35" name="__codelineno-1-35" href="#__codelineno-1-35"></a>            alpha: 0.1
+<a id="__codelineno-1-36" name="__codelineno-1-36" href="#__codelineno-1-36"></a>        }
+<a id="__codelineno-1-37" name="__codelineno-1-37" href="#__codelineno-1-37"></a>        publish: SetWeights {
+<a id="__codelineno-1-38" name="__codelineno-1-38" href="#__codelineno-1-38"></a>            cadence: per_epoch
+<a id="__codelineno-1-39" name="__codelineno-1-39" href="#__codelineno-1-39"></a>            tempo: &quot;360 blocks&quot;
+<a id="__codelineno-1-40" name="__codelineno-1-40" href="#__codelineno-1-40"></a>        }
+<a id="__codelineno-1-41" name="__codelineno-1-41" href="#__codelineno-1-41"></a>    }
+<a id="__codelineno-1-42" name="__codelineno-1-42" href="#__codelineno-1-42"></a>}
 </code></pre></div>
 <h2 id="the-metric-hole-3-levels">The metric hole (3 levels)<a class="headerlink" href="#the-metric-hole-3-levels" title="Permanent link">&para;</a></h2>
 <p>A <code>metric</code> leaf has three resolution states, mirroring <code>vocab/metric-ontology.yaml</code>:</p>
@@ -5825,7 +5827,7 @@ ontology, not a permanent hole.</p>
 <td><code>aggregation.{method,…}</code></td>
 </tr>
 <tr>
-<td><code>smooth: smoother ema(alpha)</code></td>
+<td><code>smooth: Ema { alpha: … }</code></td>
 <td><code>weight_setting.smoothing</code></td>
 </tr>
 <tr>

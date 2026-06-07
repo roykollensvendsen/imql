@@ -5735,17 +5735,19 @@
 <a id="__codelineno-0-72" name="__codelineno-0-72" href="#__codelineno-0-72"></a>            composition: hybrid
 <a id="__codelineno-0-73" name="__codelineno-0-73" href="#__codelineno-0-73"></a>            normalization: l1
 <a id="__codelineno-0-74" name="__codelineno-0-74" href="#__codelineno-0-74"></a>        }
-<a id="__codelineno-0-75" name="__codelineno-0-75" href="#__codelineno-0-75"></a>        smooth: smoother ema(alpha: 0.3)
-<a id="__codelineno-0-76" name="__codelineno-0-76" href="#__codelineno-0-76"></a>        publish: SetWeights {
-<a id="__codelineno-0-77" name="__codelineno-0-77" href="#__codelineno-0-77"></a>            cadence: per_epoch
-<a id="__codelineno-0-78" name="__codelineno-0-78" href="#__codelineno-0-78"></a>            tempo: &quot;neuron.epoch_length blocks (default 100, 12s blocks)&quot;
-<a id="__codelineno-0-79" name="__codelineno-0-79" href="#__codelineno-0-79"></a>        }
-<a id="__codelineno-0-80" name="__codelineno-0-80" href="#__codelineno-0-80"></a>        tracks {
-<a id="__codelineno-0-81" name="__codelineno-0-81" href="#__codelineno-0-81"></a>            structure: multi_mechanism
-<a id="__codelineno-0-82" name="__codelineno-0-82" href="#__codelineno-0-82"></a>            count: 3
-<a id="__codelineno-0-83" name="__codelineno-0-83" href="#__codelineno-0-83"></a>        }
-<a id="__codelineno-0-84" name="__codelineno-0-84" href="#__codelineno-0-84"></a>    }
-<a id="__codelineno-0-85" name="__codelineno-0-85" href="#__codelineno-0-85"></a>}
+<a id="__codelineno-0-75" name="__codelineno-0-75" href="#__codelineno-0-75"></a>        smooth: Ema {
+<a id="__codelineno-0-76" name="__codelineno-0-76" href="#__codelineno-0-76"></a>            alpha: 0.3
+<a id="__codelineno-0-77" name="__codelineno-0-77" href="#__codelineno-0-77"></a>        }
+<a id="__codelineno-0-78" name="__codelineno-0-78" href="#__codelineno-0-78"></a>        publish: SetWeights {
+<a id="__codelineno-0-79" name="__codelineno-0-79" href="#__codelineno-0-79"></a>            cadence: per_epoch
+<a id="__codelineno-0-80" name="__codelineno-0-80" href="#__codelineno-0-80"></a>            tempo: &quot;neuron.epoch_length blocks (default 100, 12s blocks)&quot;
+<a id="__codelineno-0-81" name="__codelineno-0-81" href="#__codelineno-0-81"></a>        }
+<a id="__codelineno-0-82" name="__codelineno-0-82" href="#__codelineno-0-82"></a>        tracks {
+<a id="__codelineno-0-83" name="__codelineno-0-83" href="#__codelineno-0-83"></a>            structure: multi_mechanism
+<a id="__codelineno-0-84" name="__codelineno-0-84" href="#__codelineno-0-84"></a>            count: 3
+<a id="__codelineno-0-85" name="__codelineno-0-85" href="#__codelineno-0-85"></a>        }
+<a id="__codelineno-0-86" name="__codelineno-0-86" href="#__codelineno-0-86"></a>    }
+<a id="__codelineno-0-87" name="__codelineno-0-87" href="#__codelineno-0-87"></a>}
 </code></pre></div>
 </div>
 <div class="tabbed-block">

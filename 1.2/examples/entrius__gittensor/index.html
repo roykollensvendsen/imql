@@ -5728,17 +5728,19 @@
 <a id="__codelineno-0-65" name="__codelineno-0-65" href="#__codelineno-0-65"></a>            composition: multiplicative
 <a id="__codelineno-0-66" name="__codelineno-0-66" href="#__codelineno-0-66"></a>            normalization: sum_to_one
 <a id="__codelineno-0-67" name="__codelineno-0-67" href="#__codelineno-0-67"></a>        }
-<a id="__codelineno-0-68" name="__codelineno-0-68" href="#__codelineno-0-68"></a>        smooth: smoother ema(alpha: 0.7)
-<a id="__codelineno-0-69" name="__codelineno-0-69" href="#__codelineno-0-69"></a>        publish: SetWeights {
-<a id="__codelineno-0-70" name="__codelineno-0-70" href="#__codelineno-0-70"></a>            cadence: rate_limited
-<a id="__codelineno-0-71" name="__codelineno-0-71" href="#__codelineno-0-71"></a>            tempo: &quot;VALIDATOR_STEPS_INTERVAL=120 steps (~2h per scoring round); VALIDATOR_WAIT=60s loop&quot;
-<a id="__codelineno-0-72" name="__codelineno-0-72" href="#__codelineno-0-72"></a>        }
-<a id="__codelineno-0-73" name="__codelineno-0-73" href="#__codelineno-0-73"></a>        tracks {
-<a id="__codelineno-0-74" name="__codelineno-0-74" href="#__codelineno-0-74"></a>            structure: multi_mechanism
-<a id="__codelineno-0-75" name="__codelineno-0-75" href="#__codelineno-0-75"></a>            count: 2
-<a id="__codelineno-0-76" name="__codelineno-0-76" href="#__codelineno-0-76"></a>        }
-<a id="__codelineno-0-77" name="__codelineno-0-77" href="#__codelineno-0-77"></a>    }
-<a id="__codelineno-0-78" name="__codelineno-0-78" href="#__codelineno-0-78"></a>}
+<a id="__codelineno-0-68" name="__codelineno-0-68" href="#__codelineno-0-68"></a>        smooth: Ema {
+<a id="__codelineno-0-69" name="__codelineno-0-69" href="#__codelineno-0-69"></a>            alpha: 0.7
+<a id="__codelineno-0-70" name="__codelineno-0-70" href="#__codelineno-0-70"></a>        }
+<a id="__codelineno-0-71" name="__codelineno-0-71" href="#__codelineno-0-71"></a>        publish: SetWeights {
+<a id="__codelineno-0-72" name="__codelineno-0-72" href="#__codelineno-0-72"></a>            cadence: rate_limited
+<a id="__codelineno-0-73" name="__codelineno-0-73" href="#__codelineno-0-73"></a>            tempo: &quot;VALIDATOR_STEPS_INTERVAL=120 steps (~2h per scoring round); VALIDATOR_WAIT=60s loop&quot;
+<a id="__codelineno-0-74" name="__codelineno-0-74" href="#__codelineno-0-74"></a>        }
+<a id="__codelineno-0-75" name="__codelineno-0-75" href="#__codelineno-0-75"></a>        tracks {
+<a id="__codelineno-0-76" name="__codelineno-0-76" href="#__codelineno-0-76"></a>            structure: multi_mechanism
+<a id="__codelineno-0-77" name="__codelineno-0-77" href="#__codelineno-0-77"></a>            count: 2
+<a id="__codelineno-0-78" name="__codelineno-0-78" href="#__codelineno-0-78"></a>        }
+<a id="__codelineno-0-79" name="__codelineno-0-79" href="#__codelineno-0-79"></a>    }
+<a id="__codelineno-0-80" name="__codelineno-0-80" href="#__codelineno-0-80"></a>}
 </code></pre></div>
 </div>
 <div class="tabbed-block">
