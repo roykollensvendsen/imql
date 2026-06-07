@@ -54,16 +54,33 @@ Mechanism {
     status: active
     submission: model_weights
 
-    @burn { uid: 0; fraction: dynamic }
-    @guards { commit_reveal { enforcement: rejection } }
+    @burn {
+        uid: 0
+        fraction: dynamic
+    }
+    @guards {
+        commit_reveal {
+            enforcement: rejection
+        }
+    }
     @state { cumulative_score }
 
     pipeline {
-        score: metric win_rate fam classification_quality spec pairwise_win_rate { direction: higher_is_better; normalization: none }
-        gt: llm_judgment { trust_model: adversarial }
-        aggregate: aggregator weighted_average { normalization: sum_to_one }
+        score: metric win_rate fam classification_quality spec pairwise_win_rate {
+            direction: higher_is_better
+            normalization: none
+        }
+        gt: llm_judgment {
+            trust_model: adversarial
+        }
+        aggregate: aggregator weighted_average {
+            normalization: sum_to_one
+        }
         smooth: smoother ema(alpha: 0.1)
-        emit: set_weights { cadence: per_epoch; tempo: "360 blocks" }
+        emit: set_weights {
+            cadence: per_epoch
+            tempo: "360 blocks"
+        }
     }
 }
 ```

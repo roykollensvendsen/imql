@@ -20,14 +20,27 @@ Mechanism {
     status: active
     submission: signals
 
-    @guards { deterministic_check { enforcement: rejection } }
+    @guards {
+        deterministic_check {
+            enforcement: rejection
+        }
+    }
 
     pipeline {
-        score: metric accuracy { direction: higher_is_better; normalization: none }
-        gt: deterministic_dataset { trust_model: trusted }
-        aggregate: aggregator weighted_average { normalization: sum_to_one }
+        score: metric accuracy {
+            direction: higher_is_better
+            normalization: none
+        }
+        gt: deterministic_dataset {
+            trust_model: trusted
+        }
+        aggregate: aggregator weighted_average {
+            normalization: sum_to_one
+        }
         smooth: smoother ema(alpha: 0.1)
-        emit: set_weights { cadence: per_epoch }
+        emit: set_weights {
+            cadence: per_epoch
+        }
     }
 }
 ```

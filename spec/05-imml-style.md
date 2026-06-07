@@ -28,19 +28,30 @@ The three IMML groups are separated by a single blank line, exactly as QML separ
 - One mechanism per file, extension `.imml`; the `id` is camelCase (QML ids are camelCase; PascalCase is
   reserved for types — here the root type `Mechanism`).
 
-## Grouped properties — semicolons
+## Grouped properties — one per line
 
-A grouped-property block is written inline with **semicolons**, matching QML exactly
-(`anchors { left: parent.left; top: parent.top; leftMargin: 20 }`):
+A grouped-property block puts **one property per line**, each indented four spaces under its owner, with
+the closing brace aligned to the owner — exactly as QML lays out an expanded grouped property
+(`font { family: "..."; pixelSize: 12 }` may also be written multi-line):
 
 ```text
-score: metric win_rate fam classification_quality spec pairwise_win_rate { direction: higher_is_better; normalization: none }
-aggregate: aggregator weighted_average { composition: weighted_sum; normalization: sum_to_one }
-emit: set_weights { cadence: per_epoch; tempo: "360 blocks" }
+score: metric win_rate fam classification_quality spec pairwise_win_rate {
+    direction: higher_is_better
+    normalization: none
+}
+aggregate: aggregator weighted_average {
+    composition: weighted_sum
+    normalization: sum_to_one
+}
+emit: set_weights {
+    cadence: per_epoch
+    tempo: "360 blocks"
+}
 ```
 
-Single space after each `:`, `; ` between entries, a space inside the braces, and **null-valued
-properties are omitted** (an absent property *is* null; spelling out `decay_rate: -` is noise).
+Single space after each `:`, no separator between lines (`;` and `,` are still accepted by the parser),
+and **null-valued properties are omitted** (an absent property *is* null; spelling out `decay_rate: -` is
+noise). An empty block collapses to `{}`.
 
 ## Lists — omit brackets for a single element
 
@@ -53,15 +64,27 @@ submission: [model_weights, commitment_hash]   # several
 
 ## Overlays & child objects
 
-- `@burn` and `@state` are inline grouped properties: `@burn { uid: 0; fraction: dynamic }`,
+- `@burn` is a grouped property, so its members go one per line:
+
+```text
+@burn {
+    uid: 0
+    fraction: dynamic
+}
+```
+
+- `@state` is the exception — a bare flag *list*, not key/value properties — so it stays inline:
   `@state { cumulative_score, registration_age }`.
-- `@guards` holds *child objects* (guards), so it follows the child-object rule: a single guard is inline
-  (`@guards { commit_reveal { enforcement: rejection } }`); **two or more go one per line**:
+- `@guards` holds *child objects* (guards), one per line; each guard's own property block expands too:
 
 ```text
 @guards {
-    commit_reveal { enforcement: rejection }
-    deterministic_check { enforcement: rejection }
+    commit_reveal {
+        enforcement: rejection
+    }
+    deterministic_check {
+        enforcement: rejection
+    }
 }
 ```
 
@@ -87,19 +110,36 @@ Mechanism {
     status: active
     submission: model_weights
 
-    @burn { uid: 0; fraction: dynamic }
+    @burn {
+        uid: 0
+        fraction: dynamic
+    }
     @guards {
-        commit_reveal { enforcement: rejection }
-        deterministic_check { enforcement: rejection }
+        commit_reveal {
+            enforcement: rejection
+        }
+        deterministic_check {
+            enforcement: rejection
+        }
     }
     @state { cumulative_score }
 
     pipeline {
-        score: metric win_rate fam classification_quality spec pairwise_win_rate { direction: higher_is_better; normalization: none }
-        gt: llm_judgment { trust_model: adversarial }
-        aggregate: aggregator weighted_average { normalization: sum_to_one }
+        score: metric win_rate fam classification_quality spec pairwise_win_rate {
+            direction: higher_is_better
+            normalization: none
+        }
+        gt: llm_judgment {
+            trust_model: adversarial
+        }
+        aggregate: aggregator weighted_average {
+            normalization: sum_to_one
+        }
         smooth: smoother ema(alpha: 0.1)
-        emit: set_weights { cadence: per_epoch; tempo: "360 blocks" }
+        emit: set_weights {
+            cadence: per_epoch
+            tempo: "360 blocks"
+        }
     }
 }
 ```

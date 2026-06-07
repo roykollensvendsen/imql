@@ -183,10 +183,14 @@ def lift(ir: dict) -> str:
             return str(v)
         return _esc(v) if quote else str(v)
 
-    def pb(pairs):
-        """inline grouped-property block { k: v; ... } (QML style: ';' separators), nulls omitted."""
+    def pb(pairs, indent=IND2):
+        """grouped-property block, one property per line; nulls omitted, empty -> {}.
+        `indent` is the indentation of the owning line (the closing brace aligns to it)."""
         items = [f"{k}: {r}" for k, r in pairs if r is not None]
-        return ("{ " + "; ".join(items) + " }") if items else "{}"
+        if not items:
+            return "{}"
+        inner = indent + IND
+        return "{\n" + "\n".join(f"{inner}{it}" for it in items) + f"\n{indent}}}"
 
     # --- header (canonical order, one per line; id first, QML style) ---
     L = ["Mechanism {"]
@@ -205,17 +209,16 @@ def lift(ir: dict) -> str:
         uid = burn.get("address_or_uid")
         uidr = None if uid is None else (str(int(uid)) if isinstance(uid, int) and not isinstance(uid, bool) else _esc(uid))
         fr = "dynamic" if burn.get("dynamic") else rv(burn.get("fraction"))
-        ov.append(f"{IND}@burn {pb([('uid', uidr), ('fraction', fr)])}")
+        ov.append(f"{IND}@burn {pb([('uid', uidr), ('fraction', fr)], IND)}")
     if "guards" in overlays:
         guards = [a for a in (ir.get("anti_gaming") or []) if isinstance(a, dict)]
 
         def grender(a):
-            return f"{a.get('kind')} {pb([('enforcement', rv(a.get('enforcement')))])}"
+            return f"{a.get('kind')} {pb([('enforcement', rv(a.get('enforcement')))], IND2)}"
 
-        if len(guards) <= 1:
-            inner = " ".join(grender(a) for a in guards)
-            ov.append(f"{IND}@guards {{ {inner} }}" if inner else f"{IND}@guards {{}}")
-        else:                                     # one guard per line when there are several
+        if not guards:
+            ov.append(f"{IND}@guards {{}}")
+        else:                                     # one guard (child object) per line
             ov.append(f"{IND}@guards {{")
             ov.extend(f"{IND2}{grender(a)}" for a in guards)
             ov.append(f"{IND}}}")
@@ -319,7 +322,7 @@ smoother: NAME [ "(" smparam ("," smparam)* ")" ]  -> smoothing
 smparam: "alpha" ":" value  -> salpha
        | "window" ":" value -> swindow
 
-propblock: "{" [prop ((";" | ",") prop)*] "}"   // QML grouped-property style: ';' separators
+propblock: "{" [prop ((";" | ",")? prop)*] "}"  // grouped-property; one per line (sep optional), ';'/',' also ok
 prop: NAME ":" value
 value: SIGNED_NUMBER  -> number
      | "-"            -> nullval
