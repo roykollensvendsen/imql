@@ -1,0 +1,17 @@
+- [Home](index.md)
+- Guides
+    - [Overview](guides/overview.md)
+    - [Quick start](guides/quick-start.md)
+    - [Authoring a mechanism](guides/authoring.md)
+    - [Extraction guide](guides/extraction.md)
+- Language
+    - [The IMQL language](language/index.md)
+    - [Grammar](language/grammar.md)
+- Reference
+    - [All primitives](reference/index.md)
+    - [Metric families](reference/metric-families.md)
+- [Examples](examples/)
+- Toolchain
+    - [CLI reference](toolchain/cli.md)
+- Status
+    - [Coverage and reports](status/index.md)

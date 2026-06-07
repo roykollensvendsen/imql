@@ -1,0 +1,1 @@
+--8<-- "spec/02-authoring-guide.md"

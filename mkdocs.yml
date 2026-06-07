@@ -1,0 +1,75 @@
+site_name: IMQL
+site_description: A declarative language for Bittensor incentive-mechanism design, description, and generation.
+docs_dir: docs
+site_dir: site
+repo_url: https://github.com/fx-integral/academia
+repo_name: academia
+
+extra_css:
+  - assets/custom.css
+
+theme:
+  name: material
+  features:
+    - navigation.tabs          # top-level sections as tabs (Qt-like)
+    - navigation.sections      # group pages in the left tree
+    - navigation.top           # back-to-top
+    - navigation.indexes       # section landing pages
+    - navigation.tracking
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  font:
+    text: Source Sans 3
+    code: JetBrains Mono
+
+plugins:
+  - search
+  - gen-files:
+      scripts:
+        - docs/gen/build.py
+  - literate-nav:
+      nav_file: SUMMARY.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.snippets:
+      base_path: ["."]         # allow including spec/*.md etc. from the project root
+
+extra:
+  version:
+    provider: mike
+    default: latest
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/fx-integral/academia
+
+# Nav lives in docs/SUMMARY.md (literate-nav); generated sections append their own SUMMARY fragments.

@@ -1,0 +1,51 @@
+name: docs
+
+# Builds the IMQL documentation site and deploys it (versioned, via mike) to gh-pages.
+# The docs version label tracks the IR schema version (incentive-schema/schema/VERSION),
+# so e.g. schema 1.2.0 publishes to /1.2/ with the `latest` alias.
+#
+# NOTE: this targets the repository's own gh-pages branch. incentive-schema currently lives
+# inside the sn109 parent repo whose remote points at the academia fork — confirm/repoint the
+# deploy target (or move incentive-schema to its own repo) before enabling on push.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - "incentive-schema/**"
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    working-directory: incentive-schema
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # mike needs full history for gh-pages
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r tooling/requirements.txt -r requirements-docs.txt
+
+      - name: Build (strict)
+        run: mkdocs build --strict
+
+      - name: Deploy (mike, versioned)
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          MAJOR_MINOR=$(cut -d. -f1,2 schema/VERSION)
+          mike deploy --push --update-aliases "$MAJOR_MINOR" latest
+          mike set-default --push latest
