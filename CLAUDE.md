@@ -1,6 +1,6 @@
-# CLAUDE.md — incentive-schema/
+# CLAUDE.md — IMQL
 
-Guidance for working in this subtree.
+Guidance for working in this repository (the IMQL language: schema/IR, grammar, tooling, corpus, docs).
 
 ## What this is
 A formal JSON Schema for Bittensor incentive mechanisms (`schema/incentive-mechanism.schema.json`,

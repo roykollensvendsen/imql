@@ -1,26 +1,16 @@
 name: docs
 
 # Builds the IMQL documentation site and deploys it (versioned, via mike) to gh-pages.
-# The docs version label tracks the IR schema version (incentive-schema/schema/VERSION),
-# so e.g. schema 1.2.0 publishes to /1.2/ with the `latest` alias.
-#
-# NOTE: this targets the repository's own gh-pages branch. incentive-schema currently lives
-# inside the sn109 parent repo whose remote points at the academia fork — confirm/repoint the
-# deploy target (or move incentive-schema to its own repo) before enabling on push.
+# The docs version label tracks the IR schema version (schema/VERSION), so e.g. schema
+# 1.2.0 publishes to /1.2/ with the `latest` alias.
 
 on:
   workflow_dispatch:
   push:
     branches: [main, master]
-    paths:
-      - "incentive-schema/**"
 
 permissions:
   contents: write
-
-defaults:
-  run:
-    working-directory: incentive-schema
 
 jobs:
   build-deploy:

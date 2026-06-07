@@ -1,8 +1,14 @@
-# incentive-schema
+# IMQL
 
-A formal, machine-checkable schema for **Bittensor subnet incentive mechanisms**, plus a corpus of
-instances reverse-engineered from the `academia-archives` collection and a repeatable, skill-based
-extraction pipeline.
+**IMQL** — a declarative language for **Bittensor subnet incentive mechanisms**: a formal,
+machine-checkable schema (the IR) plus a QML-style textual surface for designing and generating
+mechanisms, a metric-type ontology, a corpus of 189 instances reverse-engineered from real subnets, and
+a documentation site.
+
+Documentation: build locally with `mkdocs serve` (see [`requirements-docs.txt`](requirements-docs.txt)),
+or read the language guide in [`spec/04-imql-language.md`](spec/04-imql-language.md). The corpus was
+reverse-engineered from the `academia-archives` collection (not vendored here; the re-extraction tooling
+expects it as a sibling checkout — see `tooling/list-pending.sh`).
 
 The schema is used two ways:
 - **Descriptively** — capture an existing subnet's mechanism as an auditable `extracted` instance.
