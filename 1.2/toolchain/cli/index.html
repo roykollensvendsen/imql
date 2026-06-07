@@ -578,6 +578,8 @@
       
         
       
+        
+      
     
     
       
@@ -633,6 +635,27 @@
   
   <span class="md-ellipsis">
     Grammar
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../language/style/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Coding conventions
   </span>
   
 
@@ -5534,6 +5557,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#fmtpy" class="md-nav__link">
+    <span class="md-ellipsis">
+      fmt.py
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#coveragepy" class="md-nav__link">
     <span class="md-ellipsis">
       coverage.py
@@ -5715,6 +5747,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#fmtpy" class="md-nav__link">
+    <span class="md-ellipsis">
+      fmt.py
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#coveragepy" class="md-nav__link">
     <span class="md-ellipsis">
       coverage.py
@@ -5804,112 +5845,126 @@
 <a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>Usage: compile.py &lt;file.imql&gt;           # or &#39;-&#39; for stdin
 <a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>The emitted IR carries the structural signature; run validate.py on it to confirm schema-validity.
 </code></pre></div>
-<h2 id="coveragepy"><code>coverage.py</code><a class="headerlink" href="#coveragepy" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>IMQL descriptive-completeness gate over the corpus.
+<h2 id="fmtpy"><code>fmt.py</code><a class="headerlink" href="#fmtpy" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>imql-fmt — the canonical formatter for IMQL (in the spirit of qmlformat / gofmt).
 <a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>For each instance: lift IR -&gt; IMQL, compile IMQL -&gt; IR&#39;, compare structural signatures.
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>Reports, overall and per archetype (composition.shape):
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>  - round-trip fidelity   : signature(ir) == signature(compile(lift(ir)))  (MUST be 100%)
-<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>  - structural-expressibility : fraction of scoring leaves that are NOT extern
-<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>  - the extern residual   : every opaque leaf listed with raw string + archetype  (= the long tail)
-<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>
-<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>Gate: 100% fidelity, &gt;=90% structural corpus-wide, &gt;=80% within every archetype.
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>Reformats .imql files to the IMQL coding conventions (spec/05-imql-style.md) by parsing each file
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>and re-emitting it canonically. Idempotent: formatting an already-formatted file is a no-op.
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>  fmt.py &lt;file.imql&gt; [...]       print the formatted result to stdout
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>  fmt.py -i  &lt;file|dir&gt; [...]    rewrite files in place (recurses directories for *.imql)
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>  fmt.py --check &lt;file|dir&gt; [...]  exit non-zero and list files that are NOT canonically formatted
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>                                   (use in CI, like `gofmt -l` / `black --check`)
 <a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>
-<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>Usage: coverage.py &lt;dir&gt; [--out reports/imql-coverage.md]
+<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>Note: IMQL is structural and the parser ignores `# comments`, so the formatter does not preserve
+<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a>comments. Keep commentary in surrounding prose/docs, not inside canonical .imql files.
+</code></pre></div>
+<h2 id="coveragepy"><code>coverage.py</code><a class="headerlink" href="#coveragepy" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>IMQL descriptive-completeness gate over the corpus.
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>For each instance: lift IR -&gt; IMQL, compile IMQL -&gt; IR&#39;, compare structural signatures.
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>Reports, overall and per archetype (composition.shape):
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>  - round-trip fidelity   : signature(ir) == signature(compile(lift(ir)))  (MUST be 100%)
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>  - structural-expressibility : fraction of scoring leaves that are NOT extern
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>  - the extern residual   : every opaque leaf listed with raw string + archetype  (= the long tail)
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>Gate: 100% fidelity, &gt;=90% structural corpus-wide, &gt;=80% within every archetype.
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>
+<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>Usage: coverage.py &lt;dir&gt; [--out reports/imql-coverage.md]
 </code></pre></div>
 <h2 id="canonicalizepy"><code>canonicalize.py</code><a class="headerlink" href="#canonicalizepy" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>Canonicalize bespoke metric strings into the 3-level ontology (raw -&gt; specific -&gt; family).
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>The ontology (vocab/metric-ontology.yaml) is the canonicalization layer: instances keep the raw
-<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>metric string immutable, and consumers (coverage.py, lift.py) resolve metric_family at read time.
-<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>This tool reports resolution coverage and surfaces unmatched raw strings as promotion candidates.
-<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>
-<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>  canonicalize.py --report [--out reports/vocab-candidates.md]
-<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>        Resolution coverage over the corpus; unmatched &#39;other&#39; metrics -&gt; promotion candidates.
-<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>
-<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>  canonicalize.py --apply &lt;dir&gt;
-<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>        OPTIONAL: materialize metric_family/metric_specific into the instances (reserializes YAML;
-<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>        use only if you want the families inline). Default workflow leaves instances byte-pure and
-<a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a>        resolves from the ontology. Reversible with --revert.
-<a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>
-<a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a>  canonicalize.py --revert &lt;dir&gt;
-<a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a>        Strip any materialized metric_family/metric_specific (back to raw-only).
-<a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a>
-<a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a>Idempotent. Never modifies metric_kind / metric_kind_other (the raw level).
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>Canonicalize bespoke metric strings into the 3-level ontology (raw -&gt; specific -&gt; family).
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>The ontology (vocab/metric-ontology.yaml) is the canonicalization layer: instances keep the raw
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>metric string immutable, and consumers (coverage.py, lift.py) resolve metric_family at read time.
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>This tool reports resolution coverage and surfaces unmatched raw strings as promotion candidates.
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>  canonicalize.py --report [--out reports/vocab-candidates.md]
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>        Resolution coverage over the corpus; unmatched &#39;other&#39; metrics -&gt; promotion candidates.
+<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>
+<a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>  canonicalize.py --apply &lt;dir&gt;
+<a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>        OPTIONAL: materialize metric_family/metric_specific into the instances (reserializes YAML;
+<a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a>        use only if you want the families inline). Default workflow leaves instances byte-pure and
+<a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a>        resolves from the ontology. Reversible with --revert.
+<a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a>
+<a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a>  canonicalize.py --revert &lt;dir&gt;
+<a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a>        Strip any materialized metric_family/metric_specific (back to raw-only).
+<a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a>
+<a id="__codelineno-5-18" name="__codelineno-5-18" href="#__codelineno-5-18"></a>Idempotent. Never modifies metric_kind / metric_kind_other (the raw level).
 </code></pre></div>
 <h2 id="generatepy"><code>generate.py</code><a class="headerlink" href="#generatepy" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>Generate a runnable Python validator scaffold from an IR instance (Phase B compiler).
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>Emits the structural plumbing the corpus proved reusable — score() per signal (a real implementation
-<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>from templates/scaffold/metric_library.py when the metric FAMILY resolves, else a clearly-marked
-<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>hand-write stub), an aggregator, a smoother (EMA/SMA), a weight-setter, and anti-gaming/burn hooks.
-<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>The bespoke judgment (extern leaves) is surfaced as NotImplementedError, never silently wrong.
-<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>
-<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>Scope: the dominant `pipeline` archetype. multiplex/gated/multiplicative emit a best-effort flat
-<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>pipeline with a header note; `opaque` emits a stub-only scaffold.
-<a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>
-<a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>  generate.py &lt;instance.yaml&gt; [-o out.py]      # write a scaffold
-<a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a>  generate.py --check &lt;dir&gt;                    # regeneration test over a dir: every scaffold must
-<a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a>                                               # py_compile AND its embedded signature must match source
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>Generate a runnable Python validator scaffold from an IR instance (Phase B compiler).
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>Emits the structural plumbing the corpus proved reusable — score() per signal (a real implementation
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>from templates/scaffold/metric_library.py when the metric FAMILY resolves, else a clearly-marked
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>hand-write stub), an aggregator, a smoother (EMA/SMA), a weight-setter, and anti-gaming/burn hooks.
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>The bespoke judgment (extern leaves) is surfaced as NotImplementedError, never silently wrong.
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>
+<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>Scope: the dominant `pipeline` archetype. multiplex/gated/multiplicative emit a best-effort flat
+<a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>pipeline with a header note; `opaque` emits a stub-only scaffold.
+<a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>
+<a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a>  generate.py &lt;instance.yaml&gt; [-o out.py]      # write a scaffold
+<a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a>  generate.py --check &lt;dir&gt;                    # regeneration test over a dir: every scaffold must
+<a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a>                                               # py_compile AND its embedded signature must match source
 </code></pre></div>
 <h2 id="derive-compositionpy"><code>derive-composition.py</code><a class="headerlink" href="#derive-compositionpy" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>Backfill the `composition` block on incentive-mechanism instances.
-<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>
-<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>The composition (the IMQL combinator structure) is almost entirely DERIVABLE from fields the
-<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>extraction already produced — so we compute it rather than re-extract. To keep the carefully
-<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>formatted, provenance-bearing instance files intact, this tool does NOT re-serialize the YAML:
-<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>it parses read-only to compute the values, then APPENDS a top-level `composition:` block as text
-<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>(only if the instance has none). Existing bytes are untouched; the diff is purely additive.
-<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>
-<a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>Derivation:
-<a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>  shape:
-<a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a>    opaque        if aggregation.method == &#39;undocumented&#39;, or no aggregation AND no scoring_signals
-<a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a>    multiplex     if sub_competitions.structure in {multi_mechanism, per_task_type, multi_asset,
-<a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a>                                                     ladder, tiered, tournament}
-<a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a>    multiplicative if aggregation.composition == &#39;multiplicative&#39;
-<a id="__codelineno-6-15" name="__codelineno-6-15" href="#__codelineno-6-15"></a>    gated         if aggregation.composition == &#39;gated&#39;
-<a id="__codelineno-6-16" name="__codelineno-6-16" href="#__codelineno-6-16"></a>    overlay_only  if no scoring_signals and no aggregation but burn/guards/state present
-<a id="__codelineno-6-17" name="__codelineno-6-17" href="#__codelineno-6-17"></a>    pipeline      otherwise (the dominant case)
-<a id="__codelineno-6-18" name="__codelineno-6-18" href="#__codelineno-6-18"></a>  overlays:  burn  if mechanism_status in {partial_burn, full_burn} or burn_allocation.enabled
-<a id="__codelineno-6-19" name="__codelineno-6-19" href="#__codelineno-6-19"></a>             guards if anti_gaming is non-empty
-<a id="__codelineno-6-20" name="__codelineno-6-20" href="#__codelineno-6-20"></a>             state  if per_miner_state.tracked
-<a id="__codelineno-6-21" name="__codelineno-6-21" href="#__codelineno-6-21"></a>  extern_count: provisional = count of scoring_signals with metric_kind == &#39;other&#39;
-<a id="__codelineno-6-22" name="__codelineno-6-22" href="#__codelineno-6-22"></a>                (the bespoke leaves; tooling/coverage.py recomputes the authoritative value once
-<a id="__codelineno-6-23" name="__codelineno-6-23" href="#__codelineno-6-23"></a>                 metric_family resolution exists).
-<a id="__codelineno-6-24" name="__codelineno-6-24" href="#__codelineno-6-24"></a>
-<a id="__codelineno-6-25" name="__codelineno-6-25" href="#__codelineno-6-25"></a>Usage:
-<a id="__codelineno-6-26" name="__codelineno-6-26" href="#__codelineno-6-26"></a>    derive-composition.py &lt;dir-or-file&gt; [...]      # appends where missing
-<a id="__codelineno-6-27" name="__codelineno-6-27" href="#__codelineno-6-27"></a>    derive-composition.py --dry-run &lt;dir-or-file&gt;  # report only
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>Backfill the `composition` block on incentive-mechanism instances.
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>The composition (the IMQL combinator structure) is almost entirely DERIVABLE from fields the
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>extraction already produced — so we compute it rather than re-extract. To keep the carefully
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>formatted, provenance-bearing instance files intact, this tool does NOT re-serialize the YAML:
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>it parses read-only to compute the values, then APPENDS a top-level `composition:` block as text
+<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>(only if the instance has none). Existing bytes are untouched; the diff is purely additive.
+<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>
+<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>Derivation:
+<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>  shape:
+<a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a>    opaque        if aggregation.method == &#39;undocumented&#39;, or no aggregation AND no scoring_signals
+<a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a>    multiplex     if sub_competitions.structure in {multi_mechanism, per_task_type, multi_asset,
+<a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a>                                                     ladder, tiered, tournament}
+<a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a>    multiplicative if aggregation.composition == &#39;multiplicative&#39;
+<a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a>    gated         if aggregation.composition == &#39;gated&#39;
+<a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a>    overlay_only  if no scoring_signals and no aggregation but burn/guards/state present
+<a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a>    pipeline      otherwise (the dominant case)
+<a id="__codelineno-7-18" name="__codelineno-7-18" href="#__codelineno-7-18"></a>  overlays:  burn  if mechanism_status in {partial_burn, full_burn} or burn_allocation.enabled
+<a id="__codelineno-7-19" name="__codelineno-7-19" href="#__codelineno-7-19"></a>             guards if anti_gaming is non-empty
+<a id="__codelineno-7-20" name="__codelineno-7-20" href="#__codelineno-7-20"></a>             state  if per_miner_state.tracked
+<a id="__codelineno-7-21" name="__codelineno-7-21" href="#__codelineno-7-21"></a>  extern_count: provisional = count of scoring_signals with metric_kind == &#39;other&#39;
+<a id="__codelineno-7-22" name="__codelineno-7-22" href="#__codelineno-7-22"></a>                (the bespoke leaves; tooling/coverage.py recomputes the authoritative value once
+<a id="__codelineno-7-23" name="__codelineno-7-23" href="#__codelineno-7-23"></a>                 metric_family resolution exists).
+<a id="__codelineno-7-24" name="__codelineno-7-24" href="#__codelineno-7-24"></a>
+<a id="__codelineno-7-25" name="__codelineno-7-25" href="#__codelineno-7-25"></a>Usage:
+<a id="__codelineno-7-26" name="__codelineno-7-26" href="#__codelineno-7-26"></a>    derive-composition.py &lt;dir-or-file&gt; [...]      # appends where missing
+<a id="__codelineno-7-27" name="__codelineno-7-27" href="#__codelineno-7-27"></a>    derive-composition.py --dry-run &lt;dir-or-file&gt;  # report only
 </code></pre></div>
 <h2 id="stress-reportpy"><code>stress-report.py</code><a class="headerlink" href="#stress-reportpy" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>Aggregate &#39;schema stress&#39; signals across a set of instances into a markdown table.
-<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>
-<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>Schema stress = evidence the current schema doesn&#39;t fit reality well. We mine it from
-<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>the instances themselves (no separate sidecar files needed):
-<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>
-<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>  - &quot;other&quot; usage      : any enum field set to &#39;other&#39; -&gt; candidate new enum value.
-<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>  - unresolved fields  : provenance.unresolved[] entries -&gt; facts that had no home / were unknowable.
-<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>  - extension usage    : any non-empty `extensions` object -&gt; novelty the schema didn&#39;t model.
-<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>  - dead fields        : top-level optional sub-objects absent across ALL instances -&gt; maybe unneeded.
-<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>
-<a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a>Usage:
-<a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a>    stress-report.py &lt;dir&gt; [--out reports/schema-stress-v0.md]
-<a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a>
-<a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a>The output feeds the v0 -&gt; v1 refinement (M4). A stress signal recurring across &gt;= 2
-<a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a>instances is the bar for a schema change (per CHANGELOG governance).
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>Aggregate &#39;schema stress&#39; signals across a set of instances into a markdown table.
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>Schema stress = evidence the current schema doesn&#39;t fit reality well. We mine it from
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>the instances themselves (no separate sidecar files needed):
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>  - &quot;other&quot; usage      : any enum field set to &#39;other&#39; -&gt; candidate new enum value.
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>  - unresolved fields  : provenance.unresolved[] entries -&gt; facts that had no home / were unknowable.
+<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>  - extension usage    : any non-empty `extensions` object -&gt; novelty the schema didn&#39;t model.
+<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>  - dead fields        : top-level optional sub-objects absent across ALL instances -&gt; maybe unneeded.
+<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>
+<a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>Usage:
+<a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a>    stress-report.py &lt;dir&gt; [--out reports/schema-stress-v0.md]
+<a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a>
+<a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a>The output feeds the v0 -&gt; v1 refinement (M4). A stress signal recurring across &gt;= 2
+<a id="__codelineno-8-15" name="__codelineno-8-15" href="#__codelineno-8-15"></a>instances is the bar for a schema change (per CHANGELOG governance).
 </code></pre></div>
 <h2 id="imql_corepy"><code>imql_core.py</code><a class="headerlink" href="#imql_corepy" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>IMQL core: the structural signature, IR-&gt;IMQL (lift), and IMQL-&gt;IR (compile).
-<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>
-<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>The round-trip success criterion is over the mechanism&#39;s STRUCTURAL SIGNATURE — the design:
-<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>enums, numeric params, typed primitive nodes, the metric leaves, and the composition tree.
-<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>It deliberately EXCLUDES prose and provenance (task.summary, *.notes, provenance.*, exact
-<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>free-text), which are extraction bookkeeping, not part of a design language. &quot;100% fidelity&quot;
-<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>means: signature(ir) == signature(compile(lift(ir))) for every corpus instance.
-<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>
-<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>lift(ir)        -&gt; IMQL text capturing the full signature
-<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>compile(text)   -&gt; a MINIMAL IR dict populated with only the structural fields
-<a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>signature(ir)   -&gt; the normalized projection used for comparison (works on full or minimal IR)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>IMQL core: the structural signature, IR-&gt;IMQL (lift), and IMQL-&gt;IR (compile).
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>The round-trip success criterion is over the mechanism&#39;s STRUCTURAL SIGNATURE — the design:
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>enums, numeric params, typed primitive nodes, the metric leaves, and the composition tree.
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>It deliberately EXCLUDES prose and provenance (task.summary, *.notes, provenance.*, exact
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a>free-text), which are extraction bookkeeping, not part of a design language. &quot;100% fidelity&quot;
+<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a>means: signature(ir) == signature(compile(lift(ir))) for every corpus instance.
+<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a>
+<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a>lift(ir)        -&gt; IMQL text capturing the full signature
+<a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a>compile(text)   -&gt; a MINIMAL IR dict populated with only the structural fields
+<a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a>signature(ir)   -&gt; the normalized projection used for comparison (works on full or minimal IR)
 </code></pre></div>
 
 
