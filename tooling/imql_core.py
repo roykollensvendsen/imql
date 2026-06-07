@@ -158,31 +158,64 @@ def lift(ir: dict) -> str:
     shape = comp.get("shape") or "pipeline"
     overlays = set(comp.get("overlays") or [])
 
-    L = [f"mechanism {name} {{"]
-    L.append(f"  netuid: {_s(sub.get('netuid'))}")
-    L.append(f"  lang: {_s(sub.get('implementation_lang') or 'python')}")
-    L.append(f"  status: {_s(ir.get('mechanism_status') or 'unknown')}")
-    L.append(f"  submission: [{', '.join((ir.get('task') or {}).get('submission_format') or [])}]")
+    IND, IND2 = "    ", "        "   # 4-space indentation (IMQL coding conventions)
 
+    def rv(v, quote=False):
+        """render a scalar value; None -> None (omit). quote=True double-quotes strings."""
+        if v is None:
+            return None
+        if isinstance(v, bool):
+            return "true" if v else "false"
+        if isinstance(v, float) and v == int(v):
+            return str(int(v))
+        if isinstance(v, (int, float)):
+            return str(v)
+        return _esc(v) if quote else str(v)
+
+    def pb(pairs):
+        """inline property block { k: v, ... } omitting null-valued props."""
+        items = [f"{k}: {r}" for k, r in pairs if r is not None]
+        return ("{ " + ", ".join(items) + " }") if items else "{}"
+
+    # --- header (canonical order, one per line) ---
+    L = [f"mechanism {name} {{"]
+    L.append(f"{IND}netuid: {rv(sub.get('netuid')) or '-'}")
+    L.append(f"{IND}lang: {sub.get('implementation_lang') or 'python'}")
+    L.append(f"{IND}status: {ir.get('mechanism_status') or 'unknown'}")
+    L.append(f"{IND}submission: [{', '.join((ir.get('task') or {}).get('submission_format') or [])}]")
+
+    # --- overlays (@burn, @guards, @state) ---
+    ov = []
     if "burn" in overlays:
         uid = burn.get("address_or_uid")
-        uidtok = "-" if uid is None else (str(int(uid)) if isinstance(uid, int) and not isinstance(uid, bool) else _esc(uid))
-        L.append(f"  @burn {{ uid: {uidtok}, "
-                 f"fraction: {'dynamic' if burn.get('dynamic') else _s(burn.get('fraction'))} }}")
+        uidr = None if uid is None else (str(int(uid)) if isinstance(uid, int) and not isinstance(uid, bool) else _esc(uid))
+        fr = "dynamic" if burn.get("dynamic") else rv(burn.get("fraction"))
+        ov.append(f"{IND}@burn {pb([('uid', uidr), ('fraction', fr)])}")
     if "guards" in overlays:
-        gl = " ".join(f"{a.get('kind')} {{ enforcement: {a.get('enforcement')} }}"
-                      for a in (ir.get("anti_gaming") or []) if isinstance(a, dict))
-        L.append(f"  @guards {{ {gl} }}")
+        guards = [a for a in (ir.get("anti_gaming") or []) if isinstance(a, dict)]
+
+        def grender(a):
+            return f"{a.get('kind')} {pb([('enforcement', rv(a.get('enforcement')))])}"
+
+        if len(guards) <= 1:
+            inner = " ".join(grender(a) for a in guards)
+            ov.append(f"{IND}@guards {{ {inner} }}" if inner else f"{IND}@guards {{}}")
+        else:                                     # one guard per line when there are several
+            ov.append(f"{IND}@guards {{")
+            ov.extend(f"{IND2}{grender(a)}" for a in guards)
+            ov.append(f"{IND}}}")
     if "state" in overlays:
-        L.append(f"  @state {{ {', '.join(pms.get('state_kinds') or [])} }}")
+        ov.append(f"{IND}@state {{ {', '.join(pms.get('state_kinds') or [])} }}")
+    if ov:
+        L.append("")
+        L.extend(ov)
 
-    # shape block header
-    if shape == "multiplex":
-        L.append(f"  multiplex<{subc.get('structure') or 'multi_mechanism'}> {{")
-    else:
-        L.append(f"  {SHAPE_KW.get(shape, 'pipeline')} {{")
+    # --- combinator block ---
+    L.append("")
+    head = f"multiplex<{subc.get('structure') or 'multi_mechanism'}>" if shape == "multiplex" \
+        else SHAPE_KW.get(shape, "pipeline")
+    L.append(f"{IND}{head} {{")
 
-    # signals — leaf carries metric_kind (always) + optional family/specific/raw/extern
     for s in (ir.get("scoring_signals") or []):
         if not isinstance(s, dict):
             continue
@@ -197,39 +230,32 @@ def lift(ir: dict) -> str:
             parts.append(f"raw {_esc(s['metric_kind_other'])}")
         if s.get("extern"):
             parts.append("extern")
-        L.append(f"    score: {' '.join(parts)} {{ direction: {_s(s.get('direction'))}, "
-                 f"normalization: {_s(s.get('normalization') or 'none')} }}")
+        L.append(f"{IND2}score: {' '.join(parts)} "
+                 f"{pb([('direction', rv(s.get('direction'))), ('normalization', s.get('normalization') or 'none')])}")
 
-    # ground-truth sources (emitted as standalone lines; order preserved)
     for g in (ir.get("ground_truth_sources") or []):
         if isinstance(g, dict):
-            L.append(f"    gt: {g.get('kind')} {{ trust_model: {_s(g.get('trust_model') or 'unknown')} }}")
+            L.append(f"{IND2}gt: {g.get('kind')} {pb([('trust_model', rv(g.get('trust_model') or 'unknown'))])}")
 
-    # aggregate
     if agg:
-        L.append(f"    aggregate: aggregator {_s(agg.get('method') or 'proportional')} {{ "
-                 f"composition: {_s(agg.get('composition'))}, normalization: {_s(agg.get('normalization'))}, "
-                 f"temperature: {_s(agg.get('temperature'))}, decay_rate: {_s(agg.get('decay_rate'))}, "
-                 f"min_weight_floor: {_s(agg.get('min_weight_floor'))} }}")
-    # smooth — carry kind + any alpha/window present (independent of kind)
+        L.append(f"{IND2}aggregate: aggregator {agg.get('method') or 'proportional'} "
+                 f"{pb([('composition', rv(agg.get('composition'))), ('normalization', rv(agg.get('normalization'))), ('temperature', rv(agg.get('temperature'))), ('decay_rate', rv(agg.get('decay_rate'))), ('min_weight_floor', rv(agg.get('min_weight_floor')))])}")
     if sm:
         k = sm.get("kind") or "none"
         params = []
         if sm.get("alpha") is not None:
-            params.append(f"alpha: {_s(sm.get('alpha'))}")
+            params.append(f"alpha: {rv(sm.get('alpha'))}")
         if sm.get("window") is not None:
-            params.append(f"window: {_s(sm.get('window'))}")
+            params.append(f"window: {rv(sm.get('window'))}")
         ptxt = f"({', '.join(params)})" if params else ""
-        L.append(f"    smooth: smoother {k}{ptxt}")
-    # emit
+        L.append(f"{IND2}smooth: smoother {k}{ptxt}")
     if ws:
-        L.append(f"    emit: {_s(ws.get('on_chain_call') or 'set_weights')} {{ "
-                 f"cadence: {_s(ws.get('cadence') or 'unknown')}, tempo: {_esc(ws.get('tempo_or_interval'))} }}")
-    # tracks (multiplex bookkeeping)
+        L.append(f"{IND2}emit: {ws.get('on_chain_call') or 'set_weights'} "
+                 f"{pb([('cadence', rv(ws.get('cadence') or 'unknown')), ('tempo', rv(ws.get('tempo_or_interval'), quote=True))])}")
     if subc:
-        L.append(f"    tracks {{ structure: {_s(subc.get('structure') or 'none')}, count: {_s(subc.get('count'))} }}")
+        L.append(f"{IND2}tracks {pb([('structure', rv(subc.get('structure') or 'none')), ('count', rv(subc.get('count')))])}")
 
-    L.append("  }")
+    L.append(f"{IND}}}")
     L.append("}")
     return "\n".join(L) + "\n"
 
@@ -242,20 +268,15 @@ GRAMMAR = r"""
 start: mechanism
 mechanism: "mechanism" NAME "{" header* block "}"
 
-header: "netuid" ":" scalar          -> netuid
+header: "netuid" ":" value           -> netuid
       | "lang" ":" NAME               -> lang
       | "status" ":" NAME             -> status
       | "submission" ":" "[" [NAME ("," NAME)*] "]"  -> submission
-      | "@burn" "{" "uid" ":" uidval "," "fraction" ":" fracval "}"   -> burn
+      | "@burn" propblock             -> burn
       | "@guards" "{" guarddef* "}"   -> guards
       | "@state" "{" [NAME ("," NAME)*] "}"  -> state
 
-guarddef: NAME "{" "enforcement" ":" NAME "}"
-uidval: ESCAPED_STRING -> uidstr
-      | SIGNED_NUMBER  -> uidnum
-      | "-"            -> nullval
-fracval: "dynamic" -> dynamic
-       | scalar    -> fracnum
+guarddef: NAME [propblock]
 
 block: shape "{" item* "}"
 shape: "pipeline" -> pipeline
@@ -265,12 +286,12 @@ shape: "pipeline" -> pipeline
      | "overlay_only" -> overlay_only
      | "opaque" -> opaque
 
-item: "score" ":" scorer "{" "direction" ":" scalar "," "normalization" ":" NAME "}" -> signal
-    | "gt" ":" NAME "{" "trust_model" ":" NAME "}"                     -> gt
-    | "aggregate" ":" "aggregator" NAME "{" "composition" ":" scalar "," "normalization" ":" scalar "," "temperature" ":" scalar "," "decay_rate" ":" scalar "," "min_weight_floor" ":" scalar "}"  -> aggregate
-    | "smooth" ":" "smoother" smoother                                 -> smooth
-    | "emit" ":" NAME "{" "cadence" ":" NAME "," "tempo" ":" ESCAPED_STRING "}" -> emit
-    | "tracks" "{" "structure" ":" NAME "," "count" ":" scalar "}"     -> tracks
+item: "score" ":" scorer [propblock]               -> signal
+    | "gt" ":" NAME [propblock]                     -> gt
+    | "aggregate" ":" "aggregator" NAME [propblock] -> aggregate
+    | "smooth" ":" "smoother" smoother              -> smooth
+    | "emit" ":" NAME [propblock]                   -> emit
+    | "tracks" propblock                            -> tracks
 
 scorer: "metric" NAME mopt* -> metric
 mopt: "fam" NAME            -> mfam
@@ -279,14 +300,15 @@ mopt: "fam" NAME            -> mfam
     | "extern"              -> mext
 
 smoother: NAME [ "(" smparam ("," smparam)* ")" ]  -> smoothing
-smparam: "alpha" ":" scalar  -> salpha
-       | "window" ":" scalar -> swindow
+smparam: "alpha" ":" value  -> salpha
+       | "window" ":" value -> swindow
 
-scalar: SIGNED_NUMBER -> number
-      | "-"           -> nullval
-      | NAME          -> name
-      | "true"        -> true
-      | "false"       -> false
+propblock: "{" [prop ("," prop)*] "}"
+prop: NAME ":" value
+value: SIGNED_NUMBER  -> number
+     | "-"            -> nullval
+     | ESCAPED_STRING -> strval
+     | NAME           -> name
 
 NAME: /[A-Za-z_][A-Za-z0-9_]*/
 %import common.SIGNED_NUMBER
@@ -305,27 +327,21 @@ def _scalar(v):
 
 @v_args(inline=True)
 class _T(Transformer):
-    # scalars
+    # values
     def number(self, n):
         f = float(n)
         return int(f) if f == int(f) else f
     def nullval(self):
         return None
+    def strval(self, s):
+        return _unesc(s)
     def name(self, n):
         return str(n)
-    def true(self):
-        return True
-    def false(self):
-        return False
-    def dynamic(self):
-        return "dynamic"
-    def fracnum(self, v):
-        return v
-    def uidstr(self, s):
-        return _unesc(s)
-    def uidnum(self, n):
-        f = float(n)
-        return int(f) if f == int(f) else f
+    # property blocks
+    def prop(self, key, val):
+        return (str(key), val)
+    def propblock(self, *props):
+        return dict(props)
     # headers
     def netuid(self, v):
         return ("netuid", v)
@@ -335,14 +351,14 @@ class _T(Transformer):
         return ("status", str(v))
     def submission(self, *names):
         return ("submission", [str(n) for n in names])
-    def guarddef(self, kind, enf):
-        return (str(kind), str(enf))
+    def guarddef(self, kind, props=None):
+        return (str(kind), (props or {}).get("enforcement"))
     def guards(self, *gs):
         return ("guards", list(gs))
     def state(self, *names):
         return ("state", [str(n) for n in names])
-    def burn(self, uid, frac):
-        return ("burn", uid, frac)
+    def burn(self, props):
+        return ("burn", props)
     # shapes
     def pipeline(self):
         return ("pipeline", None)
@@ -373,12 +389,13 @@ class _T(Transformer):
             m[{"fam": "family", "spec": "specific", "raw": "raw", "extern": "extern"}[tag]] = val
         return m
     # items
-    def signal(self, scorer, direction, norm):
-        return ("signal", scorer, direction, str(norm))
-    def gt(self, kind, trust):
-        return ("gt", str(kind), str(trust))
-    def aggregate(self, method, comp, norm, temp, decay, floor):
-        return ("aggregate", str(method), comp, norm, temp, decay, floor)
+    def signal(self, scorer, props=None):
+        p = props or {}
+        return ("signal", scorer, p.get("direction"), p.get("normalization") or "none")
+    def gt(self, kind, props=None):
+        return ("gt", str(kind), (props or {}).get("trust_model"))
+    def aggregate(self, method, props=None):
+        return ("aggregate", str(method), props or {})
     def salpha(self, v):
         return ("alpha", v)
     def swindow(self, v):
@@ -390,10 +407,11 @@ class _T(Transformer):
         return ("smoothing", sm)
     def smooth(self, sm):
         return ("smooth", sm[1])
-    def emit(self, call, cadence, tempo):
-        return ("emit", str(call), str(cadence), _unesc(tempo))
-    def tracks(self, structure, count):
-        return ("tracks", str(structure), count)
+    def emit(self, call, props=None):
+        p = props or {}
+        return ("emit", str(call), p.get("cadence"), p.get("tempo"))
+    def tracks(self, props):
+        return ("tracks", props)
     def block(self, shape, *items):
         return ("block", shape, list(items))
     def mechanism(self, name, *rest):
@@ -427,10 +445,11 @@ def compile_text(text: str) -> dict:
         elif tag == "submission":
             ir["task"]["submission_format"] = h[1]
         elif tag == "burn":
-            _, uid, frac = h
-            burn = {"enabled": True, "address_or_uid": uid,
-                    "dynamic": frac == "dynamic",
-                    "fraction": None if frac == "dynamic" else frac}
+            props = h[1]
+            fr = props.get("fraction")
+            burn = {"enabled": True, "address_or_uid": props.get("uid"),
+                    "dynamic": fr == "dynamic",
+                    "fraction": None if fr == "dynamic" else fr}
         elif tag == "guards":
             ir["anti_gaming"] = [{"kind": k, "enforcement": e} for (k, e) in h[1]]
         elif tag == "state":
@@ -465,9 +484,10 @@ def compile_text(text: str) -> dict:
         elif tag == "gt":
             gts.append({"kind": it[1], "trust_model": it[2]})
         elif tag == "aggregate":
-            _, method, comp, norm, temp, decay, floor = it
-            agg = {"method": method, "composition": comp, "normalization": norm,
-                   "temperature": temp, "decay_rate": decay, "min_weight_floor": floor,
+            _, method, props = it
+            agg = {"method": method, "composition": props.get("composition"),
+                   "normalization": props.get("normalization"), "temperature": props.get("temperature"),
+                   "decay_rate": props.get("decay_rate"), "min_weight_floor": props.get("min_weight_floor"),
                    "burn_allocation": burn}
             ir["aggregation"] = agg
         elif tag == "smooth":
@@ -477,7 +497,8 @@ def compile_text(text: str) -> dict:
             ws = ir.setdefault("weight_setting", {})
             ws.update({"on_chain_call": call, "cadence": cadence, "tempo_or_interval": tempo})
         elif tag == "tracks":
-            ir["sub_competitions"] = {"structure": it[1], "count": it[2]}
+            props = it[1]
+            ir["sub_competitions"] = {"structure": props.get("structure"), "count": props.get("count")}
     if gts:
         ir["ground_truth_sources"] = gts
     if "aggregation" not in ir and burn.get("enabled"):

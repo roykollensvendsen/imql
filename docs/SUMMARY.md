@@ -7,6 +7,7 @@
 - Language
     - [The IMQL language](language/index.md)
     - [Grammar](language/grammar.md)
+    - [Coding conventions](language/style.md)
 - Reference
     - [All primitives](reference/index.md)
     - [Metric families](reference/metric-families.md)

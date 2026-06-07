@@ -331,7 +331,7 @@ def gen_toolchain():
     body = ["# CLI reference\n",
             "The IMQL toolchain. All scripts run under the project venv "
             "(`./.venv/bin/python tooling/<script>.py`).\n"]
-    order = ["validate.py", "lift.py", "compile.py", "coverage.py", "canonicalize.py",
+    order = ["validate.py", "lift.py", "compile.py", "fmt.py", "coverage.py", "canonicalize.py",
              "generate.py", "derive-composition.py", "stress-report.py", "imql_core.py"]
     for fn in order:
         p = ROOT / "tooling" / fn

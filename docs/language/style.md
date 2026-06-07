@@ -1,0 +1,1 @@
+--8<-- "spec/05-imql-style.md"

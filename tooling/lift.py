@@ -13,5 +13,5 @@ if len(sys.argv) < 2:
 for p in sys.argv[1:]:
     ir = yaml.safe_load(Path(p).read_text())
     if len(sys.argv) > 2:
-        print(f"# === {p} ===")
-    print(C.lift(ir))
+        sys.stdout.write(f"# === {p} ===\n")
+    sys.stdout.write(C.lift(ir))   # already newline-terminated (canonical form)
