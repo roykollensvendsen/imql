@@ -5690,41 +5690,43 @@
 <a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a>    @state { cumulative_score, status_enum, cooldown }
 <a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a>
 <a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a>    Multiplex&lt;tiered&gt; {
-<a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a>        score: metric composite {
-<a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a>            direction: higher_is_better
-<a id="__codelineno-0-32" name="__codelineno-0-32" href="#__codelineno-0-32"></a>            normalization: none
-<a id="__codelineno-0-33" name="__codelineno-0-33" href="#__codelineno-0-33"></a>        }
-<a id="__codelineno-0-34" name="__codelineno-0-34" href="#__codelineno-0-34"></a>        score: metric accuracy {
-<a id="__codelineno-0-35" name="__codelineno-0-35" href="#__codelineno-0-35"></a>            direction: higher_is_better
-<a id="__codelineno-0-36" name="__codelineno-0-36" href="#__codelineno-0-36"></a>            normalization: none
-<a id="__codelineno-0-37" name="__codelineno-0-37" href="#__codelineno-0-37"></a>        }
-<a id="__codelineno-0-38" name="__codelineno-0-38" href="#__codelineno-0-38"></a>        score: metric latency {
-<a id="__codelineno-0-39" name="__codelineno-0-39" href="#__codelineno-0-39"></a>            direction: lower_is_better
-<a id="__codelineno-0-40" name="__codelineno-0-40" href="#__codelineno-0-40"></a>            normalization: min_max
-<a id="__codelineno-0-41" name="__codelineno-0-41" href="#__codelineno-0-41"></a>        }
-<a id="__codelineno-0-42" name="__codelineno-0-42" href="#__codelineno-0-42"></a>        score: metric other fam financial_pnl spec token_cost raw &quot;dollar_cost_of_tokens&quot; {
-<a id="__codelineno-0-43" name="__codelineno-0-43" href="#__codelineno-0-43"></a>            direction: lower_is_better
-<a id="__codelineno-0-44" name="__codelineno-0-44" href="#__codelineno-0-44"></a>            normalization: min_max
-<a id="__codelineno-0-45" name="__codelineno-0-45" href="#__codelineno-0-45"></a>        }
-<a id="__codelineno-0-46" name="__codelineno-0-46" href="#__codelineno-0-46"></a>        groundTruth: DeterministicDataset {
-<a id="__codelineno-0-47" name="__codelineno-0-47" href="#__codelineno-0-47"></a>            trust_model: trusted
-<a id="__codelineno-0-48" name="__codelineno-0-48" href="#__codelineno-0-48"></a>        }
-<a id="__codelineno-0-49" name="__codelineno-0-49" href="#__codelineno-0-49"></a>        aggregate: WinnerTakeAll {
-<a id="__codelineno-0-50" name="__codelineno-0-50" href="#__codelineno-0-50"></a>            composition: gated
-<a id="__codelineno-0-51" name="__codelineno-0-51" href="#__codelineno-0-51"></a>            normalization: sum_to_one
-<a id="__codelineno-0-52" name="__codelineno-0-52" href="#__codelineno-0-52"></a>        }
-<a id="__codelineno-0-53" name="__codelineno-0-53" href="#__codelineno-0-53"></a>        smooth: Ema {
-<a id="__codelineno-0-54" name="__codelineno-0-54" href="#__codelineno-0-54"></a>            alpha: 0.1
-<a id="__codelineno-0-55" name="__codelineno-0-55" href="#__codelineno-0-55"></a>        }
-<a id="__codelineno-0-56" name="__codelineno-0-56" href="#__codelineno-0-56"></a>        publish: SetWeights {
-<a id="__codelineno-0-57" name="__codelineno-0-57" href="#__codelineno-0-57"></a>            cadence: per_round
-<a id="__codelineno-0-58" name="__codelineno-0-58" href="#__codelineno-0-58"></a>            tempo: &quot;1800 blocks (round = 5 epochs x 360 blocks); season = 100 epochs&quot;
-<a id="__codelineno-0-59" name="__codelineno-0-59" href="#__codelineno-0-59"></a>        }
-<a id="__codelineno-0-60" name="__codelineno-0-60" href="#__codelineno-0-60"></a>        tracks {
-<a id="__codelineno-0-61" name="__codelineno-0-61" href="#__codelineno-0-61"></a>            structure: tiered
-<a id="__codelineno-0-62" name="__codelineno-0-62" href="#__codelineno-0-62"></a>        }
-<a id="__codelineno-0-63" name="__codelineno-0-63" href="#__codelineno-0-63"></a>    }
-<a id="__codelineno-0-64" name="__codelineno-0-64" href="#__codelineno-0-64"></a>}
+<a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a>        score: [
+<a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a>            metric composite {
+<a id="__codelineno-0-32" name="__codelineno-0-32" href="#__codelineno-0-32"></a>                direction: higher_is_better
+<a id="__codelineno-0-33" name="__codelineno-0-33" href="#__codelineno-0-33"></a>                normalization: none
+<a id="__codelineno-0-34" name="__codelineno-0-34" href="#__codelineno-0-34"></a>            },
+<a id="__codelineno-0-35" name="__codelineno-0-35" href="#__codelineno-0-35"></a>            metric accuracy {
+<a id="__codelineno-0-36" name="__codelineno-0-36" href="#__codelineno-0-36"></a>                direction: higher_is_better
+<a id="__codelineno-0-37" name="__codelineno-0-37" href="#__codelineno-0-37"></a>                normalization: none
+<a id="__codelineno-0-38" name="__codelineno-0-38" href="#__codelineno-0-38"></a>            },
+<a id="__codelineno-0-39" name="__codelineno-0-39" href="#__codelineno-0-39"></a>            metric latency {
+<a id="__codelineno-0-40" name="__codelineno-0-40" href="#__codelineno-0-40"></a>                direction: lower_is_better
+<a id="__codelineno-0-41" name="__codelineno-0-41" href="#__codelineno-0-41"></a>                normalization: min_max
+<a id="__codelineno-0-42" name="__codelineno-0-42" href="#__codelineno-0-42"></a>            },
+<a id="__codelineno-0-43" name="__codelineno-0-43" href="#__codelineno-0-43"></a>            metric other fam financial_pnl spec token_cost raw &quot;dollar_cost_of_tokens&quot; {
+<a id="__codelineno-0-44" name="__codelineno-0-44" href="#__codelineno-0-44"></a>                direction: lower_is_better
+<a id="__codelineno-0-45" name="__codelineno-0-45" href="#__codelineno-0-45"></a>                normalization: min_max
+<a id="__codelineno-0-46" name="__codelineno-0-46" href="#__codelineno-0-46"></a>            }
+<a id="__codelineno-0-47" name="__codelineno-0-47" href="#__codelineno-0-47"></a>        ]
+<a id="__codelineno-0-48" name="__codelineno-0-48" href="#__codelineno-0-48"></a>        groundTruth: DeterministicDataset {
+<a id="__codelineno-0-49" name="__codelineno-0-49" href="#__codelineno-0-49"></a>            trust_model: trusted
+<a id="__codelineno-0-50" name="__codelineno-0-50" href="#__codelineno-0-50"></a>        }
+<a id="__codelineno-0-51" name="__codelineno-0-51" href="#__codelineno-0-51"></a>        aggregate: WinnerTakeAll {
+<a id="__codelineno-0-52" name="__codelineno-0-52" href="#__codelineno-0-52"></a>            composition: gated
+<a id="__codelineno-0-53" name="__codelineno-0-53" href="#__codelineno-0-53"></a>            normalization: sum_to_one
+<a id="__codelineno-0-54" name="__codelineno-0-54" href="#__codelineno-0-54"></a>        }
+<a id="__codelineno-0-55" name="__codelineno-0-55" href="#__codelineno-0-55"></a>        smooth: Ema {
+<a id="__codelineno-0-56" name="__codelineno-0-56" href="#__codelineno-0-56"></a>            alpha: 0.1
+<a id="__codelineno-0-57" name="__codelineno-0-57" href="#__codelineno-0-57"></a>        }
+<a id="__codelineno-0-58" name="__codelineno-0-58" href="#__codelineno-0-58"></a>        publish: SetWeights {
+<a id="__codelineno-0-59" name="__codelineno-0-59" href="#__codelineno-0-59"></a>            cadence: per_round
+<a id="__codelineno-0-60" name="__codelineno-0-60" href="#__codelineno-0-60"></a>            tempo: &quot;1800 blocks (round = 5 epochs x 360 blocks); season = 100 epochs&quot;
+<a id="__codelineno-0-61" name="__codelineno-0-61" href="#__codelineno-0-61"></a>        }
+<a id="__codelineno-0-62" name="__codelineno-0-62" href="#__codelineno-0-62"></a>        tracks {
+<a id="__codelineno-0-63" name="__codelineno-0-63" href="#__codelineno-0-63"></a>            structure: tiered
+<a id="__codelineno-0-64" name="__codelineno-0-64" href="#__codelineno-0-64"></a>        }
+<a id="__codelineno-0-65" name="__codelineno-0-65" href="#__codelineno-0-65"></a>    }
+<a id="__codelineno-0-66" name="__codelineno-0-66" href="#__codelineno-0-66"></a>}
 </code></pre></div>
 </div>
 <div class="tabbed-block">
