@@ -39,7 +39,7 @@ Mechanism {
             normalization: sum_to_one
         }
         smooth: smoother ema(alpha: 0.1)
-        emit: SetWeights {
+        publish: SetWeights {
             cadence: per_epoch
         }
     }

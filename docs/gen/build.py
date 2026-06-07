@@ -243,7 +243,7 @@ def gen_grammar():
             Terminal("score:"), NonTerminal("scorer"),
             Terminal("aggregate:"), NonTerminal("aggregator"),
             Optional(Sequence(Terminal("smooth:"), NonTerminal("smoother"))),
-            Terminal("emit:"), NonTerminal("weight_setter"), Terminal("}"))),
+            Terminal("publish:"), NonTerminal("weight_setter"), Terminal("}"))),
         "overlay": Diagram(Choice(0,
             Sequence(Terminal("@burn"), Terminal("{ … }")),
             Sequence(Terminal("@guards"), Terminal("{ … }")),

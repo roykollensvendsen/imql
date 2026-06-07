@@ -31,7 +31,7 @@ groups — including the `id`, which sits alone above the header properties.
 - **Casing follows QML's type-vs-value split: child objects are PascalCase, everything else is lowercase.**
   Child objects (a `TypeName { … }` instantiation) — the combinator (`Pipeline`, `Multiplex<single>`,
   `Gated`, `Multiplicative`, `OverlayOnly`, `Opaque`) and the guards (`CommitReveal`, `ProofOfWork`, …) —
-  are PascalCase. Property names (`score`, `aggregate`, `emit`, `direction`) and enum values
+  are PascalCase. Property names (`score`, `aggregate`, `publish`, `direction`) and enum values
   (`weighted_average`, `set_weights`, `rejection`, `higher_is_better`) stay lowercase. The IR keeps its
   lowercase snake_case enums; the PascalCase is purely the surface (lift/compile convert).
 
@@ -50,7 +50,7 @@ aggregate: WeightedAverage {
     composition: weighted_sum
     normalization: sum_to_one
 }
-emit: SetWeights {
+publish: SetWeights {
     cadence: per_epoch
     tempo: "360 blocks"
 }
@@ -99,7 +99,7 @@ submission: [model_weights, commitment_hash]   # several
 ## The combinator body
 
 Items appear in canonical order — `score` (per signal), `groundTruth` (per ground-truth source), `aggregate`,
-`smooth`, `emit`, `tracks` — one per line. The metric leaf reads left to right:
+`smooth`, `publish`, `tracks` — one per line. The metric leaf reads left to right:
 `metric <kind> [fam <family>] [spec <specific>] [raw "…"] [extern]`.
 
 ## Literals & whitespace
@@ -145,7 +145,7 @@ Mechanism {
             normalization: sum_to_one
         }
         smooth: smoother ema(alpha: 0.1)
-        emit: SetWeights {
+        publish: SetWeights {
             cadence: per_epoch
             tempo: "360 blocks"
         }

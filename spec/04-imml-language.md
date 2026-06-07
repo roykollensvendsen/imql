@@ -12,7 +12,7 @@ control flow; the four empirical combinators are the only composition operators.
 ```
 mechanism = overlays( combinator )
 combinator ∈ { pipeline, multiplex, gate/product, leaf }
-pipeline   = emit ∘ smooth ∘ aggregate ∘ score
+pipeline   = publish ∘ smooth ∘ aggregate ∘ score
 overlays   = @burn ∘ @guards ∘ @state          (three orthogonal decorators)
 score      = metric family(specific) from groundtruth     -- or `extern "raw"` (the long tail)
 ```
@@ -63,7 +63,7 @@ Mechanism {
             normalization: sum_to_one
         }
         smooth: smoother ema(alpha: 0.1)
-        emit: SetWeights {
+        publish: SetWeights {
             cadence: per_epoch
             tempo: "360 blocks"
         }
@@ -95,14 +95,14 @@ ontology, not a permanent hole.
 | `@guards{…}` | `anti_gaming[]` + `composition.overlays:[guards]` |
 | `@state{…}` | `per_miner_state` + `composition.overlays:[state]` |
 | top-level combinator | `composition.shape` (pipeline/multiplex/gated/multiplicative/overlay_only/opaque) |
-| `Pipeline{score,aggregate,smooth,emit}` | `scoring_signals[]` + `aggregation` + `weight_setting` |
+| `Pipeline{score,aggregate,smooth,publish}` | `scoring_signals[]` + `aggregation` + `weight_setting` |
 | `Multiplex<structure>{track…}` | `sub_competitions` (+ tracks) |
 | `metric FAMILY(SPECIFIC)` | `scoring_signals[].{metric_family, metric_specific, metric_kind/_other}` |
 | `extern "raw"` | `scoring_signals[].{extern:true, metric_kind:other, metric_kind_other:"raw"}` |
 | `groundTruth: KIND {…}` | `ground_truth_sources[]` |
 | `aggregate: METHOD {…}` | `aggregation.{method,…}` |
 | `smooth: smoother ema(alpha)` | `weight_setting.smoothing` |
-| `emit: SetWeights / CommitReveal {…}` | `weight_setting.{on_chain_call,cadence,tempo_or_interval}` |
+| `publish: SetWeights / CommitReveal {…}` | `weight_setting.{on_chain_call,cadence,tempo_or_interval}` |
 
 ## Tooling (built across M2–M4)
 - `tooling/lift.py` — IR → IMML (one corpus instance to a `.imml`).

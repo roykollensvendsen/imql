@@ -279,7 +279,7 @@ def lift(ir: dict) -> str:
         ptxt = f"({', '.join(params)})" if params else ""
         L.append(f"{IND2}smooth: smoother {k}{ptxt}")
     if ws:
-        L.append(f"{IND2}emit: {_pascal(ws.get('on_chain_call') or 'set_weights')} "
+        L.append(f"{IND2}publish: {_pascal(ws.get('on_chain_call') or 'set_weights')} "
                  f"{pb([('cadence', rv(ws.get('cadence') or 'unknown')), ('tempo', rv(ws.get('tempo_or_interval'), quote=True))])}")
     if subc:
         L.append(f"{IND2}tracks {pb([('structure', rv(subc.get('structure') or 'none')), ('count', rv(subc.get('count')))])}")
@@ -320,7 +320,7 @@ item: "score" ":" scorer [propblock]               -> signal
     | "groundTruth" ":" NAME [propblock]            -> gt          // NAME is a PascalCase type
     | "aggregate" ":" NAME [propblock]              -> aggregate   // NAME is a PascalCase type
     | "smooth" ":" "smoother" smoother              -> smooth
-    | "emit" ":" NAME [propblock]                   -> emit        // NAME is a PascalCase type
+    | "publish" ":" NAME [propblock]                -> emit        // NAME is a PascalCase type
     | "tracks" propblock                            -> tracks
 
 scorer: "metric" NAME mopt* -> metric

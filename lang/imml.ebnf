@@ -38,7 +38,7 @@ pipeline     = "Pipeline" , "{" ,
                  "score"     , ":" , scorer ,
                  "aggregate" , ":" , aggregator ,
                  [ "smooth"  , ":" , smoother ] ,
-                 "emit"      , ":" , weight_setter ,
+                 "publish"   , ":" , weight_setter ,
               "}" ;
 
 multiplex    = "Multiplex" , "<" , mux_structure , ">" , "{" ,
