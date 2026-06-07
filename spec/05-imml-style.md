@@ -65,11 +65,33 @@ noise). An empty block collapses to `{}`.
 
 ## Lists — omit brackets for a single element
 
-Per the QML list convention, *a list with one element omits the square brackets*:
+Per the QML list convention, *a list with one element omits the square brackets*. This applies to every
+list-valued property: `submission`, `@state`, and the pipeline's `score` and `groundTruth` (both are IR
+arrays — multiple scoring signals, multiple ground-truth sources):
 
 ```text
 submission: signals                 # one element
 submission: [model_weights, commitment_hash]   # several
+```
+
+A multi-element `score` / `groundTruth` is a bracketed list; the elements are comma-separated, each on its
+own line (the comma follows the element's closing brace):
+
+```text
+score: [
+    metric vlm_judgment {
+        direction: lower_is_better
+        normalization: none
+    },
+    metric win_rate {
+        direction: higher_is_better
+        normalization: none
+    }
+]
+groundTruth: [
+    LlmJudgment { trust_model: oracle },
+    DeterministicDataset { trust_model: adversarial }
+]
 ```
 
 ## Overlays & child objects
@@ -100,8 +122,9 @@ submission: [model_weights, commitment_hash]   # several
 
 ## The combinator body
 
-Items appear in canonical order — `score` (per signal), `groundTruth` (per ground-truth source), `aggregate`,
-`smooth`, `publish`, `tracks` — one per line. The metric leaf reads left to right:
+Items appear in canonical order — `score`, `groundTruth`, `aggregate`, `smooth`, `publish`, `tracks` — one
+per line. `score` and `groundTruth` are **list-valued** (a single element omits the brackets; see above).
+The metric leaf reads left to right:
 `metric <kind> [fam <family>] [spec <specific>] [raw "…"] [extern]`.
 
 ## Literals & whitespace

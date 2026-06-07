@@ -179,7 +179,7 @@ def lift(ir: dict) -> str:
     shape = comp.get("shape") or "pipeline"
     overlays = set(comp.get("overlays") or [])
 
-    IND, IND2 = "    ", "        "   # 4-space indentation (IMML coding conventions)
+    IND, IND2, IND3 = "    ", "        ", "            "   # 4-space indentation (IMML coding conventions)
 
     def rv(v, quote=False):
         """render a scalar value; None -> None (omit). quote=True double-quotes strings."""
@@ -245,9 +245,7 @@ def lift(ir: dict) -> str:
         else SHAPE_KW.get(shape, "Pipeline")
     L.append(f"{IND}{head} {{")
 
-    for s in (ir.get("scoring_signals") or []):
-        if not isinstance(s, dict):
-            continue
+    def render_signal(s, indent):
         mk = s.get("metric_kind") or "other"
         fam, spec = resolve_metric(s)
         parts = [f"metric {mk}"]
@@ -259,12 +257,25 @@ def lift(ir: dict) -> str:
             parts.append(f"raw {_esc(s['metric_kind_other'])}")
         if s.get("extern"):
             parts.append("extern")
-        L.append(f"{IND2}score: {' '.join(parts)} "
-                 f"{pb([('direction', rv(s.get('direction'))), ('normalization', s.get('normalization') or 'none')])}")
+        return (f"{' '.join(parts)} "
+                f"{pb([('direction', rv(s.get('direction'))), ('normalization', s.get('normalization') or 'none')], indent)}")
 
-    for g in (ir.get("ground_truth_sources") or []):
-        if isinstance(g, dict):
-            L.append(f"{IND2}groundTruth: {_pascal(g.get('kind'))} {pb([('trust_model', rv(g.get('trust_model') or 'unknown'))])}")
+    def render_gt(g, indent):
+        return f"{_pascal(g.get('kind'))} {pb([('trust_model', rv(g.get('trust_model') or 'unknown'))], indent)}"
+
+    def emit_field(key, items, render):
+        """Render a list-valued field: one element omits brackets (QML list convention)."""
+        if len(items) == 1:
+            L.append(f"{IND2}{key}: {render(items[0], IND2)}")
+        elif items:
+            L.append(f"{IND2}{key}: [")
+            for i, it in enumerate(items):
+                comma = "," if i < len(items) - 1 else ""
+                L.append(f"{IND3}{render(it, IND3)}{comma}")
+            L.append(f"{IND2}]")
+
+    emit_field("score", [s for s in (ir.get("scoring_signals") or []) if isinstance(s, dict)], render_signal)
+    emit_field("groundTruth", [g for g in (ir.get("ground_truth_sources") or []) if isinstance(g, dict)], render_gt)
 
     if agg:
         L.append(f"{IND2}aggregate: {_pascal(agg.get('method') or 'proportional')} "
@@ -310,12 +321,15 @@ shape: "Pipeline" -> pipeline
      | "OverlayOnly" -> overlay_only
      | "Opaque" -> opaque
 
-item: "score" ":" scorer [propblock]               -> signal
-    | "groundTruth" ":" NAME [propblock]            -> gt          // NAME is a PascalCase type
+item: "score" ":" ( signal | "[" signal ("," signal)* "]" )           -> score_field
+    | "groundTruth" ":" ( gtsource | "[" gtsource ("," gtsource)* "]" ) -> gt_field
     | "aggregate" ":" NAME [propblock]              -> aggregate   // NAME is a PascalCase type
     | "smooth" ":" NAME [propblock]                 -> smooth        // NAME is a PascalCase type
     | "publish" ":" NAME [propblock]                -> emit        // NAME is a PascalCase type
     | "tracks" propblock                            -> tracks
+
+signal: scorer [propblock]                          // one scoring signal: metric leaf + props
+gtsource: NAME [propblock]                          // one ground-truth source (PascalCase type)
 
 scorer: "metric" NAME mopt* -> metric
 mopt: "fam" NAME            -> mfam
@@ -415,8 +429,12 @@ class _T(Transformer):
     def signal(self, scorer, props=None):
         p = props or {}
         return ("signal", scorer, p.get("direction"), p.get("normalization") or "none")
-    def gt(self, kind, props=None):
+    def gtsource(self, kind, props=None):
         return ("gt", _snake(kind), (props or {}).get("trust_model"))
+    def score_field(self, *signals):
+        return ("signal_list", list(signals))
+    def gt_field(self, *sources):
+        return ("gt_list", list(sources))
     def aggregate(self, method, props=None):
         return ("aggregate", _snake(method), props or {})
     def smooth(self, kind, props=None):
@@ -483,21 +501,22 @@ def compile_text(text: str) -> dict:
     gts = []
     for it in items:
         tag = it[0]
-        if tag == "signal":
-            _, sc, direction, norm = it
-            sig = {"name": "metric", "direction": direction, "normalization": norm,
-                   "metric_kind": sc["kind"]}
-            if sc["family"]:
-                sig["metric_family"] = sc["family"]
-            if sc["specific"]:
-                sig["metric_specific"] = sc["specific"]
-            if sc["raw"]:
-                sig["metric_kind_other"] = sc["raw"]
-            if sc["extern"]:
-                sig["extern"] = True
-            ir["scoring_signals"].append(sig)
-        elif tag == "gt":
-            gts.append({"kind": it[1], "trust_model": it[2]})
+        if tag == "signal_list":
+            for _, sc, direction, norm in it[1]:
+                sig = {"name": "metric", "direction": direction, "normalization": norm,
+                       "metric_kind": sc["kind"]}
+                if sc["family"]:
+                    sig["metric_family"] = sc["family"]
+                if sc["specific"]:
+                    sig["metric_specific"] = sc["specific"]
+                if sc["raw"]:
+                    sig["metric_kind_other"] = sc["raw"]
+                if sc["extern"]:
+                    sig["extern"] = True
+                ir["scoring_signals"].append(sig)
+        elif tag == "gt_list":
+            for g in it[1]:
+                gts.append({"kind": g[1], "trust_model": g[2]})
         elif tag == "aggregate":
             _, method, props = it
             agg = {"method": method, "composition": props.get("composition"),
