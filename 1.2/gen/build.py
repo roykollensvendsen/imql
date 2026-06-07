@@ -248,10 +248,10 @@ def gen_grammar():
             Sequence(Terminal("@burn"), Terminal("{ … }")),
             Sequence(Terminal("@guards"), Terminal("{ … }")),
             Sequence(Terminal("@state"), Terminal("{ … }")))),
-        "metric leaf": Diagram(Choice(0,
-            Sequence(Terminal("metric"), NonTerminal("family"), Terminal("("), NonTerminal("specific"), Terminal(")")),
-            Sequence(Terminal("metric"), NonTerminal("family"), Terminal("("), Terminal("extern"), NonTerminal("\"raw\""), Terminal(")")),
-            Sequence(Terminal("extern"), NonTerminal("\"raw\"")))),
+        "metric leaf": Diagram(Sequence(
+            Terminal("Metric"), Terminal("{"),
+            OneOrMore(NonTerminal("kind / family / specific / raw / extern / direction / normalization"), Terminal("")),
+            Terminal("}"))),
     }
     body = [f"# Grammar\n",
             f"IMML has no control flow — the four combinators are the only composition operators. The "
