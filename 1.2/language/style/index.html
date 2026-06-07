@@ -5874,7 +5874,7 @@ groups — including the <code>id</code>, which sits alone above the header prop
 <li><strong>Casing follows QML's type-vs-value split: child objects are PascalCase, everything else is lowercase.</strong>
   Child objects (a <code>TypeName { … }</code> instantiation) — the combinator (<code>Pipeline</code>, <code>Multiplex&lt;single&gt;</code>,
   <code>Gated</code>, <code>Multiplicative</code>, <code>OverlayOnly</code>, <code>Opaque</code>) and the guards (<code>CommitReveal</code>, <code>ProofOfWork</code>, …) —
-  are PascalCase. Property names (<code>score</code>, <code>aggregate</code>, <code>emit</code>, <code>direction</code>) and enum values
+  are PascalCase. Property names (<code>score</code>, <code>aggregate</code>, <code>publish</code>, <code>direction</code>) and enum values
   (<code>weighted_average</code>, <code>set_weights</code>, <code>rejection</code>, <code>higher_is_better</code>) stay lowercase. The IR keeps its
   lowercase snake_case enums; the PascalCase is purely the surface (lift/compile convert).</li>
 </ul>
@@ -5890,7 +5890,7 @@ the closing brace aligned to the owner — exactly as QML lays out an expanded g
 <a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    composition: weighted_sum
 <a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    normalization: sum_to_one
 <a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>}
-<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>emit: SetWeights {
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>publish: SetWeights {
 <a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    cadence: per_epoch
 <a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    tempo: &quot;360 blocks&quot;
 <a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>}
@@ -5929,7 +5929,7 @@ noise). An empty block collapses to <code>{}</code>.</p>
 </code></pre></div>
 <h2 id="the-combinator-body">The combinator body<a class="headerlink" href="#the-combinator-body" title="Permanent link">&para;</a></h2>
 <p>Items appear in canonical order — <code>score</code> (per signal), <code>groundTruth</code> (per ground-truth source), <code>aggregate</code>,
-<code>smooth</code>, <code>emit</code>, <code>tracks</code> — one per line. The metric leaf reads left to right:
+<code>smooth</code>, <code>publish</code>, <code>tracks</code> — one per line. The metric leaf reads left to right:
 <code>metric &lt;kind&gt; [fam &lt;family&gt;] [spec &lt;specific&gt;] [raw "…"] [extern]</code>.</p>
 <h2 id="literals-whitespace">Literals &amp; whitespace<a class="headerlink" href="#literals-whitespace" title="Permanent link">&para;</a></h2>
 <ul>
@@ -5972,7 +5972,7 @@ noise). An empty block collapses to <code>{}</code>.</p>
 <a id="__codelineno-4-32" name="__codelineno-4-32" href="#__codelineno-4-32"></a>            normalization: sum_to_one
 <a id="__codelineno-4-33" name="__codelineno-4-33" href="#__codelineno-4-33"></a>        }
 <a id="__codelineno-4-34" name="__codelineno-4-34" href="#__codelineno-4-34"></a>        smooth: smoother ema(alpha: 0.1)
-<a id="__codelineno-4-35" name="__codelineno-4-35" href="#__codelineno-4-35"></a>        emit: SetWeights {
+<a id="__codelineno-4-35" name="__codelineno-4-35" href="#__codelineno-4-35"></a>        publish: SetWeights {
 <a id="__codelineno-4-36" name="__codelineno-4-36" href="#__codelineno-4-36"></a>            cadence: per_epoch
 <a id="__codelineno-4-37" name="__codelineno-4-37" href="#__codelineno-4-37"></a>            tempo: &quot;360 blocks&quot;
 <a id="__codelineno-4-38" name="__codelineno-4-38" href="#__codelineno-4-38"></a>        }
