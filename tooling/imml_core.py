@@ -192,9 +192,10 @@ def lift(ir: dict) -> str:
         inner = indent + IND
         return "{\n" + "\n".join(f"{inner}{it}" for it in items) + f"\n{indent}}}"
 
-    # --- header (canonical order, one per line; id first, QML style) ---
+    # --- id, then header properties (QML: id is its own group, blank line after) ---
     L = ["Mechanism {"]
     L.append(f"{IND}id: {name}")
+    L.append("")
     L.append(f"{IND}netuid: {rv(sub.get('netuid')) or '-'}")
     L.append(f"{IND}lang: {sub.get('implementation_lang') or 'python'}")
     L.append(f"{IND}status: {ir.get('mechanism_status') or 'unknown'}")

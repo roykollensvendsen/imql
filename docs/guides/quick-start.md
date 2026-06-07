@@ -15,6 +15,7 @@ Write a `.imml` file:
 ```text title="my-mechanism.imml"
 Mechanism {
     id: myMechanism
+
     netuid: 123
     lang: python
     status: active

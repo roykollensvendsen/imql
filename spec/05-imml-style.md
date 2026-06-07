@@ -18,7 +18,8 @@ no signals or JavaScript, so the mapping is:
 | object properties | overlays: `@burn`, `@guards`, `@state` (attached-property style) |
 | child objects | the combinator block (`pipeline` / `multiplex` / …) |
 
-The three IMML groups are separated by a single blank line, exactly as QML separates its member groups.
+Each IMML group is separated from the next by a single blank line, exactly as QML separates its member
+groups — including the `id`, which sits alone above the header properties.
 
 ## Indentation & layout
 
@@ -106,6 +107,7 @@ Items appear in canonical order — `score` (per signal), `gt` (per ground-truth
 ```text
 Mechanism {
     id: pairwiseArena
+
     netuid: 42
     lang: python
     status: active

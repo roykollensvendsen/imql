@@ -31,6 +31,7 @@ Derived inductively from all 189 corpus subnets:
 ```imml
 Mechanism {
     id: pairwiseArena
+
     netuid: 42
     lang: python
     status: active
