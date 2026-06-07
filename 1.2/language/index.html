@@ -5721,14 +5721,14 @@ control flow; the four empirical combinators are the only composition operators.
 <a id="__codelineno-1-25" name="__codelineno-1-25" href="#__codelineno-1-25"></a>            direction: higher_is_better
 <a id="__codelineno-1-26" name="__codelineno-1-26" href="#__codelineno-1-26"></a>            normalization: none
 <a id="__codelineno-1-27" name="__codelineno-1-27" href="#__codelineno-1-27"></a>        }
-<a id="__codelineno-1-28" name="__codelineno-1-28" href="#__codelineno-1-28"></a>        gt: llm_judgment {
+<a id="__codelineno-1-28" name="__codelineno-1-28" href="#__codelineno-1-28"></a>        gt: LlmJudgment {
 <a id="__codelineno-1-29" name="__codelineno-1-29" href="#__codelineno-1-29"></a>            trust_model: adversarial
 <a id="__codelineno-1-30" name="__codelineno-1-30" href="#__codelineno-1-30"></a>        }
-<a id="__codelineno-1-31" name="__codelineno-1-31" href="#__codelineno-1-31"></a>        aggregate: aggregator weighted_average {
+<a id="__codelineno-1-31" name="__codelineno-1-31" href="#__codelineno-1-31"></a>        aggregate: WeightedAverage {
 <a id="__codelineno-1-32" name="__codelineno-1-32" href="#__codelineno-1-32"></a>            normalization: sum_to_one
 <a id="__codelineno-1-33" name="__codelineno-1-33" href="#__codelineno-1-33"></a>        }
 <a id="__codelineno-1-34" name="__codelineno-1-34" href="#__codelineno-1-34"></a>        smooth: smoother ema(alpha: 0.1)
-<a id="__codelineno-1-35" name="__codelineno-1-35" href="#__codelineno-1-35"></a>        emit: set_weights {
+<a id="__codelineno-1-35" name="__codelineno-1-35" href="#__codelineno-1-35"></a>        emit: SetWeights {
 <a id="__codelineno-1-36" name="__codelineno-1-36" href="#__codelineno-1-36"></a>            cadence: per_epoch
 <a id="__codelineno-1-37" name="__codelineno-1-37" href="#__codelineno-1-37"></a>            tempo: &quot;360 blocks&quot;
 <a id="__codelineno-1-38" name="__codelineno-1-38" href="#__codelineno-1-38"></a>        }
@@ -5817,19 +5817,19 @@ ontology, not a permanent hole.</p>
 <td><code>scoring_signals[].{extern:true, metric_kind:other, metric_kind_other:"raw"}</code></td>
 </tr>
 <tr>
-<td><code>from groundtruth KIND {…}</code></td>
+<td><code>gt: KIND {…}</code></td>
 <td><code>ground_truth_sources[]</code></td>
 </tr>
 <tr>
-<td><code>aggregator METHOD {…}</code></td>
+<td><code>aggregate: METHOD {…}</code></td>
 <td><code>aggregation.{method,…}</code></td>
 </tr>
 <tr>
-<td><code>smoother ema(alpha)</code></td>
+<td><code>smooth: smoother ema(alpha)</code></td>
 <td><code>weight_setting.smoothing</code></td>
 </tr>
 <tr>
-<td><code>set_weights/commit_reveal {…}</code></td>
+<td><code>emit: SetWeights / CommitReveal {…}</code></td>
 <td><code>weight_setting.{on_chain_call,cadence,tempo_or_interval}</code></td>
 </tr>
 </tbody>

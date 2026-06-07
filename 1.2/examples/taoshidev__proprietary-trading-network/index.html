@@ -5720,15 +5720,15 @@
 <a id="__codelineno-0-57" name="__codelineno-0-57" href="#__codelineno-0-57"></a>            direction: lower_is_better
 <a id="__codelineno-0-58" name="__codelineno-0-58" href="#__codelineno-0-58"></a>            normalization: none
 <a id="__codelineno-0-59" name="__codelineno-0-59" href="#__codelineno-0-59"></a>        }
-<a id="__codelineno-0-60" name="__codelineno-0-60" href="#__codelineno-0-60"></a>        gt: market_data {
+<a id="__codelineno-0-60" name="__codelineno-0-60" href="#__codelineno-0-60"></a>        gt: MarketData {
 <a id="__codelineno-0-61" name="__codelineno-0-61" href="#__codelineno-0-61"></a>            trust_model: trusted
 <a id="__codelineno-0-62" name="__codelineno-0-62" href="#__codelineno-0-62"></a>        }
-<a id="__codelineno-0-63" name="__codelineno-0-63" href="#__codelineno-0-63"></a>        aggregate: aggregator proportional {
+<a id="__codelineno-0-63" name="__codelineno-0-63" href="#__codelineno-0-63"></a>        aggregate: Proportional {
 <a id="__codelineno-0-64" name="__codelineno-0-64" href="#__codelineno-0-64"></a>            normalization: sum_to_one
 <a id="__codelineno-0-65" name="__codelineno-0-65" href="#__codelineno-0-65"></a>            decay_rate: 0.075
 <a id="__codelineno-0-66" name="__codelineno-0-66" href="#__codelineno-0-66"></a>            min_weight_floor: 1.5e-05
 <a id="__codelineno-0-67" name="__codelineno-0-67" href="#__codelineno-0-67"></a>        }
-<a id="__codelineno-0-68" name="__codelineno-0-68" href="#__codelineno-0-68"></a>        emit: set_weights {
+<a id="__codelineno-0-68" name="__codelineno-0-68" href="#__codelineno-0-68"></a>        emit: SetWeights {
 <a id="__codelineno-0-69" name="__codelineno-0-69" href="#__codelineno-0-69"></a>            cadence: weekly
 <a id="__codelineno-0-70" name="__codelineno-0-70" href="#__codelineno-0-70"></a>            tempo: &quot;weekly payout period ending Sunday 00:00:00 UTC; weight refresh every 5 minutes&quot;
 <a id="__codelineno-0-71" name="__codelineno-0-71" href="#__codelineno-0-71"></a>        }

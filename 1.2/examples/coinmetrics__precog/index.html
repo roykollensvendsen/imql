@@ -5688,14 +5688,14 @@
 <a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>            direction: higher_is_better
 <a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a>            normalization: rank
 <a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a>        }
-<a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a>        gt: market_data {
+<a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a>        gt: MarketData {
 <a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a>            trust_model: oracle
 <a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a>        }
-<a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a>        aggregate: aggregator rank_based {
+<a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a>        aggregate: RankBased {
 <a id="__codelineno-0-32" name="__codelineno-0-32" href="#__codelineno-0-32"></a>            normalization: sum_to_one
 <a id="__codelineno-0-33" name="__codelineno-0-33" href="#__codelineno-0-33"></a>            decay_rate: 0.8
 <a id="__codelineno-0-34" name="__codelineno-0-34" href="#__codelineno-0-34"></a>        }
-<a id="__codelineno-0-35" name="__codelineno-0-35" href="#__codelineno-0-35"></a>        emit: set_weights {
+<a id="__codelineno-0-35" name="__codelineno-0-35" href="#__codelineno-0-35"></a>        emit: SetWeights {
 <a id="__codelineno-0-36" name="__codelineno-0-36" href="#__codelineno-0-36"></a>            cadence: continuous
 <a id="__codelineno-0-37" name="__codelineno-0-37" href="#__codelineno-0-37"></a>            tempo: &quot;weights_rate_limit hyperparam (blocks_since_last_update &gt;= weights_rate_limit)&quot;
 <a id="__codelineno-0-38" name="__codelineno-0-38" href="#__codelineno-0-38"></a>        }

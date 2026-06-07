@@ -5713,15 +5713,15 @@
 <a id="__codelineno-0-50" name="__codelineno-0-50" href="#__codelineno-0-50"></a>            direction: higher_is_better
 <a id="__codelineno-0-51" name="__codelineno-0-51" href="#__codelineno-0-51"></a>            normalization: none
 <a id="__codelineno-0-52" name="__codelineno-0-52" href="#__codelineno-0-52"></a>        }
-<a id="__codelineno-0-53" name="__codelineno-0-53" href="#__codelineno-0-53"></a>        gt: market_data {
+<a id="__codelineno-0-53" name="__codelineno-0-53" href="#__codelineno-0-53"></a>        gt: MarketData {
 <a id="__codelineno-0-54" name="__codelineno-0-54" href="#__codelineno-0-54"></a>            trust_model: trusted
 <a id="__codelineno-0-55" name="__codelineno-0-55" href="#__codelineno-0-55"></a>        }
-<a id="__codelineno-0-56" name="__codelineno-0-56" href="#__codelineno-0-56"></a>        aggregate: aggregator proportional {
+<a id="__codelineno-0-56" name="__codelineno-0-56" href="#__codelineno-0-56"></a>        aggregate: Proportional {
 <a id="__codelineno-0-57" name="__codelineno-0-57" href="#__codelineno-0-57"></a>            composition: multiplicative
 <a id="__codelineno-0-58" name="__codelineno-0-58" href="#__codelineno-0-58"></a>            normalization: l1
 <a id="__codelineno-0-59" name="__codelineno-0-59" href="#__codelineno-0-59"></a>        }
 <a id="__codelineno-0-60" name="__codelineno-0-60" href="#__codelineno-0-60"></a>        smooth: smoother none(window: 50)
-<a id="__codelineno-0-61" name="__codelineno-0-61" href="#__codelineno-0-61"></a>        emit: set_weights {
+<a id="__codelineno-0-61" name="__codelineno-0-61" href="#__codelineno-0-61"></a>        emit: SetWeights {
 <a id="__codelineno-0-62" name="__codelineno-0-62" href="#__codelineno-0-62"></a>            cadence: rate_limited
 <a id="__codelineno-0-63" name="__codelineno-0-63" href="#__codelineno-0-63"></a>            tempo: &quot;every 30 min (minutes 25 and 55)&quot;
 <a id="__codelineno-0-64" name="__codelineno-0-64" href="#__codelineno-0-64"></a>        }

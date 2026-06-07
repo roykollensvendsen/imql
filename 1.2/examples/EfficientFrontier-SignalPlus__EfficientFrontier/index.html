@@ -5702,15 +5702,15 @@
 <a id="__codelineno-0-39" name="__codelineno-0-39" href="#__codelineno-0-39"></a>            direction: lower_is_better
 <a id="__codelineno-0-40" name="__codelineno-0-40" href="#__codelineno-0-40"></a>            normalization: none
 <a id="__codelineno-0-41" name="__codelineno-0-41" href="#__codelineno-0-41"></a>        }
-<a id="__codelineno-0-42" name="__codelineno-0-42" href="#__codelineno-0-42"></a>        gt: market_data {
+<a id="__codelineno-0-42" name="__codelineno-0-42" href="#__codelineno-0-42"></a>        gt: MarketData {
 <a id="__codelineno-0-43" name="__codelineno-0-43" href="#__codelineno-0-43"></a>            trust_model: trusted
 <a id="__codelineno-0-44" name="__codelineno-0-44" href="#__codelineno-0-44"></a>        }
-<a id="__codelineno-0-45" name="__codelineno-0-45" href="#__codelineno-0-45"></a>        aggregate: aggregator proportional {
+<a id="__codelineno-0-45" name="__codelineno-0-45" href="#__codelineno-0-45"></a>        aggregate: Proportional {
 <a id="__codelineno-0-46" name="__codelineno-0-46" href="#__codelineno-0-46"></a>            composition: gated
 <a id="__codelineno-0-47" name="__codelineno-0-47" href="#__codelineno-0-47"></a>            normalization: l1
 <a id="__codelineno-0-48" name="__codelineno-0-48" href="#__codelineno-0-48"></a>        }
 <a id="__codelineno-0-49" name="__codelineno-0-49" href="#__codelineno-0-49"></a>        smooth: smoother none
-<a id="__codelineno-0-50" name="__codelineno-0-50" href="#__codelineno-0-50"></a>        emit: set_weights {
+<a id="__codelineno-0-50" name="__codelineno-0-50" href="#__codelineno-0-50"></a>        emit: SetWeights {
 <a id="__codelineno-0-51" name="__codelineno-0-51" href="#__codelineno-0-51"></a>            cadence: rate_limited
 <a id="__codelineno-0-52" name="__codelineno-0-52" href="#__codelineno-0-52"></a>            tempo: &quot;sleeps 10 minutes after a successful set_weights; loop gated by should_set_weights()&quot;
 <a id="__codelineno-0-53" name="__codelineno-0-53" href="#__codelineno-0-53"></a>        }

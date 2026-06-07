@@ -5725,18 +5725,18 @@
 <a id="__codelineno-0-62" name="__codelineno-0-62" href="#__codelineno-0-62"></a>            direction: higher_is_better
 <a id="__codelineno-0-63" name="__codelineno-0-63" href="#__codelineno-0-63"></a>            normalization: none
 <a id="__codelineno-0-64" name="__codelineno-0-64" href="#__codelineno-0-64"></a>        }
-<a id="__codelineno-0-65" name="__codelineno-0-65" href="#__codelineno-0-65"></a>        gt: market_data {
+<a id="__codelineno-0-65" name="__codelineno-0-65" href="#__codelineno-0-65"></a>        gt: MarketData {
 <a id="__codelineno-0-66" name="__codelineno-0-66" href="#__codelineno-0-66"></a>            trust_model: oracle
 <a id="__codelineno-0-67" name="__codelineno-0-67" href="#__codelineno-0-67"></a>        }
-<a id="__codelineno-0-68" name="__codelineno-0-68" href="#__codelineno-0-68"></a>        gt: real_engagement {
+<a id="__codelineno-0-68" name="__codelineno-0-68" href="#__codelineno-0-68"></a>        gt: RealEngagement {
 <a id="__codelineno-0-69" name="__codelineno-0-69" href="#__codelineno-0-69"></a>            trust_model: oracle
 <a id="__codelineno-0-70" name="__codelineno-0-70" href="#__codelineno-0-70"></a>        }
-<a id="__codelineno-0-71" name="__codelineno-0-71" href="#__codelineno-0-71"></a>        aggregate: aggregator weighted_average {
+<a id="__codelineno-0-71" name="__codelineno-0-71" href="#__codelineno-0-71"></a>        aggregate: WeightedAverage {
 <a id="__codelineno-0-72" name="__codelineno-0-72" href="#__codelineno-0-72"></a>            composition: hybrid
 <a id="__codelineno-0-73" name="__codelineno-0-73" href="#__codelineno-0-73"></a>            normalization: l1
 <a id="__codelineno-0-74" name="__codelineno-0-74" href="#__codelineno-0-74"></a>        }
 <a id="__codelineno-0-75" name="__codelineno-0-75" href="#__codelineno-0-75"></a>        smooth: smoother ema(window: 30)
-<a id="__codelineno-0-76" name="__codelineno-0-76" href="#__codelineno-0-76"></a>        emit: set_weights {
+<a id="__codelineno-0-76" name="__codelineno-0-76" href="#__codelineno-0-76"></a>        emit: SetWeights {
 <a id="__codelineno-0-77" name="__codelineno-0-77" href="#__codelineno-0-77"></a>            cadence: per_epoch
 <a id="__codelineno-0-78" name="__codelineno-0-78" href="#__codelineno-0-78"></a>        }
 <a id="__codelineno-0-79" name="__codelineno-0-79" href="#__codelineno-0-79"></a>        tracks {

@@ -5690,16 +5690,16 @@
 <a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a>            direction: higher_is_better
 <a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a>            normalization: softmax
 <a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a>        }
-<a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a>        gt: llm_judgment {
+<a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a>        gt: LlmJudgment {
 <a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a>            trust_model: oracle
 <a id="__codelineno-0-32" name="__codelineno-0-32" href="#__codelineno-0-32"></a>        }
-<a id="__codelineno-0-33" name="__codelineno-0-33" href="#__codelineno-0-33"></a>        aggregate: aggregator softmax {
+<a id="__codelineno-0-33" name="__codelineno-0-33" href="#__codelineno-0-33"></a>        aggregate: Softmax {
 <a id="__codelineno-0-34" name="__codelineno-0-34" href="#__codelineno-0-34"></a>            composition: weighted_sum
 <a id="__codelineno-0-35" name="__codelineno-0-35" href="#__codelineno-0-35"></a>            normalization: sum_to_one
 <a id="__codelineno-0-36" name="__codelineno-0-36" href="#__codelineno-0-36"></a>            temperature: 100
 <a id="__codelineno-0-37" name="__codelineno-0-37" href="#__codelineno-0-37"></a>        }
 <a id="__codelineno-0-38" name="__codelineno-0-38" href="#__codelineno-0-38"></a>        smooth: smoother other
-<a id="__codelineno-0-39" name="__codelineno-0-39" href="#__codelineno-0-39"></a>        emit: set_weights {
+<a id="__codelineno-0-39" name="__codelineno-0-39" href="#__codelineno-0-39"></a>        emit: SetWeights {
 <a id="__codelineno-0-40" name="__codelineno-0-40" href="#__codelineno-0-40"></a>            cadence: rate_limited
 <a id="__codelineno-0-41" name="__codelineno-0-41" href="#__codelineno-0-41"></a>            tempo: &quot;tempo_blocks=360 (tournament/topic bucket); epoch loop sleeps epoch_seconds=4320s&quot;
 <a id="__codelineno-0-42" name="__codelineno-0-42" href="#__codelineno-0-42"></a>        }

@@ -5722,15 +5722,15 @@
 <a id="__codelineno-0-59" name="__codelineno-0-59" href="#__codelineno-0-59"></a>            direction: lower_is_better
 <a id="__codelineno-0-60" name="__codelineno-0-60" href="#__codelineno-0-60"></a>            normalization: none
 <a id="__codelineno-0-61" name="__codelineno-0-61" href="#__codelineno-0-61"></a>        }
-<a id="__codelineno-0-62" name="__codelineno-0-62" href="#__codelineno-0-62"></a>        gt: llm_judgment {
+<a id="__codelineno-0-62" name="__codelineno-0-62" href="#__codelineno-0-62"></a>        gt: LlmJudgment {
 <a id="__codelineno-0-63" name="__codelineno-0-63" href="#__codelineno-0-63"></a>            trust_model: trusted
 <a id="__codelineno-0-64" name="__codelineno-0-64" href="#__codelineno-0-64"></a>        }
-<a id="__codelineno-0-65" name="__codelineno-0-65" href="#__codelineno-0-65"></a>        aggregate: aggregator winner_take_all {
+<a id="__codelineno-0-65" name="__codelineno-0-65" href="#__codelineno-0-65"></a>        aggregate: WinnerTakeAll {
 <a id="__codelineno-0-66" name="__codelineno-0-66" href="#__codelineno-0-66"></a>            composition: multiplicative
 <a id="__codelineno-0-67" name="__codelineno-0-67" href="#__codelineno-0-67"></a>            normalization: other
 <a id="__codelineno-0-68" name="__codelineno-0-68" href="#__codelineno-0-68"></a>        }
 <a id="__codelineno-0-69" name="__codelineno-0-69" href="#__codelineno-0-69"></a>        smooth: smoother ema(alpha: 0.8)
-<a id="__codelineno-0-70" name="__codelineno-0-70" href="#__codelineno-0-70"></a>        emit: set_weights {
+<a id="__codelineno-0-70" name="__codelineno-0-70" href="#__codelineno-0-70"></a>        emit: SetWeights {
 <a id="__codelineno-0-71" name="__codelineno-0-71" href="#__codelineno-0-71"></a>            cadence: per_epoch
 <a id="__codelineno-0-72" name="__codelineno-0-72" href="#__codelineno-0-72"></a>            tempo: &quot;neuron.epoch_length default 100 (12-second blocks); forward_max_time 64800s&quot;
 <a id="__codelineno-0-73" name="__codelineno-0-73" href="#__codelineno-0-73"></a>        }

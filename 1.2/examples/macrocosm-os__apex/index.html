@@ -5687,15 +5687,15 @@
 <a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>            direction: higher_is_better
 <a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>            normalization: other
 <a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a>        }
-<a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a>        gt: deterministic_dataset {
+<a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a>        gt: DeterministicDataset {
 <a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a>            trust_model: trusted
 <a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a>        }
-<a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a>        aggregate: aggregator undocumented {
+<a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a>        aggregate: Undocumented {
 <a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a>            composition: other
 <a id="__codelineno-0-32" name="__codelineno-0-32" href="#__codelineno-0-32"></a>            normalization: other
 <a id="__codelineno-0-33" name="__codelineno-0-33" href="#__codelineno-0-33"></a>        }
 <a id="__codelineno-0-34" name="__codelineno-0-34" href="#__codelineno-0-34"></a>        smooth: smoother none
-<a id="__codelineno-0-35" name="__codelineno-0-35" href="#__codelineno-0-35"></a>        emit: set_weights {
+<a id="__codelineno-0-35" name="__codelineno-0-35" href="#__codelineno-0-35"></a>        emit: SetWeights {
 <a id="__codelineno-0-36" name="__codelineno-0-36" href="#__codelineno-0-36"></a>            cadence: rate_limited
 <a id="__codelineno-0-37" name="__codelineno-0-37" href="#__codelineno-0-37"></a>            tempo: &quot;WEIGHT_SUBMIT_INTERVAL = 60*21 seconds (21 minutes) on mainnet&quot;
 <a id="__codelineno-0-38" name="__codelineno-0-38" href="#__codelineno-0-38"></a>        }

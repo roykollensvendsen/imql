@@ -5710,15 +5710,15 @@
 <a id="__codelineno-0-47" name="__codelineno-0-47" href="#__codelineno-0-47"></a>            direction: lower_is_better
 <a id="__codelineno-0-48" name="__codelineno-0-48" href="#__codelineno-0-48"></a>            normalization: none
 <a id="__codelineno-0-49" name="__codelineno-0-49" href="#__codelineno-0-49"></a>        }
-<a id="__codelineno-0-50" name="__codelineno-0-50" href="#__codelineno-0-50"></a>        gt: deterministic_dataset {
+<a id="__codelineno-0-50" name="__codelineno-0-50" href="#__codelineno-0-50"></a>        gt: DeterministicDataset {
 <a id="__codelineno-0-51" name="__codelineno-0-51" href="#__codelineno-0-51"></a>            trust_model: trusted
 <a id="__codelineno-0-52" name="__codelineno-0-52" href="#__codelineno-0-52"></a>        }
-<a id="__codelineno-0-53" name="__codelineno-0-53" href="#__codelineno-0-53"></a>        aggregate: aggregator proportional {
+<a id="__codelineno-0-53" name="__codelineno-0-53" href="#__codelineno-0-53"></a>        aggregate: Proportional {
 <a id="__codelineno-0-54" name="__codelineno-0-54" href="#__codelineno-0-54"></a>            composition: gated
 <a id="__codelineno-0-55" name="__codelineno-0-55" href="#__codelineno-0-55"></a>            normalization: l1
 <a id="__codelineno-0-56" name="__codelineno-0-56" href="#__codelineno-0-56"></a>        }
 <a id="__codelineno-0-57" name="__codelineno-0-57" href="#__codelineno-0-57"></a>        smooth: smoother ema(alpha: 0.05)
-<a id="__codelineno-0-58" name="__codelineno-0-58" href="#__codelineno-0-58"></a>        emit: commit_reveal {
+<a id="__codelineno-0-58" name="__codelineno-0-58" href="#__codelineno-0-58"></a>        emit: CommitReveal {
 <a id="__codelineno-0-59" name="__codelineno-0-59" href="#__codelineno-0-59"></a>            cadence: continuous
 <a id="__codelineno-0-60" name="__codelineno-0-60" href="#__codelineno-0-60"></a>            tempo: &quot;300s poll_interval between forward cycles&quot;
 <a id="__codelineno-0-61" name="__codelineno-0-61" href="#__codelineno-0-61"></a>        }

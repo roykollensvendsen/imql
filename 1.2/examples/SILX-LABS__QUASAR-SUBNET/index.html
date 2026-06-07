@@ -5761,21 +5761,21 @@
 <a id="__codelineno-0-98" name="__codelineno-0-98" href="#__codelineno-0-98"></a>            direction: higher_is_better
 <a id="__codelineno-0-99" name="__codelineno-0-99" href="#__codelineno-0-99"></a>            normalization: none
 <a id="__codelineno-0-100" name="__codelineno-0-100" href="#__codelineno-0-100"></a>        }
-<a id="__codelineno-0-101" name="__codelineno-0-101" href="#__codelineno-0-101"></a>        gt: reference_model {
+<a id="__codelineno-0-101" name="__codelineno-0-101" href="#__codelineno-0-101"></a>        gt: ReferenceModel {
 <a id="__codelineno-0-102" name="__codelineno-0-102" href="#__codelineno-0-102"></a>            trust_model: trusted
 <a id="__codelineno-0-103" name="__codelineno-0-103" href="#__codelineno-0-103"></a>        }
-<a id="__codelineno-0-104" name="__codelineno-0-104" href="#__codelineno-0-104"></a>        gt: deterministic_dataset {
+<a id="__codelineno-0-104" name="__codelineno-0-104" href="#__codelineno-0-104"></a>        gt: DeterministicDataset {
 <a id="__codelineno-0-105" name="__codelineno-0-105" href="#__codelineno-0-105"></a>            trust_model: trusted
 <a id="__codelineno-0-106" name="__codelineno-0-106" href="#__codelineno-0-106"></a>        }
-<a id="__codelineno-0-107" name="__codelineno-0-107" href="#__codelineno-0-107"></a>        gt: reference_model {
+<a id="__codelineno-0-107" name="__codelineno-0-107" href="#__codelineno-0-107"></a>        gt: ReferenceModel {
 <a id="__codelineno-0-108" name="__codelineno-0-108" href="#__codelineno-0-108"></a>            trust_model: trusted
 <a id="__codelineno-0-109" name="__codelineno-0-109" href="#__codelineno-0-109"></a>        }
-<a id="__codelineno-0-110" name="__codelineno-0-110" href="#__codelineno-0-110"></a>        aggregate: aggregator winner_take_all {
+<a id="__codelineno-0-110" name="__codelineno-0-110" href="#__codelineno-0-110"></a>        aggregate: WinnerTakeAll {
 <a id="__codelineno-0-111" name="__codelineno-0-111" href="#__codelineno-0-111"></a>            composition: hybrid
 <a id="__codelineno-0-112" name="__codelineno-0-112" href="#__codelineno-0-112"></a>            normalization: none
 <a id="__codelineno-0-113" name="__codelineno-0-113" href="#__codelineno-0-113"></a>        }
 <a id="__codelineno-0-114" name="__codelineno-0-114" href="#__codelineno-0-114"></a>        smooth: smoother none
-<a id="__codelineno-0-115" name="__codelineno-0-115" href="#__codelineno-0-115"></a>        emit: set_weights {
+<a id="__codelineno-0-115" name="__codelineno-0-115" href="#__codelineno-0-115"></a>        emit: SetWeights {
 <a id="__codelineno-0-116" name="__codelineno-0-116" href="#__codelineno-0-116"></a>            cadence: per_epoch
 <a id="__codelineno-0-117" name="__codelineno-0-117" href="#__codelineno-0-117"></a>            tempo: &quot;360 blocks&quot;
 <a id="__codelineno-0-118" name="__codelineno-0-118" href="#__codelineno-0-118"></a>        }
