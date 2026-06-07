@@ -5928,7 +5928,7 @@ noise). An empty block collapses to <code>{}</code>.</p>
 <a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>}
 </code></pre></div>
 <h2 id="the-combinator-body">The combinator body<a class="headerlink" href="#the-combinator-body" title="Permanent link">&para;</a></h2>
-<p>Items appear in canonical order — <code>score</code> (per signal), <code>gt</code> (per ground-truth source), <code>aggregate</code>,
+<p>Items appear in canonical order — <code>score</code> (per signal), <code>groundTruth</code> (per ground-truth source), <code>aggregate</code>,
 <code>smooth</code>, <code>emit</code>, <code>tracks</code> — one per line. The metric leaf reads left to right:
 <code>metric &lt;kind&gt; [fam &lt;family&gt;] [spec &lt;specific&gt;] [raw "…"] [extern]</code>.</p>
 <h2 id="literals-whitespace">Literals &amp; whitespace<a class="headerlink" href="#literals-whitespace" title="Permanent link">&para;</a></h2>
@@ -5965,7 +5965,7 @@ noise). An empty block collapses to <code>{}</code>.</p>
 <a id="__codelineno-4-25" name="__codelineno-4-25" href="#__codelineno-4-25"></a>            direction: higher_is_better
 <a id="__codelineno-4-26" name="__codelineno-4-26" href="#__codelineno-4-26"></a>            normalization: none
 <a id="__codelineno-4-27" name="__codelineno-4-27" href="#__codelineno-4-27"></a>        }
-<a id="__codelineno-4-28" name="__codelineno-4-28" href="#__codelineno-4-28"></a>        gt: LlmJudgment {
+<a id="__codelineno-4-28" name="__codelineno-4-28" href="#__codelineno-4-28"></a>        groundTruth: LlmJudgment {
 <a id="__codelineno-4-29" name="__codelineno-4-29" href="#__codelineno-4-29"></a>            trust_model: adversarial
 <a id="__codelineno-4-30" name="__codelineno-4-30" href="#__codelineno-4-30"></a>        }
 <a id="__codelineno-4-31" name="__codelineno-4-31" href="#__codelineno-4-31"></a>        aggregate: WeightedAverage {
