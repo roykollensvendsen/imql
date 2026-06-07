@@ -14,7 +14,7 @@ mechanism = overlays( combinator )
 combinator ∈ { pipeline, multiplex, gate/product, leaf }
 pipeline   = publish ∘ smooth ∘ aggregate ∘ score
 overlays   = @burn ∘ @guards ∘ @state          (three orthogonal decorators)
-score      = metric family(specific) from groundtruth     -- or `extern "raw"` (the long tail)
+score      = [ Metric { kind, family, specific, … } ]     -- raw/extern hatch for the long tail
 ```
 
 ## Why these shapes
@@ -52,7 +52,10 @@ Mechanism {
     @state { cumulative_score }
 
     Pipeline {
-        score: metric win_rate fam classification_quality spec pairwise_win_rate {
+        score: Metric {
+            kind: win_rate
+            family: classification_quality
+            specific: pairwise_win_rate
             direction: higher_is_better
             normalization: none
         }
@@ -74,13 +77,13 @@ Mechanism {
 ```
 
 ## The metric hole (3 levels)
-A `metric` leaf has three resolution states, mirroring `vocab/metric-ontology.yaml`:
+A `Metric { … }` has three resolution states, mirroring `vocab/metric-ontology.yaml`:
 
 | form | meaning | structural? |
 |---|---|---|
-| `metric FAMILY(SPECIFIC)` | family + canonical specific both known | yes — generable |
-| `metric FAMILY(extern "raw")` | family known, specific unresolved | yes at family level |
-| `extern "raw"` | neither resolves — opaque judgment | **no — the counted long tail** |
+| `Metric { family: F; specific: S }` | family + canonical specific both known | yes — generable |
+| `Metric { family: F; raw: "…" }` | family known, specific unresolved | yes at family level |
+| `Metric { kind: other; raw: "…"; extern: true }` | neither resolves — opaque judgment | **no — the counted long tail** |
 
 `raw` is always the verbatim source string and is never lost. `coverage.py` counts `extern` leaves;
 their total IS the measured long tail. An `extern` that recurs ≥2× is a promotion candidate for the
@@ -99,8 +102,8 @@ ontology, not a permanent hole.
 | top-level combinator | `composition.shape` (pipeline/multiplex/gated/multiplicative/overlay_only/opaque) |
 | `Pipeline{score,aggregate,smooth,publish}` | `scoring_signals[]` + `aggregation` + `weight_setting` |
 | `Multiplex<structure>{track…}` | `sub_competitions` (+ tracks) |
-| `metric FAMILY(SPECIFIC)` | `scoring_signals[].{metric_family, metric_specific, metric_kind/_other}` |
-| `extern "raw"` | `scoring_signals[].{extern:true, metric_kind:other, metric_kind_other:"raw"}` |
+| `Metric { kind; family; specific }` | `scoring_signals[].{metric_kind, metric_family, metric_specific}` |
+| `Metric { raw: "…"; extern: true }` | `scoring_signals[].{metric_kind_other, extern}` |
 | `groundTruth: KIND {…}` | `ground_truth_sources[]` |
 | `aggregate: METHOD {…}` | `aggregation.{method,…}` |
 | `smooth: Ema { alpha: … }` | `weight_setting.smoothing` |

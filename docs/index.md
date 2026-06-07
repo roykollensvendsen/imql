@@ -67,7 +67,10 @@ Mechanism {
     @state { cumulative_score }
 
     Pipeline {
-        score: metric win_rate fam classification_quality spec pairwise_win_rate {
+        score: Metric {
+            kind: win_rate
+            family: classification_quality
+            specific: pairwise_win_rate
             direction: higher_is_better
             normalization: none
         }

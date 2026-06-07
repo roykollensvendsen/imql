@@ -60,18 +60,19 @@ product      = "Product" , "(" , combinator { "," , combinator } , ")" ;  (* mul
 
 leaf         = scorer ;   (* degenerate: a bare metric is a mechanism *)
 
-(* ---- scorer = the metric leaf (the typed hole) + optional props ---- *)
-scorer       = metric_expr , [ scorer_props ] ;
-scorer_props = "{" , scorer_prop { ";" scorer_prop } "}" ;
-scorer_prop  = ( "direction"     , ":" , direction_val )
-             | ( "weight"        , ":" , ( number | "null" ) )
-             | ( "normalization" , ":" , norm_val ) ;
-
-metric_expr  = "metric" , family , "(" , ( specific | extern_hole ) ")"
-             | extern_hole ;                              (* fully opaque leaf *)
-extern_hole  = "extern" , string ;                        (* the irreducible long tail *)
-family       = ident ;   (* a metric_family enum value (vocab/metric-ontology.yaml) *)
-specific     = ident ;   (* a canonical metric_specific id *)
+(* ---- scorer = a Metric object (the typed hole); kind/family/specific/raw/extern + props ---- *)
+scorer       = "Metric" , "{" , metric_prop { ";" metric_prop } "}" ;
+metric_prop  = ( "kind"          , ":" , metric_kind_val )   (* defaults to 'other' if omitted *)
+             | ( "family"        , ":" , family )            (* a metric_family enum value (vocab/metric-ontology.yaml) *)
+             | ( "specific"      , ":" , specific )           (* a canonical metric_specific id *)
+             | ( "raw"           , ":" , string )             (* verbatim source string — the long tail *)
+             | ( "extern"        , ":" , ( "true" | "false" ) ) (* opaque, irreducible leaf *)
+             | ( "direction"     , ":" , direction_val )
+             | ( "normalization" , ":" , norm_val )
+             | ( "weight"        , ":" , ( number | "null" ) ) ;
+metric_kind_val = ident ;  (* scoring_signals.metric_kind *)
+family       = ident ;
+specific     = ident ;
 
 groundtruth  = gt_kind , [ "{" , gt_prop { ";" gt_prop } "}" ] ;  (* PascalCase type, e.g. LlmJudgment { trust_model: oracle } *)
 gt_prop      = ( "trust_model" , ":" , trust_val )

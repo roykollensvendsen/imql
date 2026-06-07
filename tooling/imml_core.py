@@ -246,19 +246,17 @@ def lift(ir: dict) -> str:
     L.append(f"{IND}{head} {{")
 
     def render_signal(s, indent):
-        mk = s.get("metric_kind") or "other"
         fam, spec = resolve_metric(s)
-        parts = [f"metric {mk}"]
-        if fam:
-            parts.append(f"fam {fam}")
-        if spec:
-            parts.append(f"spec {spec}")
-        if s.get("metric_kind_other"):
-            parts.append(f"raw {_esc(s['metric_kind_other'])}")
-        if s.get("extern"):
-            parts.append("extern")
-        return (f"{' '.join(parts)} "
-                f"{pb([('direction', rv(s.get('direction'))), ('normalization', s.get('normalization') or 'none')], indent)}")
+        pairs = [
+            ("kind", s.get("metric_kind") or "other"),
+            ("family", fam),
+            ("specific", spec),
+            ("raw", _esc(s["metric_kind_other"]) if s.get("metric_kind_other") else None),
+            ("extern", "true" if s.get("extern") else None),
+            ("direction", rv(s.get("direction"))),
+            ("normalization", s.get("normalization") or "none"),
+        ]
+        return f"Metric {pb(pairs, indent)}"
 
     def render_gt(g, indent):
         return f"{_pascal(g.get('kind'))} {pb([('trust_model', rv(g.get('trust_model') or 'unknown'))], indent)}"
@@ -328,14 +326,8 @@ item: "score" ":" ( signal | "[" signal ("," signal)* "]" )           -> score_f
     | "publish" ":" NAME [propblock]                -> emit        // NAME is a PascalCase type
     | "tracks" propblock                            -> tracks
 
-signal: scorer [propblock]                          // one scoring signal: metric leaf + props
+signal: "Metric" propblock                          // one scoring signal: a Metric object
 gtsource: NAME [propblock]                          // one ground-truth source (PascalCase type)
-
-scorer: "metric" NAME mopt* -> metric
-mopt: "fam" NAME            -> mfam
-    | "spec" NAME           -> mspec
-    | "raw" ESCAPED_STRING  -> mraw
-    | "extern"              -> mext
 
 
 propblock: "{" [prop (";"? prop)*] "}"  // grouped-property; one per line (newline or ';', no commas)
@@ -411,24 +403,17 @@ class _T(Transformer):
         return ("opaque", None)
     def shape(self, s):
         return s
-    # scorer
-    def mfam(self, n):
-        return ("fam", str(n))
-    def mspec(self, n):
-        return ("spec", str(n))
-    def mraw(self, s):
-        return ("raw", _unesc(s))
-    def mext(self):
-        return ("extern", True)
-    def metric(self, kind, *opts):
-        m = {"kind": str(kind), "family": None, "specific": None, "raw": None, "extern": False}
-        for tag, val in opts:
-            m[{"fam": "family", "spec": "specific", "raw": "raw", "extern": "extern"}[tag]] = val
-        return m
     # items
-    def signal(self, scorer, props=None):
+    def signal(self, props):
         p = props or {}
-        return ("signal", scorer, p.get("direction"), p.get("normalization") or "none")
+        sc = {
+            "kind": p.get("kind") or "other",
+            "family": p.get("family"),
+            "specific": p.get("specific"),
+            "raw": p.get("raw"),
+            "extern": p.get("extern") in (True, "true"),
+        }
+        return ("signal", sc, p.get("direction"), p.get("normalization") or "none")
     def gtsource(self, kind, props=None):
         return ("gt", _snake(kind), (props or {}).get("trust_model"))
     def score_field(self, *signals):

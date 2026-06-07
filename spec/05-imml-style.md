@@ -44,7 +44,10 @@ the closing brace aligned to the owner — exactly as QML lays out an expanded g
 (`font { family: "..."; pixelSize: 12 }` may also be written multi-line):
 
 ```text
-score: metric win_rate fam classification_quality spec pairwise_win_rate {
+score: Metric {
+    kind: win_rate
+    family: classification_quality
+    specific: pairwise_win_rate
     direction: higher_is_better
     normalization: none
 }
@@ -79,11 +82,13 @@ own line (the comma follows the element's closing brace):
 
 ```text
 score: [
-    metric vlm_judgment {
+    Metric {
+        kind: vlm_judgment
         direction: lower_is_better
         normalization: none
     },
-    metric win_rate {
+    Metric {
+        kind: win_rate
         direction: higher_is_better
         normalization: none
     }
@@ -124,8 +129,8 @@ groundTruth: [
 
 Items appear in canonical order — `score`, `groundTruth`, `aggregate`, `smooth`, `publish`, `tracks` — one
 per line. `score` and `groundTruth` are **list-valued** (a single element omits the brackets; see above).
-The metric leaf reads left to right:
-`metric <kind> [fam <family>] [spec <specific>] [raw "…"] [extern]`.
+Each scoring signal is a `Metric { … }` object whose properties are `kind`, `family`, `specific`, `raw`,
+`extern`, `direction`, `normalization` (all optional except `kind`, which defaults to `other`).
 
 ## Literals & whitespace
 
@@ -159,7 +164,10 @@ Mechanism {
     @state { cumulative_score }
 
     Pipeline {
-        score: metric win_rate fam classification_quality spec pairwise_win_rate {
+        score: Metric {
+            kind: win_rate
+            family: classification_quality
+            specific: pairwise_win_rate
             direction: higher_is_better
             normalization: none
         }

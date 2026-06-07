@@ -28,7 +28,8 @@ Mechanism {
     }
 
     Pipeline {
-        score: metric accuracy {
+        score: Metric {
+            kind: accuracy
             direction: higher_is_better
             normalization: none
         }
