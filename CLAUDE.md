@@ -1,33 +1,57 @@
 # CLAUDE.md — IMQL
 
-Guidance for working in this repository (the IMQL language: schema/IR, grammar, tooling, corpus, docs).
+Guidance for working in this repository: **IMQL**, a declarative language for Bittensor incentive
+mechanisms (a versioned JSON Schema / IR, a textual surface + grammar, lift/compile/format/generate
+tooling, a metric ontology, a 189-subnet corpus, and a Qt-style docs site).
 
-## What this is
-A formal JSON Schema for Bittensor incentive mechanisms (`schema/incentive-mechanism.schema.json`,
-Draft 2020-12) plus reverse-engineered YAML instances and a skill-based extraction pipeline. Read
-`spec/00-overview.md` first.
+**Start here:** the repo-scoped skills capture the workflows and invariants —
+- **`imql-dev`** — extend the language (schema/grammar/ontology/generator/tooling); the hard invariants
+  and the gates every change must pass.
+- **`imql-docs`** — build / preview / deploy the documentation site.
 
-## Hard rules
-- **The schema is versioned and governed.** Do not add/remove/retype a field without a
-  `schema/CHANGELOG.md` entry citing the schema-stress evidence that motivated it, and a matching
-  bump to `schema/VERSION` and the `$id` in the schema file. Every instance's `schema_version` must
-  match `schema/VERSION`.
+Also read `spec/04-imql-language.md` (the language) and `spec/05-imql-style.md` (coding conventions).
+
+## Hard invariants (do not break)
+- **Round-trip fidelity = 100%.** `tooling/coverage.py` lifts every IR to IMQL, compiles back, and
+  compares the *structural signature* (`imql_core.signature`, which excludes prose/provenance). `lift`
+  and `compile` must stay inverse over that signature.
+- **Governed versioning.** No schema field / enum value / ontology entry without ≥2× evidence + a
+  CHANGELOG entry + a VERSION (and `$id`) bump + re-stamping & re-validating all instances.
+- **The metric tail is flat — don't bloat enums.** Use the `other` + `*_other` escape hatch; canonicalize
+  downstream (`vocab/metric-ontology.yaml`). Extraction stays faithful (ELT); the ontology resolves
+  families at read time and never mutates the raw level.
 - **Extraction is evidence-based.** Every non-trivial field in an `extracted` instance needs a
-  `provenance.evidence` item (source_path + line_ref + verbatim quote). Never invent numeric
-  constants. Unknowable facts go in `provenance.unresolved`, not guessed. See `spec/03-extraction-guide.md`.
-- **`instances/corpus/` is populated only by the `extract-corpus` bulk run.** The sample gate (M5) has
-  passed (`reports/extraction-accuracy.md`); the sample loop lives in `instances/sample/`.
+  `provenance.evidence` item (source_path + line_ref + verbatim quote); unknowable → `unresolved`, never
+  guessed.
 
-## Commands
+## Gates (keep green)
 ```bash
-./.venv/bin/python tooling/validate.py <path|dir>          # gate; non-zero exit on any failure
-./.venv/bin/python tooling/stress-report.py <dir> --out reports/schema-stress-v0.md
+./.venv/bin/python tooling/validate.py instances/ templates/blank-instance.yaml   # 190/190 valid
+./.venv/bin/python tooling/coverage.py instances/                                  # PASS (100% fidelity, 95.8% structural)
+./.venv/bin/python tooling/generate.py --check instances/                          # 53/53
+./.venv/bin/mkdocs build --strict                                                  # docs clean (~205 pages)
 ```
+A pre-commit hook (`tooling/pre-commit.sh`) enforces `validate.py` on any `instances|schema|templates`
+change. Install: `ln -sf ../../tooling/pre-commit.sh .git/hooks/pre-commit`.
 
-## Related skills (compose at conversation level; they do not call each other)
-- `im-extract <repo-path>` — one subnet → one instance.
-- `im-schema validate|new-instance|bump|stress-report` — schema ops + authoring.
-- `extract-corpus` Workflow (`../.claude/workflows/extract-corpus.js`) — bulk fan-out. Enumerate the
-  pending repos with `bash tooling/list-pending.sh --json` and pass them as the workflow `args` (the
-  script can't read the filesystem). Each agent writes `instances/corpus/<repo>.yaml` + self-validates;
-  the workflow returns a summary to persist under `reports/`.
+## Current state (handoff)
+Phases complete and committed: schema→IR v1.2.0; the IMQL language (grammar + lift/compile round-trip at
+100% over 189 subnets); the metric ontology (95.8% structural); the generator (53/53 pipeline scaffolds);
+QML-faithful coding conventions + `imql-fmt`; the docs site (live at
+https://roykollensvendsen.github.io/imql/). This repo was extracted from a workspace and is the source of
+truth; it is referenced as the `incentive-schema` submodule in `~/mining/sn109` (a Bittensor mining
+workspace that also holds the `academia-archives` corpus).
+
+## Backlog / next work
+1. Reconcile `lang/imql.ebnf` with the live lark grammar (the EBNF documents `from groundtruth` /
+   `metric family(specific)`; the parser uses `gt:` items / `metric <kind> fam X spec Y`).
+2. Comment-preserving formatter (`fmt.py` currently drops `#` comments).
+3. Generation beyond the pipeline archetype (multiplex/gated/tournament).
+4. **Mechanism simulator** — instantiate an IMQL spec against strategic miner policies to *measure*
+   incentive-compatibility (the big next phase; the language is the substrate).
+5. Full-subnet description — extend the IR to facets (chain_config/architecture/economics/health);
+   chain facets need `btcli`/`bittensor` (not installed).
+
+Re-running bulk extraction needs the `academia-archives` corpus (not vendored): set
+`ARCHIVES=/path/to/academia-archives/repos` for `tooling/list-pending.sh`. The `extract-corpus` workflow
+script lives in the `~/mining/sn109` workspace, not in this repo.
