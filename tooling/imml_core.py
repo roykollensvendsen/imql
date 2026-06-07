@@ -13,6 +13,7 @@ signature(ir)   -> the normalized projection used for comparison (works on full 
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from lark import Lark, Transformer, v_args
@@ -141,13 +142,23 @@ SHAPE_KW = {
 }
 
 
+# word-boundary splitter: acronym run, capitalized/lower word, all-caps run, or digit run
+_WORD = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|[0-9]+")
+
+
+def _camel_id(raw: str | None) -> str:
+    """Derive a QML-style camelCase `id` from a human subnet name (QML: ids are camelCase)."""
+    ascii_words = "".join(c if (c.isascii() and c.isalnum()) else " " for c in (raw or "mechanism"))
+    words = _WORD.findall(ascii_words)
+    if not words:
+        return "mechanism"
+    out = words[0].lower() + "".join(w.capitalize() for w in words[1:])
+    return out if out[0].isalpha() else "m" + out
+
+
 def lift(ir: dict) -> str:
     sub = ir.get("subnet") or {}
-    raw_name = (sub.get("name") or "Mechanism").replace(" ", "_")
-    name = "".join(c for c in raw_name if c.isascii() and (c.isalnum() or c == "_"))
-    if not name or not name[0].isalpha():
-        name = "M_" + name
-    name = name or "Mechanism"
+    name = _camel_id(sub.get("name"))
     agg = ir.get("aggregation") or {}
     burn = agg.get("burn_allocation") or {}
     ws = ir.get("weight_setting") or {}
@@ -177,8 +188,9 @@ def lift(ir: dict) -> str:
         items = [f"{k}: {r}" for k, r in pairs if r is not None]
         return ("{ " + "; ".join(items) + " }") if items else "{}"
 
-    # --- header (canonical order, one per line) ---
-    L = [f"mechanism {name} {{"]
+    # --- header (canonical order, one per line; id first, QML style) ---
+    L = ["Mechanism {"]
+    L.append(f"{IND}id: {name}")
     L.append(f"{IND}netuid: {rv(sub.get('netuid')) or '-'}")
     L.append(f"{IND}lang: {sub.get('implementation_lang') or 'python'}")
     L.append(f"{IND}status: {ir.get('mechanism_status') or 'unknown'}")
@@ -269,7 +281,7 @@ def lift(ir: dict) -> str:
 
 GRAMMAR = r"""
 start: mechanism
-mechanism: "mechanism" NAME "{" header* block "}"
+mechanism: "Mechanism" "{" "id" ":" NAME header* block "}"
 
 header: "netuid" ":" value           -> netuid
       | "lang" ":" NAME               -> lang

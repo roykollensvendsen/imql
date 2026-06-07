@@ -232,7 +232,7 @@ def gen_grammar():
 
     diagrams = {
         "mechanism": Diagram(Sequence(
-            Terminal("mechanism"), NonTerminal("ident"), Terminal("{"),
+            Terminal("Mechanism"), Terminal("{"), Terminal("id:"), NonTerminal("ident"),
             OneOrMore(NonTerminal("header"), Terminal("")), OneOrMore(NonTerminal("overlay"), Terminal("")),
             NonTerminal("combinator"), Terminal("}"))),
         "combinator": Diagram(Choice(0,

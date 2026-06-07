@@ -29,7 +29,8 @@ Derived inductively from all 189 corpus subnets:
 
 ## Worked example
 ```imml
-mechanism PairwiseArena {
+Mechanism {
+    id: pairwiseArena
     netuid: 42
     lang: python
     status: active
@@ -70,7 +71,7 @@ ontology, not a permanent hole.
 
 | IMML | IR field |
 |---|---|
-| `mechanism NAME { netuid, task, submission }` | `subnet`, `task` |
+| `Mechanism { id: NAME; netuid, task, submission }` | `subnet`, `task` |
 | `status: …` | `mechanism_status` |
 | `@burn{…}` | `aggregation.burn_allocation` + `mechanism_status` + `composition.overlays:[burn]` |
 | `@guards{…}` | `anti_gaming[]` + `composition.overlays:[guards]` |

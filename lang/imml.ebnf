@@ -6,7 +6,8 @@
    primitive node name is a closed enum drawn from the IR schema. The leaf `metric`
    is the only per-subnet hole: a family(specific) pair, or an `extern "raw"` hatch. *)
 
-mechanism   = "mechanism" , ident , "{" ,
+mechanism   = "Mechanism" , "{" ,
+                 "id" , ":" , ident ,
                  header_field* ,
                  overlay* ,
                  combinator ,

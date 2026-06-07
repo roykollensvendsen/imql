@@ -13,7 +13,7 @@ no signals or JavaScript, so the mapping is:
 
 | QML | IMML |
 |---|---|
-| id (first line) | `mechanism <Name>` + the identifying `netuid` |
+| id (first line) | `id: <Name>` inside the `Mechanism { … }` root object |
 | property declarations | header properties: `netuid`, `lang`, `status`, `submission` |
 | object properties | overlays: `@burn`, `@guards`, `@state` (attached-property style) |
 | child objects | the combinator block (`pipeline` / `multiplex` / …) |
@@ -25,7 +25,8 @@ The three IMML groups are separated by a single blank line, exactly as QML separ
 - **4-space indentation**, never tabs (the `qmlformat` default).
 - **One property per line** in the header — *"we generally declare each property on a separate line, even
   for simple expressions."*
-- One mechanism per file, extension `.imml`; the mechanism name is PascalCase.
+- One mechanism per file, extension `.imml`; the `id` is camelCase (QML ids are camelCase; PascalCase is
+  reserved for types — here the root type `Mechanism`).
 
 ## Grouped properties — semicolons
 
@@ -79,7 +80,8 @@ Items appear in canonical order — `score` (per signal), `gt` (per ground-truth
 ## Worked example
 
 ```text
-mechanism PairwiseArena {
+Mechanism {
+    id: pairwiseArena
     netuid: 42
     lang: python
     status: active

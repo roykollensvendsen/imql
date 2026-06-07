@@ -47,7 +47,8 @@ the language losslessly, and the language compiles to a runnable validator scaff
 ## A mechanism in IMML
 
 ```text
-mechanism PairwiseArena {
+Mechanism {
+    id: pairwiseArena
     netuid: 42
     lang: python
     status: active

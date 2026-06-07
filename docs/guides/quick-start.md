@@ -13,7 +13,8 @@ python3 -m venv .venv
 Write a `.imml` file:
 
 ```text title="my-mechanism.imml"
-mechanism MyMechanism {
+Mechanism {
+    id: myMechanism
     netuid: 123
     lang: python
     status: active
