@@ -30,6 +30,13 @@ Run all tooling with `./.venv/bin/python`. A git **pre-commit hook** (`tooling/p
 ./.venv/bin/mkdocs build --strict                                                  # docs clean
 ```
 
+## Commit cadence
+**Commit after each completed task — one commit per task, don't batch.** When a discrete task is done
+and its gates are green: commit it, then push to `main` (the `docs` GitHub Actions workflow auto-deploys
+the site on push). Don't let changes from several tasks pile up uncommitted, and don't wait to be asked.
+If you finish a task whose edits would intermingle with the next one in shared files, commit it *before*
+starting the next.
+
 ## Hard invariants (do not break)
 - **Round-trip fidelity = 100%.** `coverage.py` lifts every IR to IMML, compiles back, and compares the
   **structural signature** (`imml_core.signature` — enums, params, typed nodes, composition; it
