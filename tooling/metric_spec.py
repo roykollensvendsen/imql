@@ -209,10 +209,141 @@ def _report(path: str) -> int:
     return 1 if bad else 0
 
 
+# --------------------------------------------------------------------------- #
+# evaluation backend — one description, swappable interpreters (cf. Composing Contracts)
+# --------------------------------------------------------------------------- #
+import math
+
+
+def _aslist(x):
+    return list(x) if isinstance(x, (list, tuple)) else [x]
+
+
+def _score_rule(G, p, y):
+    """Reference proper scoring rules as REWARDS (higher = better), binary p,y in [0,1]."""
+    p = min(max(float(p), 1e-9), 1 - 1e-9)
+    y = float(y)
+    if G == "brier":
+        return 1.0 - (p - y) ** 2
+    if G == "log":
+        return y * math.log(p) + (1 - y) * math.log(1 - p)
+    if G == "spherical":
+        return (y * p + (1 - y) * (1 - p)) / math.sqrt(p * p + (1 - p) ** 2)
+    if G in ("crps", "energy"):
+        return -abs(p - y)            # 1-D CRPS for a point forecast = |p - y| (negated -> reward)
+    raise SpecError(f"score_rule: no reference impl for '{G}'")
+
+
+# generator -> python implementation. extern (and any not here) raises, surfacing the hand-write boundary.
+GEN_IMPL = {
+    "error":      lambda a, b: abs(float(a) - float(b)),
+    "score_rule": _score_rule,
+    "member":     lambda x, s: x in s,
+    "gate":       lambda b: 1.0 if b else 0.0,
+    "threshold":  lambda x, t: float(x) >= float(t),
+    "mean":       lambda xs: (sum(_aslist(xs)) / len(_aslist(xs))) if _aslist(xs) else 0.0,
+    "sum":        lambda xs: float(sum(_aslist(xs))),
+    "max":        lambda xs: float(max(_aslist(xs))),
+    "min":        lambda xs: float(min(_aslist(xs))),
+    "count":      lambda xs: float(len(_aslist(xs))),
+    "rate":       lambda xs: (sum(1.0 for v in _aslist(xs) if v) / len(_aslist(xs))) if _aslist(xs) else 0.0,
+    "share":      lambda x, peers: float(x) / (sum(_aslist(peers)) or 1.0),
+    "softmax":    lambda v: [math.exp(z) / sum(math.exp(w) for w in v) for z in v],
+    "zscore":     lambda v: [(z - (sum(v) / len(v))) / (statistics_pstdev(v) or 1.0) for z in v],
+    "clip":       lambda x, a, b: max(float(a), min(float(b), float(x))),
+    "affine":     lambda x, m, c: float(m) * float(x) + float(c),
+    "penalty":    lambda x: -float(x),
+    "neg":        lambda x: -float(x),
+    "sign":       lambda x: (x > 0) - (x < 0),
+    "normalize":  lambda x: float(x),
+}
+
+
+def statistics_pstdev(v):
+    n = len(v)
+    if n == 0:
+        return 0.0
+    mu = sum(v) / n
+    return math.sqrt(sum((z - mu) ** 2 for z in v) / n)
+
+
+_BINOP = {"+": lambda a, b: a + b, "-": lambda a, b: a - b,
+          "*": lambda a, b: a * b, "/": lambda a, b: a / b if b else 0.0}
+
+
+def evaluate(spec: str, ctx: dict):
+    """Evaluate a spec expression against ctx={submission,groundTruth,task,peers}.
+    Pure generators only; `extern`/relational primitives raise NotImplementedError (the boundary)."""
+    tree = _parser.parse(spec)
+
+    def ev(node):
+        d = node.data
+        if d == "start":
+            return ev(node.children[0])
+        if d == "expr":
+            kids = node.children
+            acc = ev(kids[0])
+            for i in range(1, len(kids), 2):
+                acc = _BINOP[str(kids[i])](acc, ev(kids[i + 1]))
+            return acc
+        if d == "term":
+            return ev(node.children[0])
+        if d in ("positional",):
+            return ev(node.children[0])
+        if d == "named":
+            return ev(node.children[1])
+        if d == "source":
+            cur = ctx[str(node.children[0])]
+            for f in node.children[1:]:
+                cur = cur[str(f)]
+            return cur
+        if d == "num":
+            return float(node.children[0])
+        if d == "str":
+            return str(node.children[0])[1:-1]
+        if d == "ident":
+            return str(node.children[0])          # convex-generator name / symbol
+        if d == "call":
+            name = str(node.children[0])
+            args = [ev(a) for a in node.children[1:] if a is not None]
+            if name == "extern" or name not in GEN_IMPL:
+                raise NotImplementedError(f"generator '{name}' has no closed form — hand-write it")
+            return GEN_IMPL[name](*args)
+        raise SpecError(f"cannot evaluate node {d}")
+
+    return ev(tree)
+
+
+def _selftest() -> int:
+    cases = [
+        ("submission.param_count", {"submission": {"param_count": 7e9}}, 7e9),
+        ("rate(submission.spot_checks)", {"submission": {"spot_checks": [True, True, False, True]}}, 0.75),
+        ("share(submission.stake, peers)", {"submission": {"stake": 10}, "peers": [10, 30, 60]}, 0.1),
+        ("gate(threshold(submission.r, 0.5))", {"submission": {"r": 0.8}}, 1.0),
+        ("penalty(submission.cost)", {"submission": {"cost": 3.0}}, -3.0),
+        ("score_rule(brier, submission.p, groundTruth.y)",
+         {"submission": {"p": 0.9}, "groundTruth": {"y": 1.0}}, 1 - 0.01),
+        ("affine(mean(submission.xs), 100000, 0)", {"submission": {"xs": [1.0, 3.0]}}, 200000.0),
+    ]
+    ok = 0
+    for spec, ctx, want in cases:
+        got = evaluate(spec, ctx)
+        good = abs(got - want) < 1e-6
+        ok += good
+        print(f"  {'✓' if good else '✗'} {spec:48} = {got!r}" + ("" if good else f"  (want {want})"))
+    print(f"selftest: {ok}/{len(cases)} passed")
+    return 0 if ok == len(cases) else 1
+
+
 if __name__ == "__main__":
     args = sys.argv[1:]
     if args and args[0] == "--report":
         sys.exit(_report(args[1]))
+    elif args and args[0] == "--selftest":
+        sys.exit(_selftest())
+    elif args and args[0] == "--eval":   # --eval "<spec>" '<json ctx>'
+        import json
+        print(evaluate(args[1], json.loads(args[2])))
     elif args:
         try:
             print(check(args[0]))
