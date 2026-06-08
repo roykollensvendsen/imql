@@ -1,9 +1,13 @@
-# IMML metric spec-language (Layer 2) — design sketch
+# IMML metric spec-language (Layer 2)
 
-> **Status: proposal / RFC.** Not implemented in the parser. This sketches a small typed algebra for
-> the `Metric` "typed hole" so the bespoke long tail can be *described* compositionally instead of left
-> opaque. It complements the taxonomy tags (Layer 1) and is grounded in the research in
-> `reports/` and the prior art (proper scoring rules, Composing Contracts, Catala/CDM).
+> **Status: parser + type-checker + evaluator implemented (`tooling/metric_spec.py`); `spec:` wired into
+> the IMML authoring path** (compile-validated, stored in the `extensions` hatch, round-trips). A small
+> typed algebra for the `Metric` "typed hole" so the bespoke long tail can be *described* compositionally
+> (and *evaluated*) instead of left opaque. Complements the taxonomy tags (Layer 1); grounded in the
+> research (proper scoring rules, Composing Contracts, Catala/CDM).
+>
+> Not yet a governed schema field — there is no corpus evidence yet (0 instances use `spec:`), so it rides
+> `extensions` per the ≥2× evidence rule. `vocab/metric-tail-specs.yaml` is the accumulating evidence base.
 
 ## The model
 
@@ -118,14 +122,20 @@ external challenge weight (opaque)    ->  extern("per-hotkey weight from externa
 A `Metric` resolves in one of three states — a direct generalization of today's model:
 
 ```text
-Metric { family: F; specific: S; … }   # 1. library reference — resolves to a generator (generable now)
-Metric { spec: rate(submission.spot_checks); … }   # 2. a typed term in this algebra (the new layer)
-Metric { kind: other; raw: "…"; extern: true; … }  # 3. the genuine opaque residual
+Metric { family: F; specific: S; … }                  # 1. library reference (generable now)
+Metric { spec: "rate(submission.spot_checks)"; … }    # 2. a typed term in this algebra (implemented)
+Metric { kind: other; raw: "…"; extern: true; … }     # 3. the genuine opaque residual
 ```
 
-`coverage.py` would then report the live MDL figure: the share of signals expressed by a `spec:` term
-versus those that remain `extern` — turning "how flat is the tail" from a guess into a tracked number,
-exactly as round-trip fidelity is tracked today.
+State 2 is **implemented**: `spec:` is a quoted-string property on `Metric`. At compile it is parsed and
+type-checked by `tooling/metric_spec.py` (a malformed spec fails the compile) and stored under
+`scoring_signals[].extensions.spec`; `lift` emits it back, so it round-trips. It can also be *evaluated*:
+`metric_spec.evaluate(spec, ctx)` runs it against `{submission, groundTruth, task, peers}` data. Because
+`extensions` is excluded from the structural signature, this needed no schema change and does not affect
+the corpus round-trip.
+
+`coverage.py` could surface the live MDL figure — the share of signals carrying a `spec:` versus `extern`
+— turning "how flat is the tail" into a tracked number, exactly as round-trip fidelity is tracked today.
 
 ## Open questions
 

@@ -247,10 +247,12 @@ def lift(ir: dict) -> str:
 
     def render_signal(s, indent):
         fam, spec = resolve_metric(s)
+        spec_expr = (s.get("extensions") or {}).get("spec")   # Layer-2 spec, stored in extensions
         pairs = [
             ("kind", s.get("metric_kind") or "other"),
             ("family", fam),
             ("specific", spec),
+            ("spec", _esc(spec_expr) if spec_expr else None),
             ("raw", _esc(s["metric_kind_other"]) if s.get("metric_kind_other") else None),
             ("extern", "true" if s.get("extern") else None),
             ("direction", rv(s.get("direction"))),
@@ -412,6 +414,7 @@ class _T(Transformer):
             "specific": p.get("specific"),
             "raw": p.get("raw"),
             "extern": p.get("extern") in (True, "true"),
+            "spec": p.get("spec"),
         }
         return ("signal", sc, p.get("direction"), p.get("normalization") or "none")
     def gtsource(self, kind, props=None):
@@ -498,6 +501,15 @@ def compile_text(text: str) -> dict:
                     sig["metric_kind_other"] = sc["raw"]
                 if sc["extern"]:
                     sig["extern"] = True
+                if sc.get("spec"):
+                    try:                       # validate the Layer-2 spec at compile time
+                        import metric_spec
+                        metric_spec.check(sc["spec"])
+                    except ImportError:
+                        pass
+                    except metric_spec.SpecError as e:
+                        raise ValueError(f"invalid metric spec {sc['spec']!r}: {e}") from None
+                    sig.setdefault("extensions", {})["spec"] = sc["spec"]   # sanctioned hatch (no schema field)
                 ir["scoring_signals"].append(sig)
         elif tag == "gt_list":
             for g in it[1]:
