@@ -68,6 +68,15 @@ of extreme concentration), while proportional-family methods are gameable unless
 registration barrier hold. It is a structural red-flag screen, not a verdict — see the honest boundaries
 below.
 
+**Chain-grounded + Monte-Carlo.** `tooling/chain.py` pulls *real* per-subnet economics from finney via
+bittensor — registration (recycle) cost, burn, emission, on-chain stake-Gini — cached for offline use, so
+the sybil barrier is no longer a stylized constant. `tooling/simulate_cadcad.py` runs the model as a
+**cadCAD** simulation across N Monte-Carlo trajectories (a verdict now reads "honest-dominant in X% of
+runs") and can **sweep the registration barrier** to find the threshold at which a mechanism flips
+sybil-resistant — then compare it to the subnet's *actual* on-chain barrier. E.g. apex (netuid 1) flips
+sybil-resistant at reg_cost ~2.0 but its real on-chain `sybil_cost_ratio` is 0.17 → economically
+sybil-vulnerable.
+
 ## 5. Theory — why this framing is the right one
 
 A focused, adversarially-verified literature pass (`reports/metric-language-research.md`) grounds the
@@ -88,14 +97,18 @@ construction — which the algebra already does.
 | `tooling/fmt.py` | canonical formatter (`imml-fmt`) | `--check` (gate) |
 | `tooling/metric_spec.py` | spec parse / type-check / evaluate / graph | `--report`, `--selftest`, `--graph` |
 | `tooling/graph.py` | mechanism → Mermaid dataflow | `graph.py <instance>` |
-| `tooling/simulate.py` | incentive simulation | `simulate.py <instance>`, `--corpus` |
+| `tooling/simulate.py` | incentive simulation (stylized, fast) | `simulate.py <instance>`, `--corpus` |
+| `tooling/chain.py` | real per-subnet economics from finney (cached) | `chain.py <netuid>`, `--warm` |
+| `tooling/simulate_cadcad.py` | cadCAD Monte-Carlo + chain-grounded sybil economics | `simulate_cadcad.py <instance> [--sweep-reg]` |
 
 ## Honest boundaries
 
 - The **metric residual** (`extern`, ~10% of the tail) is genuinely opaque — by design and by evidence.
-- The **simulator is stylized**: no per-subnet submission schema, so a miner is an abstract
-  quality/effort/cheat profile and the registration cost is a fixed constant. The mechanism's *shape*
-  (which cheats its guards catch, how scores become weights, sybil economics) is faithful; the magnitudes
-  are not. Read it as triage, not proof.
+- The **simulator's economics are now chain-grounded** (real registration cost, burn, stake-Gini from
+  finney) — that blocker is closed where the chain is reachable. **But the submission semantics are still
+  stylized**: there is no per-subnet schema for *what a miner actually delivers*, so a miner remains an
+  abstract quality/effort/cheat profile and `submission.<field>` is derived from one quality axis. The
+  mechanism's *shape* and *economics* are faithful; the per-field submission *content* is not. Read a
+  verdict as a strong, chain-grounded hypothesis — triage, not a proof of a runnable exploit.
 - The **theory** conclusions are primary-sourced for the compressibility framing; the Bittensor /
   simulator-framework regions of the research remain partly unverified.

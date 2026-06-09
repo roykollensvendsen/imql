@@ -68,10 +68,13 @@ repo is the source of truth; referenced as the `incentive-schema` submodule in `
 2. Comment-preserving formatter (`fmt.py` currently drops `#` comments).
 3. Generation beyond the pipeline archetype (multiplex/gated/tournament) — and wire the spec evaluator into
    generated validator code (`spec:` → a runnable `score_i()`).
-4. **Simulator fidelity** (MVP done): a focal-miner already lands relational metrics and sybil economics
-   are modelled; remaining is real per-subnet submission/cost calibration and (per research) a cadCAD
-   backend. Also: promote `spec:` from `extensions` to a governed schema field once ≥2× corpus instances
-   use it (`vocab/metric-*-specs.yaml` is the evidence base).
+4. **Simulator fidelity** — MVP + the cadCAD backend (`tooling/simulate_cadcad.py`, Monte-Carlo +
+   reg-cost sweep) and the live chain adapter (`tooling/chain.py` → real recycle/burn/stake-Gini from
+   finney, cached in `vocab/chain-params.json`) are done; the economics blocker is closed where the chain
+   is reachable. **Remaining blocker: per-subnet submission semantics** — `submission.<field>` is still
+   derived from one stylized quality axis (no data source for what each subnet's miners actually deliver).
+   Also: promote `spec:` from `extensions` to a governed schema field once ≥2× corpus instances use it
+   (`vocab/metric-*-specs.yaml` is the evidence base).
 5. Full-subnet description — extend the IR to facets (chain_config/architecture/economics/health);
    chain facets need `btcli`/`bittensor` (not installed).
 
