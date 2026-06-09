@@ -69,13 +69,25 @@ registration barrier hold. It is a structural red-flag screen, not a verdict —
 below.
 
 **Chain-grounded + Monte-Carlo.** `tooling/chain.py` pulls *real* per-subnet economics from finney via
-bittensor — registration (recycle) cost, burn, emission, on-chain stake-Gini — cached for offline use, so
-the sybil barrier is no longer a stylized constant. `tooling/simulate_cadcad.py` runs the model as a
-**cadCAD** simulation across N Monte-Carlo trajectories (a verdict now reads "honest-dominant in X% of
-runs") and can **sweep the registration barrier** to find the threshold at which a mechanism flips
-sybil-resistant — then compare it to the subnet's *actual* on-chain barrier. E.g. apex (netuid 1) flips
-sybil-resistant at reg_cost ~2.0 but its real on-chain `sybil_cost_ratio` is 0.17 → economically
-sybil-vulnerable.
+bittensor — registration (recycle) cost, burn, emission, on-chain stake-Gini, top-validator stake
+fractions — cached for offline use, so the sybil barrier and stake distribution are no longer stylized.
+`tooling/simulate_cadcad.py` runs the model as a **cadCAD** simulation across N Monte-Carlo trajectories
+(a verdict reads "honest-dominant in X% of runs"). Five chain-grounded analyses, none needing a real
+validator:
+
+- **Monte-Carlo + reg-cost sweep** — robustness of the verdict, and the registration barrier needed for
+  sybil-resistance vs the subnet's *actual* on-chain barrier (apex flips at reg_cost ~2.0 but its real
+  `sybil_cost_ratio` is 0.17 → sybil-vulnerable).
+- **Best-response + Goodhart** (`simulate.py --attack`) — searches the attack space for the *optimal*
+  deviation and lets it inflate the exact field the metric rewards; field-gaming is caught by verification
+  guards. (apex: 5 sybils + ×4 field-boost = 4.2× honest; affine: honest wins.)
+- **Temporal** (`--temporal`) — does the real EMA smoothing let a ramp-then-defect miner free-ride? (slow
+  α=0.05 → 1.28× exploit; no smoothing → safe.)
+- **Yuma validator-collusion** (`--yuma`) — applies the verified clipped-median consensus to the real
+  stake distribution: on netuids 1/4/8 a *single* validator (55–88% of stake) exceeds κ=50% and can
+  unilaterally skew the weight consensus.
+- **Chain calibration** (`--calibrate`) — predicted vs real concentration: matches for winner-take-all
+  (gap +0.02), but a fair-looking proportional rule masks validator-stake-driven concentration (gap +0.84).
 
 ## 5. Theory — why this framing is the right one
 
@@ -97,9 +109,9 @@ construction — which the algebra already does.
 | `tooling/fmt.py` | canonical formatter (`imml-fmt`) | `--check` (gate) |
 | `tooling/metric_spec.py` | spec parse / type-check / evaluate / graph | `--report`, `--selftest`, `--graph` |
 | `tooling/graph.py` | mechanism → Mermaid dataflow | `graph.py <instance>` |
-| `tooling/simulate.py` | incentive simulation (stylized, fast) | `simulate.py <instance>`, `--corpus` |
+| `tooling/simulate.py` | incentive sim + best-response/Goodhart + chain calibration | `--corpus`, `--attack`, `--calibrate` |
 | `tooling/chain.py` | real per-subnet economics from finney (cached) | `chain.py <netuid>`, `--warm` |
-| `tooling/simulate_cadcad.py` | cadCAD Monte-Carlo + chain-grounded sybil economics | `simulate_cadcad.py <instance> [--sweep-reg]` |
+| `tooling/simulate_cadcad.py` | cadCAD Monte-Carlo, reg-sweep, temporal, Yuma collusion | `--sweep-reg`, `--temporal`, `--yuma` |
 
 ## Honest boundaries
 
