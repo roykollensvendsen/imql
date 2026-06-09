@@ -1,0 +1,74 @@
+{
+ "1": {
+  "block": 8370680,
+  "burn": 0.0005,
+  "emission_alpha": 82.0005,
+  "kappa": 32767.0,
+  "moving_price": 0.00935578,
+  "netuid": 1,
+  "num_uids": 256,
+  "recycle_tao": 0.0005,
+  "stake_gini": 0.987,
+  "sybil_cost_ratio": 0.1668
+ },
+ "19": {
+  "block": 8370680,
+  "burn": 0.1,
+  "emission_alpha": 296.0217,
+  "kappa": 32767.0,
+  "moving_price": 0.011968567,
+  "netuid": 19,
+  "num_uids": 256,
+  "recycle_tao": 0.1,
+  "stake_gini": 0.986,
+  "sybil_cost_ratio": 7.2256
+ },
+ "4": {
+  "block": 8370681,
+  "burn": 0.0005,
+  "emission_alpha": 296.0217,
+  "kappa": 32767.0,
+  "moving_price": 0.052314236,
+  "netuid": 4,
+  "num_uids": 256,
+  "recycle_tao": 0.0005,
+  "stake_gini": 0.995,
+  "sybil_cost_ratio": 0.0083
+ },
+ "56": {
+  "block": 8370681,
+  "burn": 0.0005,
+  "emission_alpha": 296.0217,
+  "kappa": 32767.0,
+  "moving_price": 0.019366345,
+  "netuid": 56,
+  "num_uids": 256,
+  "recycle_tao": 0.0005,
+  "stake_gini": 0.975,
+  "sybil_cost_ratio": 0.0223
+ },
+ "64": {
+  "block": 8370680,
+  "burn": 0.0005,
+  "emission_alpha": 296.0217,
+  "kappa": 32767.0,
+  "moving_price": 0.06616672,
+  "netuid": 64,
+  "num_uids": 256,
+  "recycle_tao": 0.0005,
+  "stake_gini": 0.986,
+  "sybil_cost_ratio": 0.0065
+ },
+ "8": {
+  "block": 8370681,
+  "burn": 0.0005,
+  "emission_alpha": 296.0217,
+  "kappa": 32767.0,
+  "moving_price": 0.032102888,
+  "netuid": 8,
+  "num_uids": 256,
+  "recycle_tao": 0.0005,
+  "stake_gini": 0.981,
+  "sybil_cost_ratio": 0.0135
+ }
+}
