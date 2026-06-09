@@ -53,6 +53,10 @@ _RELATIONAL = {"winrate", "rank", "zscore", "softmax"}
 # per-identity cost, not a rejection: many identities are valid, just expensive to run at scale.
 _COST_GUARDS = {"proof_of_work", "collateral", "hardware_validation", "stake_weighting", "registration_cost"}
 
+# guards that catch a FABRICATED / inflated submission (Goodhart field-gaming) — verification of the work.
+_GAME_GUARDS = {"deterministic_check", "code_inspection", "spot_check", "challenge_period", "honeypot",
+                "commit_reveal", "liveness_check", "proof_of_work"}
+
 
 class _Q(dict):
     """A submission/task/groundTruth view: any unknown field falls back to a default value."""
@@ -269,10 +273,102 @@ def _corpus(root: str, rounds: int = 120) -> None:
         print(f"      {m:22} {d:>3}/{c:<3} ({100*d//c if c else 0}%)")
 
 
+# --------------------------------------------------------------------------- #
+# best-response attack search + Goodhart field-gaming (no real validator needed):
+# instead of testing 5 fixed strategies, SEARCH the attack space for the most profitable deviation, and
+# let the attacker inflate the exact `submission.<field>` the metric rewards (gaming the proxy).
+# --------------------------------------------------------------------------- #
+def _rewarded_field(spec):
+    import re
+    if not spec:
+        return None
+    m = re.search(r"submission\.([A-Za-z_]\w*)", spec)
+    return m.group(1) if m else None
+
+
+def _reg_cost(ir, guards):
+    try:
+        import chain
+        cp = chain.params((ir.get("subnet") or {}).get("netuid"))
+        if cp.get("sybil_cost_ratio") is not None:
+            return round(min(5.0, cp["sybil_cost_ratio"]), 3), "chain"
+    except Exception:        # noqa: BLE001
+        pass
+    return (0.5 if (_COST_GUARDS & guards) else 0.0), "stylized"
+
+
+def _attacker_round(method, spec, guards, field, n_id, effort, boost, rng):
+    """One round: honest field + a reference honest miner + an attacker's n_id identities."""
+    ids = []   # (tag, quality, field-overrides)
+    field_qs = [max(0.0, rng.gauss(0.80, 0.10)) for _ in range(N_HONEST_FIELD)]
+    for q in field_qs:
+        ids.append(("field", q, {}))                              # honest field, effort 1.0 (the baseline)
+    gaming_caught = boost > 1.0 and bool(_GAME_GUARDS & guards)    # a verification guard catches inflation
+    for _ in range(n_id):
+        q = max(0.0, rng.gauss(0.30 + 0.5 * effort, 0.10))         # quality rises with effort
+        caught = gaming_caught and rng.random() < 0.9
+        ov = ({} if caught else ({field: q * boost} if field else {}))  # Goodhart: scale the rewarded field
+        ids.append(("attacker", 0.0 if caught else q, ov))         # caught inflation -> submission rejected
+    peer = [q for _, q, _ in ids]
+    raw = []
+    for tag, q, ov in ids:
+        if spec:
+            ctx = {"submission": _Q(q, **ov), "groundTruth": _Q(1.0), "task": _Q(1.0), "peers": peer}
+            try:
+                r = max(0.0, float(metric_spec.evaluate(spec, ctx)))
+            except Exception:    # noqa: BLE001
+                r = q
+        else:
+            r = q * boost if (tag == "attacker" and q > 0) else q
+        raw.append(r)
+    w = _weights(raw, method)
+    att = sum(wi for (t, _, _), wi in zip(ids, w) if t == "attacker")
+    field_w = [wi for (t, _, _), wi in zip(ids, w) if t == "field"]
+    hon = (sum(field_w) / len(field_w)) if field_w else 0.0       # per honest-field-miner (effort 1.0)
+    return att, hon
+
+
+def best_response(ir, rounds=50, seed=7):
+    """Grid-search the attack space for the most profitable deviation vs honest."""
+    agg = ir.get("aggregation") or {}
+    method = agg.get("method") or "proportional"
+    spec = _mech_spec(ir)
+    guards = frozenset(a.get("kind") for a in (ir.get("anti_gaming") or []) if isinstance(a, dict))
+    field = _rewarded_field(spec)
+    reg, reg_src = _reg_cost(ir, guards)
+    best = None
+    for n_id in (1, 2, 5, 8):
+        for effort in (0.1, 0.3, 0.6, 1.0):
+            for boost in (1.0, 2.0, 4.0):
+                rng = random.Random(seed)                  # same field draw for every attack -> fair
+                att = hon = 0.0
+                for _ in range(rounds):
+                    a, h = _attacker_round(method, spec, guards, field, n_id, effort, boost, rng)
+                    att += a
+                    hon += h
+                att_effort = n_id * (effort + reg + 0.05 * (boost - 1))
+                att_rpe = (att / att_effort) if att_effort else 0.0
+                margin = min(99.0, att_rpe / hon) if hon > 1e-9 else 99.0   # cap when honest fully starved
+                cand = {"n_id": n_id, "effort": round(effort, 2), "field_boost": boost, "margin": round(margin, 2)}
+                if best is None or cand["margin"] > best["margin"]:
+                    best = cand
+    best.update({"method": method, "spec": spec, "rewarded_field": field, "reg_cost": reg, "reg_src": reg_src})
+    return best
+
+
 if __name__ == "__main__":
     args = sys.argv[1:]
     if args and args[0] == "--corpus":
         _corpus(args[1] if len(args) > 1 else "instances")
+    elif args and "--attack" in args:
+        path = Path(args[0])
+        b = best_response(yaml.safe_load(path.read_text()))
+        print(f"# best-response attack search: {path.stem}")
+        print(f"  aggregation: {b['method']}   reward: {b['spec'] or 'quality proxy'}")
+        print(f"  Goodhart target (rewarded field): submission.{b['rewarded_field'] or '(quality)'}")
+        print(f"  sybil barrier reg_cost: {b['reg_cost']}  [{b['reg_src']}]")
+        print(f"  >>> optimal attack: {b['n_id']} identities, effort {b['effort']}, field-boost x{b['field_boost']}")
+        print(f"      = {b['margin']}x honest reward/effort  " + ("(GAMEABLE)" if b["margin"] > 1.0 else "(honest wins)"))
     elif args:
         path = Path(args[0])
         rounds = int(args[1]) if len(args) > 1 else 200
