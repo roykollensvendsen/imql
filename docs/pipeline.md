@@ -122,5 +122,10 @@ construction — which the algebra already does.
   abstract quality/effort/cheat profile and `submission.<field>` is derived from one quality axis. The
   mechanism's *shape* and *economics* are faithful; the per-field submission *content* is not. Read a
   verdict as a strong, chain-grounded hypothesis — triage, not a proof of a runnable exploit.
+- **Validated where it counts** (`tooling/validate_sim.py`, 148 chain-confirmed subnets): the sim's
+  **sybil-resistance verdict agrees** with the real registration barrier, but its **concentration
+  prediction does *not* track reality** (predicted vs real emission Gini, r ≈ 0) — real reward
+  concentration is validator-stake-driven, not scoring-driven. So trust the strategic / sybil / economic
+  verdicts; for concentration use the chain (`--calibrate` / `--yuma`), not the scoring sim alone.
 - The **theory** conclusions are primary-sourced for the compressibility framing; the Bittensor /
   simulator-framework regions of the research remain partly unverified.
