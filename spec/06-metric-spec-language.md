@@ -70,7 +70,7 @@ literal   = number | STRING | NAME ;             (* NAME = a named convex genera
 ## Empirical MDL measurement
 
 All **75** distinct raw tail strings from the 189-subnet corpus were written out in this algebra in
-[`vocab/metric-tail-specs.yaml`](../vocab/metric-tail-specs.yaml) and **machine type-checked** by
+`vocab/metric-tail-specs.yaml` and **machine type-checked** by
 `tooling/metric_spec.py --report`. These are best-effort *structural* assignments (validated to parse +
 type-check, not source-verified for exact semantics). The measured result:
 

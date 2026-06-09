@@ -1,0 +1,1 @@
+--8<-- "spec/06-metric-spec-language.md"

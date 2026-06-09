@@ -1,4 +1,5 @@
 - [Home](index.md)
+- [The full picture](pipeline.md)
 - Guides
     - [Overview](guides/overview.md)
     - [Quick start](guides/quick-start.md)
@@ -8,6 +9,7 @@
     - [The IMML language](language/index.md)
     - [Grammar](language/grammar.md)
     - [Coding conventions](language/style.md)
+    - [Metric spec language](language/metric-spec.md)
 - Reference
     - [All primitives](reference/index.md)
     - [Metric families](reference/metric-families.md)

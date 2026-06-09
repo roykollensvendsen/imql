@@ -40,20 +40,38 @@ Commits follow `<type>[(scope)][!]: <description>` (e.g. `feat(lang): …`, `fix
 one commit per completed task.
 
 ## Current state (handoff)
-Phases complete and committed: schema→IR v1.2.0; the IMML language (grammar + lift/compile round-trip at
-100% over 189 subnets); the metric ontology (95.8% structural); the generator (53/53 pipeline scaffolds);
-QML-faithful coding conventions + `imml-fmt`; the docs site (live at
-https://roykollensvendsen.github.io/imml/). This repo was extracted from a workspace and is the source of
-truth; it is referenced as the `incentive-schema` submodule in `~/mining/sn109` (a Bittensor mining
-workspace that also holds the `academia-archives` corpus).
+Phases complete and committed (see `docs/pipeline.md` — "The full picture" — for the consolidated map):
+- **schema→IR v1.2.0** + the **IMML language**, fully QML-faithful (`Mechanism { id: … }`, PascalCase
+  types, `groundTruth`/`publish`, list-valued `score`/`groundTruth`, `Metric { … }`); lift/compile
+  round-trip at **100% over 189 subnets**. The metric ontology (95.8% structural); the generator (53/53).
+- **Metric spec language (Layer 2)** — `tooling/metric_spec.py`: a typed combinator algebra for the metric
+  hole with parser + sort type-checker + **evaluator**. 85% of the 75-metric tail expressible at 0.7
+  generators each (`vocab/metric-tail-specs.yaml`); all 20 named kinds spec'd (`metric-kind-specs.yaml`).
+  Wired into the surface as `Metric { spec: "…" }`, validated at compile, stored in the `extensions` hatch
+  (no schema field yet — accumulating ≥2× evidence). Spec: `spec/06-metric-spec-language.md`.
+- **Dataflow diagrams** — `tooling/graph.py` (mechanism) + `metric_spec.to_mermaid` (spec) → Mermaid, live
+  on each example page's Dataflow tab.
+- **Incentive simulator (MVP)** — `tooling/simulate.py`: strategic miners (honest/lazy/sybil/plagiarist/
+  colluder) vs a mechanism's structure; reports honest-dominance / gameability / Gini / sybil-resistance.
+  Drives 173/180 subnets by their real metric spec. Stylized (no per-subnet submission schema) — triage,
+  not proof. NOT published to the docs site (per-subnet "gameable" verdicts are reputationally sensitive).
+- **Research** — `reports/metric-language-research.md`: adversarially-verified, primary-sourced — the tail
+  is a compressibility/MDL question, not impossibility.
+- **Process** — Conventional Commits enforced (commit-msg hook + CI); one commit per task.
+
+QML-faithful coding conventions + `imml-fmt`; docs live at https://roykollensvendsen.github.io/imml/. This
+repo is the source of truth; referenced as the `incentive-schema` submodule in `~/mining/sn109`.
 
 ## Backlog / next work
-1. Reconcile `lang/imml.ebnf` with the live lark grammar (the EBNF documents `from groundtruth` /
-   `metric family(specific)`; the parser uses `gt:` items / `metric <kind> fam X spec Y`).
+1. Reconcile the rest of `lang/imml.ebnf` with the live grammar (root/metric/gt/publish/smoother now match;
+   the `multiplex` track/combine surface still differs).
 2. Comment-preserving formatter (`fmt.py` currently drops `#` comments).
-3. Generation beyond the pipeline archetype (multiplex/gated/tournament).
-4. **Mechanism simulator** — instantiate an IMML spec against strategic miner policies to *measure*
-   incentive-compatibility (the big next phase; the language is the substrate).
+3. Generation beyond the pipeline archetype (multiplex/gated/tournament) — and wire the spec evaluator into
+   generated validator code (`spec:` → a runnable `score_i()`).
+4. **Simulator fidelity** (MVP done): a focal-miner already lands relational metrics and sybil economics
+   are modelled; remaining is real per-subnet submission/cost calibration and (per research) a cadCAD
+   backend. Also: promote `spec:` from `extensions` to a governed schema field once ≥2× corpus instances
+   use it (`vocab/metric-*-specs.yaml` is the evidence base).
 5. Full-subnet description — extend the IR to facets (chain_config/architecture/economics/health);
    chain facets need `btcli`/`bittensor` (not installed).
 

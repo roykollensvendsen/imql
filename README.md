@@ -1,75 +1,84 @@
-# IMML
+# IMML — Incentive Mechanism Modeling Language
 
-**IMML** — a declarative language for **Bittensor subnet incentive mechanisms**: a formal,
-machine-checkable schema (the IR) plus a QML-style textual surface for designing and generating
-mechanisms, a metric-type ontology, a corpus of 189 instances reverse-engineered from real subnets, and
-a documentation site.
+**IMML** is a declarative language and toolchain for **Bittensor subnet incentive mechanisms**. It lets
+you *describe* a mechanism precisely, *generate* a runnable scaffold, *visualise* its dataflow, and
+*simulate* it against strategic miners to measure whether the incentives actually hold.
 
-Documentation: build locally with `mkdocs serve` (see [`requirements-docs.txt`](requirements-docs.txt)),
-or read the language guide in [`spec/04-imml-language.md`](spec/04-imml-language.md). The corpus was
-reverse-engineered from the `academia-archives` collection (not vendored here; the re-extraction tooling
-expects it as a sibling checkout — see `tooling/list-pending.sh`).
+The guiding result: a mechanism's **structure** (combinators, overlays, aggregation, weight-setting,
+guards, ground-truth) recurs and composes, but the **scoring metric** is bespoke to every subnet. IMML
+captures the structure as a typed language and isolates the metric as an explicit, measurable hole.
 
-The schema is used two ways:
-- **Descriptively** — capture an existing subnet's mechanism as an auditable `extracted` instance.
-- **Prescriptively** — design a new mechanism as an `authored` instance from a blank template.
+📖 **Docs (start here):** https://roykollensvendsen.github.io/imml/ — and
+[**The full picture**](https://roykollensvendsen.github.io/imml/latest/pipeline/) for the end-to-end map.
+
+## What's here
+
+- **A versioned IR** — `schema/incentive-mechanism.schema.json` (JSON Schema 2020-12), the single source
+  of truth. Used *descriptively* (reverse-engineer a subnet into a provenance-tagged instance) and
+  *prescriptively* (author a new mechanism from a template).
+- **A QML-style surface** — a readable textual language (`spec/04`, `spec/05`) that `lift`/`compile`
+  round-trip against the IR at **100% structural fidelity over all 189 corpus subnets**.
+- **A metric spec algebra (Layer 2)** — `tooling/metric_spec.py`: a small typed combinator language for the
+  bespoke metric, with a parser, sort type-checker, and **evaluator**. 85% of the metric tail is
+  expressible at <1 generator-call each (`spec/06`).
+- **Dataflow diagrams** — every mechanism and metric renders as a Mermaid graph (inputs → … → weights),
+  live on each example page's *Dataflow* tab.
+- **An incentive simulator** — `tooling/simulate.py`: run honest/lazy/sybil/plagiarist/colluder miners
+  against a mechanism and measure honest-dominance, gameability, concentration, sybil-resistance.
+- **A 189-subnet corpus** + a **metric ontology** + a **Qt-style docs site**.
 
 ## Layout
 
 ```
 schema/      canonical JSON Schema (Draft 2020-12) + VERSION + CHANGELOG
-spec/        human-readable field reference, authoring guide, extraction guide
+lang/        the grammar (imml.ebnf)
+spec/        field reference, the language, coding conventions, the metric spec language
+vocab/       metric ontology + the metric-tail / metric-kind spec mappings
 templates/   blank-instance.yaml — start here to author a new mechanism
-instances/   sample/  (the bootstrapping set)   corpus/ (bulk run, populated later)
-tooling/     validate.py, stress-report.py, requirements.txt
-reports/     schema-stress + extraction-accuracy reports
+instances/   sample/ (bootstrap set) + corpus/ (189 reverse-engineered subnets)
+tooling/     lift, compile, coverage, validate, generate, fmt, metric_spec, graph, simulate
+reports/     schema-stress, extraction-accuracy, and the metric-language research report
+docs/        the Material-for-MkDocs site (mostly generated from the artifacts above)
 ```
 
 ## Quick start
 
 ```bash
-python3 -m venv .venv && ./.venv/bin/pip install -r tooling/requirements.txt
+python3 -m venv .venv && ./.venv/bin/pip install -r tooling/requirements.txt -r requirements-docs.txt
 
-# validate one instance or a whole directory (CI-style gate; non-zero exit on failure)
-./.venv/bin/python tooling/validate.py instances/sample/
+# round-trip + validate the whole corpus (the core gates)
+./.venv/bin/python tooling/coverage.py instances/           # 100% fidelity
+./.venv/bin/python tooling/validate.py instances/ templates/blank-instance.yaml
 
-# author a new mechanism
+# describe one subnet on the page (top-down dataflow), or simulate its incentives
+./.venv/bin/python tooling/graph.py    instances/corpus/<subnet>.yaml
+./.venv/bin/python tooling/simulate.py instances/corpus/<subnet>.yaml
+
+# the metric spec algebra: type-check, evaluate, graph, or measure tail coverage
+./.venv/bin/python tooling/metric_spec.py "rate(submission.spot_checks)"
+./.venv/bin/python tooling/metric_spec.py --report vocab/metric-tail-specs.yaml
+
+# author a new mechanism, then compile + validate
 cp templates/blank-instance.yaml instances/sample/my-design.yaml
 ./.venv/bin/python tooling/validate.py instances/sample/my-design.yaml
-
-# see where the schema doesn't fit the corpus (drives schema versioning)
-./.venv/bin/python tooling/stress-report.py instances/sample/ --out reports/schema-stress-v0.md
 ```
 
-## Pipeline (skills)
-
-- `im-extract` — reverse-engineer ONE subnet repo into a provenance-tagged, self-validated instance.
-- `im-schema` — validate/version the schema and author new instances from the template.
-- `extract-corpus` Workflow — bulk fan-out over many archives (one agent per repo). The sample gate
-  has passed (`reports/extraction-accuracy.md`), so it is cleared to run.
-
-## Bulk extraction runbook (`extract-corpus`)
-
-The Workflow lives at `../.claude/workflows/extract-corpus.js`. Workflow scripts can't read the
-filesystem, so you enumerate the pending repos first and pass them as `args`:
+## Gates (keep green)
 
 ```bash
-# the archives not yet extracted (171 at last count), as a JSON array:
-bash tooling/list-pending.sh --json            # full pending list
-bash tooling/list-pending.sh --json | ...      # or a slice for a test run
+./.venv/bin/python tooling/validate.py instances/ templates/blank-instance.yaml   # 190/190 valid
+./.venv/bin/python tooling/coverage.py instances/                                  # 100% fidelity
+./.venv/bin/python tooling/generate.py --check instances/                          # 53/53
+./.venv/bin/mkdocs build --strict                                                  # docs clean
 ```
 
-Then invoke the workflow with that array as `args` (e.g. start with a 5-repo slice to smoke-test).
-Each agent writes `instances/corpus/<repo>.yaml` and self-validates; the workflow returns a summary
-(ok/failed, mechanism_status & language breakdowns, ranked corpus-wide schema-stress, failures list).
-Persist that summary to `reports/`, then sweep:
+A pre-commit hook enforces `validate.py`; a commit-msg hook enforces
+[Conventional Commits](https://www.conventionalcommits.org/) (also checked in CI). Install both:
+`ln -sf ../../tooling/pre-commit.sh .git/hooks/pre-commit && ln -sf ../../tooling/commit-msg.sh .git/hooks/commit-msg`.
 
-```bash
-./.venv/bin/python tooling/validate.py instances/corpus/
-./.venv/bin/python tooling/stress-report.py instances/corpus/ --out reports/schema-stress-corpus.md
-```
+## Corpus extraction (descriptive path)
 
-A second schema-stress pass over the full corpus may surface new recurring signals → a governed
-`im-schema bump` to a 1.x schema (re-validate all instances after any bump).
-
-See `spec/00-overview.md` to get oriented.
+The corpus was reverse-engineered from the `academia-archives` collection (not vendored). Re-running bulk
+extraction needs it as a sibling checkout (`ARCHIVES=/path/to/academia-archives/repos` for
+`tooling/list-pending.sh`); the `extract-corpus` workflow lives in the `~/mining/sn109` workspace. See the
+`im-extract` and `im-schema` skills, and `spec/00-overview.md`.
