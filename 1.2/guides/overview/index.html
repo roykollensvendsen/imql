@@ -5762,9 +5762,13 @@
 
 
 <h1 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h1>
-<p>This directory defines a <strong>formal, machine-checkable schema</strong> for Bittensor subnet incentive
-mechanisms, and a corpus of instances built against it.</p>
-<p>The schema serves two purposes:</p>
+<p>IMML is a <strong>declarative language and toolchain</strong> for Bittensor subnet incentive mechanisms. This page
+covers its foundation — the <strong>IR</strong> (a formal, machine-checkable JSON Schema) and the corpus of instances
+built against it. The layers built on top of the IR — the QML-style surface language
+(<code>04-imml-language.md</code>), the typed metric spec algebra (<code>06-metric-spec-language.md</code>), the dataflow
+diagrams, and the incentive simulator — are mapped end-to-end in
+<strong><a href="https://roykollensvendsen.github.io/imml/latest/pipeline/">The full picture</a></strong>.</p>
+<p>The IR (the schema) serves two purposes:</p>
 <ul>
 <li><strong>Descriptive</strong> — reverse-engineer an existing subnet (from the <code>academia-archives</code> corpus) into an
   <code>instance_kind: extracted</code> YAML instance, with a <code>provenance</code> block that ties every non-trivial claim
