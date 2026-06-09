@@ -5658,8 +5658,36 @@
 </tr>
 </tbody>
 </table>
-<div class="tabbed-set tabbed-alternate" data-tabs="1:2"><input checked="checked" id="__tabbed_1_1" name="__tabbed_1" type="radio" /><input id="__tabbed_1_2" name="__tabbed_1" type="radio" /><div class="tabbed-labels"><label for="__tabbed_1_1">IMML</label><label for="__tabbed_1_2">IR (YAML)</label></div>
+<div class="tabbed-set tabbed-alternate" data-tabs="1:3"><input checked="checked" id="__tabbed_1_1" name="__tabbed_1" type="radio" /><input id="__tabbed_1_2" name="__tabbed_1" type="radio" /><input id="__tabbed_1_3" name="__tabbed_1" type="radio" /><div class="tabbed-labels"><label for="__tabbed_1_1">Dataflow</label><label for="__tabbed_1_2">IMML</label><label for="__tabbed_1_3">IR (YAML)</label></div>
 <div class="tabbed-content">
+<div class="tabbed-block">
+<pre class="mermaid"><code>flowchart TD
+  SUB(["submission"]):::in
+  GT(["groundTruth: ReferenceModel, LlmJudgment"]):::in
+  G{{"@guards: CodeInspection, DeterministicCheck, RateLimit"}}:::ov
+  M0["Metric: throughput"]
+  M1["Metric: reward"]
+  AGG["aggregate: WinnerTakeAll"]
+  BURN{{"@burn: redirect a fraction"}}:::ov
+  PUB["publish: SetWeights"]
+  OUT(["weights on-chain = final score"]):::out
+  ST(["@state: carried across rounds"]):::note
+  SUB --&gt; G
+  G --&gt; M0
+  GT --&gt; M0
+  G --&gt; M1
+  GT --&gt; M1
+  M0 --&gt; AGG
+  M1 --&gt; AGG
+  AGG --&gt; BURN
+  BURN --&gt; PUB
+  PUB --&gt; OUT
+  ST --&gt; AGG
+  classDef in fill:#e6f0ff,stroke:#5b8;
+  classDef out fill:#e6ffe6,stroke:#3a3;
+  classDef ov fill:#fff3d6,stroke:#caa;
+  classDef note fill:#f3f3f3,stroke:#bbb;</code></pre>
+</div>
 <div class="tabbed-block">
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>Mechanism {
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    id: templarCrusades

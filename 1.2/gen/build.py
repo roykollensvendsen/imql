@@ -22,6 +22,7 @@ import mkdocs_gen_files
 ROOT = Path(__file__).resolve().parents[2]  # incentive-schema/
 sys.path.insert(0, str(ROOT / "tooling"))
 import imml_core as C  # noqa: E402
+import graph as G  # noqa: E402
 
 SCHEMA = json.loads((ROOT / "schema" / "incentive-mechanism.schema.json").read_text())
 ONTO = yaml.safe_load((ROOT / "vocab" / "metric-ontology.yaml").read_text())
@@ -281,6 +282,10 @@ def gen_examples():
             imml = C.lift(ir)
         except Exception as exc:  # noqa: BLE001
             imml = f"# lift failed: {exc}"
+        try:
+            mermaid = G.mechanism_mermaid(ir)
+        except Exception as exc:  # noqa: BLE001
+            mermaid = f"flowchart TD\n  ERR[\"graph failed: {exc}\"]"
         ir_yaml = yaml.safe_dump({k: v for k, v in ir.items() if k != "__path"}, sort_keys=False, width=100, allow_unicode=True)
 
         page = [f"# {name}\n",
@@ -291,6 +296,10 @@ def gen_examples():
                 f"| Language | `{lang}` |",
                 f"| Mechanism status | `{status}` |",
                 f"| Task | {(ir.get('task') or {}).get('summary', '')[:300]} |\n",
+                '=== "Dataflow"\n',
+                "    ```mermaid",
+                *(f"    {ln}" for ln in mermaid.splitlines()),
+                "    ```\n",
                 '=== "IMML"\n',
                 "    ```text",
                 *(f"    {ln}" for ln in imml.splitlines()),
