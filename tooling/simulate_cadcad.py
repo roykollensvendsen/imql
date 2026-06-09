@@ -115,6 +115,38 @@ def run(ir, runs=80, timesteps=120, reg_cost=None):
     return finals, (method, spec, guards, reg, src, cp), timesteps
 
 
+def yuma_consensus(reports, stakes, kappa):
+    """Bittensor Yuma consensus weight for one miner: the clipped stake-weighted median — the largest
+    weight w such that the stake-weighted fraction of validators reporting >= w meets kappa
+    (verified: subtensor docs/consensus.md). Validators' reports above consensus are then clipped."""
+    total = sum(stakes) or 1.0
+    cum = 0.0
+    for w, s in sorted(zip(reports, stakes), reverse=True):
+        cum += s
+        if cum / total >= kappa:
+            return w
+    return min(reports) if reports else 0.0
+
+
+def yuma_collusion(ir):
+    """Can a validator bloc skew the weight consensus? Uses the REAL on-chain stake distribution + kappa.
+    A bloc holding stake fraction >= kappa can push a favored miner's consensus to its own report."""
+    cp = chain.params((ir.get("subnet") or {}).get("netuid"))
+    kappa = cp.get("kappa")
+    k = (kappa / 65535.0) if (kappa and kappa > 1) else (kappa if kappa else 0.5)
+    top1, top3 = cp.get("stake_top1"), cp.get("stake_top3")
+    out = {"netuid": cp.get("netuid"), "kappa": round(k, 3), "stake_top1": top1, "stake_top3": top3,
+           "stake_gini": cp.get("stake_gini"), "single": None, "top3": None, "skewed_weight": None}
+    if top1 is not None:
+        # demo consensus: the top-1 bloc reports a favored miner 1.0, the rest report its true 0.5
+        reports = [1.0, 0.5]
+        stakes = [top1, 1.0 - top1]
+        out["skewed_weight"] = round(yuma_consensus(reports, stakes, k), 3)
+        out["single"] = top1 >= k
+        out["top3"] = (top3 is not None and top3 >= k)
+    return out
+
+
 def temporal(ir, rounds=120, defect_at=None):
     """Does the mechanism's smoothing let a ramp-then-defect miner free-ride? (a temporal exploit)
     Model: a defector is honest until `defect_at`, then drops effort; an EMA carries its score forward,
@@ -210,7 +242,18 @@ if __name__ == "__main__":
         sys.exit(2)
     path = Path(args[0])
     ir = yaml.safe_load(path.read_text())
-    if "--temporal" in args:
+    if "--yuma" in args:
+        y = yuma_collusion(ir)
+        print(f"# Yuma validator-collusion (real chain stake): {path.stem}")
+        if y["stake_top1"] is None:
+            print("  no on-chain stake data for this subnet's netuid (warm it: chain.py --warm <netuid>)")
+        else:
+            print(f"  consensus threshold kappa: {int(y['kappa']*100)}%   on-chain stake-Gini: {y['stake_gini']}")
+            print(f"  top-1 validator stake: {int(y['stake_top1']*100)}%   top-3: {int(y['stake_top3']*100)}%")
+            print(f"  a favored miner's true weight 0.5 -> consensus {y['skewed_weight']} under a top-1 collusion")
+            print(f"  single validator can skew consensus?  {'YES' if y['single'] else 'no'}"
+                  + (f"   (top-3 bloc: {'YES' if y['top3'] else 'no'})"))
+    elif "--temporal" in args:
         t = temporal(ir)
         print(f"# cadCAD temporal exploit: {path.stem}")
         print(f"  smoothing: {('EMA alpha=' + str(t['alpha'])) if t['alpha'] else 'none (no memory)'}"

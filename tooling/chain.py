@@ -67,7 +67,10 @@ def fetch(netuid: int, network: str = _NETWORK) -> dict:
     burn = _f(getattr(info, "burn", None))
     num = int(getattr(info, "num_uids", 0) or 0)
     emission_alpha = _sum(getattr(info, "emission", None))         # total alpha emitted to uids / epoch
-    stake_gini = _gini([_f(x) for x in (getattr(info, "total_stake", []) or [])])  # real concentration
+    stakes = sorted((_f(x) for x in (getattr(info, "total_stake", []) or []) if (_f(x) or 0) > 0), reverse=True)
+    stake_gini = _gini(stakes)                                     # real concentration
+    tot = sum(stakes) or 1.0
+    topf = lambda k: round(sum(stakes[:k]) / tot, 3) if stakes else None   # top-k stake fraction (collusion bloc)
     # real, unit-consistent sybil barrier: registration cost (converted to alpha) per neuron's emission.
     reg_alpha = (recycle / price) if (recycle and price) else None
     per_uid = (emission_alpha / num) if (emission_alpha and num) else None
@@ -82,6 +85,9 @@ def fetch(netuid: int, network: str = _NETWORK) -> dict:
         "num_uids": num,
         "kappa": _f(getattr(info, "kappa", None)),
         "stake_gini": stake_gini,
+        "stake_top1": topf(1),
+        "stake_top3": topf(3),
+        "stake_top5": topf(5),
         "sybil_cost_ratio": sybil_cost_ratio,
     }
 
