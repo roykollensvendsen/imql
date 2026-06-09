@@ -176,6 +176,61 @@ def generators_used(spec: str) -> list[str]:
     return re.findall(r"([a-zA-Z_][a-zA-Z0-9_]*)\s*\(", spec)
 
 
+def _mlabel(s: str) -> str:
+    return str(s).replace('"', "'")
+
+
+def to_mermaid(spec: str, prefix: str = "") -> tuple[str, str]:
+    """Render a spec as a top-down Mermaid dataflow: sources at top, `score` at the bottom.
+    Returns (body_lines, root_node_id) so callers can embed it inside a larger graph."""
+    tree = _parser.parse(spec)
+    lines: list[str] = []
+    edges: list[tuple[str, str]] = []
+    n = [0]
+
+    def nid():
+        n[0] += 1
+        return f"{prefix}s{n[0]}"
+
+    def walk(node):
+        d = node.data
+        if d in ("start", "term", "positional"):
+            return walk(node.children[0])
+        if d == "named":
+            return walk(node.children[1])
+        if d == "expr":
+            kids = node.children
+            cur = walk(kids[0])
+            for i in range(1, len(kids), 2):
+                nd = nid()
+                lines.append(f'  {nd}["{_mlabel(kids[i])}"]')
+                edges.append((cur, nd))
+                edges.append((walk(kids[i + 1]), nd))
+                cur = nd
+            return cur
+        if d == "source":
+            nd = nid()
+            lines.append(f'  {nd}(["{_mlabel(".".join(str(c) for c in node.children))}"]):::src')
+            return nd
+        if d in ("num", "str", "ident"):
+            nd = nid()
+            lines.append(f'  {nd}(["{_mlabel(node.children[0])}"]):::src')
+            return nd
+        if d == "call":
+            name = str(node.children[0])
+            kids = [walk(a) for a in node.children[1:] if a is not None]
+            nd = nid()
+            lines.append(f'  {nd}["{_mlabel(name)}"]')
+            for c in kids:
+                edges.append((c, nd))
+            return nd
+        raise SpecError(f"cannot graph node {d}")
+
+    root = walk(tree)
+    lines += [f"  {a} --> {b}" for a, b in edges]
+    return "\n".join(lines), root
+
+
 def _report(path: str) -> int:
     import yaml
     rows = yaml.safe_load(Path(path).read_text()) or []
@@ -344,6 +399,10 @@ if __name__ == "__main__":
     elif args and args[0] == "--eval":   # --eval "<spec>" '<json ctx>'
         import json
         print(evaluate(args[1], json.loads(args[2])))
+    elif args and args[0] == "--graph":  # --graph "<spec>"  -> a standalone Mermaid flowchart
+        body, root = to_mermaid(args[1])
+        print("flowchart TD\n" + body + f"\n  {root} --> OUT([\"score\"]):::out"
+              + "\n  classDef src fill:#e6f0ff,stroke:#5b8;\n  classDef out fill:#e6ffe6,stroke:#3a3;")
     elif args:
         try:
             print(check(args[0]))
