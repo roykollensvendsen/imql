@@ -30,13 +30,20 @@ import yaml
 
 import metric_spec
 
-# the 75 tail metrics written out in the spec algebra -> {raw metric string: spec}
+# metrics written out in the spec algebra: the 75 one-off `other` raws + the 20 named-kind families
 _ROOT = Path(__file__).resolve().parent.parent
-try:
-    _TAIL = {r["raw"]: r["spec"] for r in (yaml.safe_load((_ROOT / "vocab" / "metric-tail-specs.yaml").read_text()) or [])
-             if isinstance(r, dict) and r.get("spec")}
-except Exception:        # noqa: BLE001
-    _TAIL = {}
+
+
+def _load(name, key):
+    try:
+        return {r[key]: r["spec"] for r in (yaml.safe_load((_ROOT / "vocab" / name).read_text()) or [])
+                if isinstance(r, dict) and r.get("spec")}
+    except Exception:    # noqa: BLE001
+        return {}
+
+
+_TAIL = _load("metric-tail-specs.yaml", "raw")
+_KIND = _load("metric-kind-specs.yaml", "kind")
 
 # relational reductions whose per-miner result needs a focal-miner the algebra doesn't model yet -> skip
 _RELATIONAL = {"winrate", "rank", "zscore", "softmax"}
@@ -52,7 +59,9 @@ class _Q(dict):
 
 
 def _signal_spec(sig: dict) -> str | None:
-    return (sig.get("extensions") or {}).get("spec") or _TAIL.get(sig.get("metric_kind_other"))
+    return ((sig.get("extensions") or {}).get("spec")
+            or _TAIL.get(sig.get("metric_kind_other"))
+            or _KIND.get(sig.get("metric_kind")))
 
 
 def _mech_spec(ir: dict) -> str | None:

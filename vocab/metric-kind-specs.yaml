@@ -1,0 +1,44 @@
+# IMML metric-kind spec mapping (companion to spec/06-metric-spec-language.md).
+# One canonical Layer-2 spec per *named* metric_kind enum (the recurring families), complementing
+# vocab/metric-tail-specs.yaml (the 75 one-off `other` raws). Best-effort STRUCTURAL forms,
+# machine type-checked by tooling/metric_spec.py; not source-verified semantics.
+- kind: accuracy
+  spec: rate(submission.correct)
+- kind: similarity
+  spec: similarity(submission.output, groundTruth.reference)
+- kind: composite
+  spec: mean(submission.components)
+- kind: volume
+  spec: submission.volume
+- kind: llm_judgment
+  spec: similarity(submission.output, groundTruth.judge)
+- kind: latency
+  spec: penalty(submission.latency)
+- kind: throughput
+  spec: submission.throughput
+- kind: uptime
+  spec: submission.uptime
+- kind: loss
+  spec: penalty(submission.loss)
+- kind: hardware_spec
+  spec: submission.hardware_score
+- kind: pnl
+  spec: submission.pnl
+- kind: regression_error
+  spec: error(submission.prediction, groundTruth.target)
+- kind: reward
+  spec: submission.reward
+- kind: engagement
+  spec: submission.engagement
+- kind: win_rate
+  spec: mean(winrate(peers))
+- kind: vlm_judgment
+  spec: similarity(submission.output, groundTruth.judge)
+- kind: risk_adjusted_ratio
+  spec: submission.excess_return / submission.volatility
+- kind: probabilistic_forecast
+  spec: score_rule(crps, submission.forecast, groundTruth.outcome)
+- kind: human_judgment
+  spec: submission.human_score
+- kind: predictive_contribution
+  spec: submission.predictive_contribution

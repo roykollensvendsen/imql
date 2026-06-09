@@ -16,6 +16,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from functools import lru_cache
+
 from lark import Lark, Transformer, v_args
 from lark.exceptions import VisitError
 
@@ -100,6 +102,12 @@ NAME: /[a-zA-Z_][a-zA-Z0-9_]*/
 _parser = Lark(GRAMMAR, parser="earley", maybe_placeholders=False)
 
 
+@lru_cache(maxsize=8192)
+def _parse(spec: str):
+    """Parse a spec to a (read-only, reusable) tree — cached, since check/evaluate/graph re-parse hot."""
+    return _parser.parse(spec)
+
+
 class SpecError(Exception):
     pass
 
@@ -155,7 +163,7 @@ class _Check(Transformer):
 def check(spec: str) -> str:
     """Parse + type-check a spec expression; return its result sort, or raise SpecError."""
     try:
-        tree = _parser.parse(spec)
+        tree = _parse(spec)
     except Exception as e:  # noqa: BLE001 — lark raises many parse error types
         raise SpecError(f"parse error: {e}") from e
     try:
@@ -183,7 +191,7 @@ def _mlabel(s: str) -> str:
 def to_mermaid(spec: str, prefix: str = "") -> tuple[str, str]:
     """Render a spec as a top-down Mermaid dataflow: sources at top, `score` at the bottom.
     Returns (body_lines, root_node_id) so callers can embed it inside a larger graph."""
-    tree = _parser.parse(spec)
+    tree = _parse(spec)
     lines: list[str] = []
     edges: list[tuple[str, str]] = []
     n = [0]
@@ -329,7 +337,7 @@ _BINOP = {"+": lambda a, b: a + b, "-": lambda a, b: a - b,
 def evaluate(spec: str, ctx: dict):
     """Evaluate a spec expression against ctx={submission,groundTruth,task,peers}.
     Pure generators only; `extern`/relational primitives raise NotImplementedError (the boundary)."""
-    tree = _parser.parse(spec)
+    tree = _parse(spec)
 
     def ev(node):
         d = node.data
