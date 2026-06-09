@@ -5883,13 +5883,26 @@ of extreme concentration), while proportional-family methods are gameable unless
 registration barrier hold. It is a structural red-flag screen, not a verdict — see the honest boundaries
 below.</p>
 <p><strong>Chain-grounded + Monte-Carlo.</strong> <code>tooling/chain.py</code> pulls <em>real</em> per-subnet economics from finney via
-bittensor — registration (recycle) cost, burn, emission, on-chain stake-Gini — cached for offline use, so
-the sybil barrier is no longer a stylized constant. <code>tooling/simulate_cadcad.py</code> runs the model as a
-<strong>cadCAD</strong> simulation across N Monte-Carlo trajectories (a verdict now reads "honest-dominant in X% of
-runs") and can <strong>sweep the registration barrier</strong> to find the threshold at which a mechanism flips
-sybil-resistant — then compare it to the subnet's <em>actual</em> on-chain barrier. E.g. apex (netuid 1) flips
-sybil-resistant at reg_cost ~2.0 but its real on-chain <code>sybil_cost_ratio</code> is 0.17 → economically
-sybil-vulnerable.</p>
+bittensor — registration (recycle) cost, burn, emission, on-chain stake-Gini, top-validator stake
+fractions — cached for offline use, so the sybil barrier and stake distribution are no longer stylized.
+<code>tooling/simulate_cadcad.py</code> runs the model as a <strong>cadCAD</strong> simulation across N Monte-Carlo trajectories
+(a verdict reads "honest-dominant in X% of runs"). Five chain-grounded analyses, none needing a real
+validator:</p>
+<ul>
+<li><strong>Monte-Carlo + reg-cost sweep</strong> — robustness of the verdict, and the registration barrier needed for
+  sybil-resistance vs the subnet's <em>actual</em> on-chain barrier (apex flips at reg_cost ~2.0 but its real
+  <code>sybil_cost_ratio</code> is 0.17 → sybil-vulnerable).</li>
+<li><strong>Best-response + Goodhart</strong> (<code>simulate.py --attack</code>) — searches the attack space for the <em>optimal</em>
+  deviation and lets it inflate the exact field the metric rewards; field-gaming is caught by verification
+  guards. (apex: 5 sybils + ×4 field-boost = 4.2× honest; affine: honest wins.)</li>
+<li><strong>Temporal</strong> (<code>--temporal</code>) — does the real EMA smoothing let a ramp-then-defect miner free-ride? (slow
+  α=0.05 → 1.28× exploit; no smoothing → safe.)</li>
+<li><strong>Yuma validator-collusion</strong> (<code>--yuma</code>) — applies the verified clipped-median consensus to the real
+  stake distribution: on netuids 1/4/8 a <em>single</em> validator (55–88% of stake) exceeds κ=50% and can
+  unilaterally skew the weight consensus.</li>
+<li><strong>Chain calibration</strong> (<code>--calibrate</code>) — predicted vs real concentration: matches for winner-take-all
+  (gap +0.02), but a fair-looking proportional rule masks validator-stake-driven concentration (gap +0.84).</li>
+</ul>
 <h2 id="5-theory-why-this-framing-is-the-right-one">5. Theory — why this framing is the right one<a class="headerlink" href="#5-theory-why-this-framing-is-the-right-one" title="Permanent link">&para;</a></h2>
 <p>A focused, adversarially-verified literature pass (<code>reports/metric-language-research.md</code>) grounds the
 design in primary sources: describing the tail is a <strong>compressibility / MDL question, not an
@@ -5944,8 +5957,8 @@ construction — which the algebra already does.</p>
 </tr>
 <tr>
 <td><code>tooling/simulate.py</code></td>
-<td>incentive simulation (stylized, fast)</td>
-<td><code>simulate.py &lt;instance&gt;</code>, <code>--corpus</code></td>
+<td>incentive sim + best-response/Goodhart + chain calibration</td>
+<td><code>--corpus</code>, <code>--attack</code>, <code>--calibrate</code></td>
 </tr>
 <tr>
 <td><code>tooling/chain.py</code></td>
@@ -5954,8 +5967,8 @@ construction — which the algebra already does.</p>
 </tr>
 <tr>
 <td><code>tooling/simulate_cadcad.py</code></td>
-<td>cadCAD Monte-Carlo + chain-grounded sybil economics</td>
-<td><code>simulate_cadcad.py &lt;instance&gt; [--sweep-reg]</code></td>
+<td>cadCAD Monte-Carlo, reg-sweep, temporal, Yuma collusion</td>
+<td><code>--sweep-reg</code>, <code>--temporal</code>, <code>--yuma</code></td>
 </tr>
 </tbody>
 </table>
