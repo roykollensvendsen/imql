@@ -7,7 +7,7 @@
 #
 # Spec: https://www.conventionalcommits.org/en/v1.0.0/
 #   <type>[(scope)][!]: <description>
-# Format errors fail (exit 1); an over-long subject is a warning only.
+# Both a malformed type/scope and an over-long subject (> 72 chars) fail (exit 1).
 set -euo pipefail
 
 TYPES='feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert'
@@ -45,7 +45,13 @@ EOF
 fi
 
 if [ "${#subject}" -gt "$MAXLEN" ]; then
-  echo "⚠ commit subject is ${#subject} chars (recommended ≤ ${MAXLEN}): $subject" >&2
+  cat >&2 <<EOF
+✗ Commit subject is ${#subject} chars — keep it ≤ ${MAXLEN}.
+  got:    $subject
+  fix:    tighten the subject; move detail into the body (blank line, then prose).
+  (bypass once with: git commit --no-verify)
+EOF
+  exit 1
 fi
 
 exit 0
