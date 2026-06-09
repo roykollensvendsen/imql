@@ -66,7 +66,9 @@ def fetch(netuid: int, network: str = _NETWORK) -> dict:
     price = _f(getattr(info, "moving_price", None))    # subnet token price (TAO per alpha)
     burn = _f(getattr(info, "burn", None))
     num = int(getattr(info, "num_uids", 0) or 0)
-    emission_alpha = _sum(getattr(info, "emission", None))         # total alpha emitted to uids / epoch
+    emission_list = [_f(x) for x in (getattr(info, "emission", []) or [])]
+    emission_alpha = _sum(emission_list)                           # total alpha emitted to uids / epoch
+    emission_gini = _gini(emission_list)                           # real concentration of per-uid reward
     stakes = sorted((_f(x) for x in (getattr(info, "total_stake", []) or []) if (_f(x) or 0) > 0), reverse=True)
     stake_gini = _gini(stakes)                                     # real concentration
     tot = sum(stakes) or 1.0
@@ -84,6 +86,7 @@ def fetch(netuid: int, network: str = _NETWORK) -> dict:
         "emission_alpha": round(emission_alpha, 4) if emission_alpha else None,
         "num_uids": num,
         "kappa": _f(getattr(info, "kappa", None)),
+        "emission_gini": emission_gini,
         "stake_gini": stake_gini,
         "stake_top1": topf(1),
         "stake_top3": topf(3),

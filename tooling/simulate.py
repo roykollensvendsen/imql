@@ -356,10 +356,37 @@ def best_response(ir, rounds=50, seed=7):
     return best
 
 
+def calibrate(ir, rounds=200):
+    """Compare the sim's PREDICTED concentration (Gini of miner emission from the scoring rule) to the
+    REAL on-chain concentration. The gap is informative: real reward is dominated by validator stake
+    (post-dTAO dividends), so a fair-looking scoring rule can still sit on extreme real concentration."""
+    r = simulate(ir, rounds)
+    try:
+        import chain
+        cp = chain.params((ir.get("subnet") or {}).get("netuid"))
+    except Exception:        # noqa: BLE001
+        cp = {}
+    return {"predicted_gini": r["gini"], "real_emission_gini": cp.get("emission_gini"),
+            "real_stake_gini": cp.get("stake_gini"), "method": r["method"]}
+
+
 if __name__ == "__main__":
     args = sys.argv[1:]
     if args and args[0] == "--corpus":
         _corpus(args[1] if len(args) > 1 else "instances")
+    elif args and "--calibrate" in args:
+        path = Path(args[0])
+        c = calibrate(yaml.safe_load(path.read_text()))
+        print(f"# calibration vs chain: {path.stem}")
+        print(f"  predicted miner-scoring Gini ({c['method']}): {c['predicted_gini']}")
+        if c["real_emission_gini"] is None:
+            print("  no on-chain data for this netuid (warm it: chain.py --warm <netuid>)")
+        else:
+            print(f"  REAL on-chain emission Gini: {c['real_emission_gini']}   (stake Gini {c['real_stake_gini']})")
+            gap = c["real_emission_gini"] - c["predicted_gini"]
+            how = "far more concentrated than" if gap > 0.2 else "about as concentrated as"
+            print(f"  gap: {gap:+.2f}  -> real reward is {how} the scoring rule alone predicts;"
+                  + " real concentration is validator-stake-driven (dTAO dividends), not the metric.")
     elif args and "--attack" in args:
         path = Path(args[0])
         b = best_response(yaml.safe_load(path.read_text()))
