@@ -55,17 +55,23 @@ Phases complete and committed (see `docs/pipeline.md` — "The full picture" —
   (per-subnet "gameable" verdicts are reputationally sensitive). Optional deps in
   `tooling/requirements-sim.txt` (cadCAD + bittensor, now installed in `.venv`).
   - `tooling/simulate.py`: strategic miners vs a mechanism's structure → honest-dominance / gameability /
-    Gini / sybil-resistance; drives 173/180 by their real spec. Modes: `--corpus`; `--attack`
-    (best-response search + Goodhart field-gaming, guard-aware); `--calibrate` (predicted vs real Gini).
+    Gini / sybil-resistance; drives 173/180 by their real spec. Reports concentration at two layers: the
+    *scoring-layer* Gini (within active miners) and the *effective* Gini that folds the real dTAO emission
+    split (18% owner / 41% validators-by-stake / 41% miners-by-score, from `chain.py`'s measured stake
+    concentration) over the full registered-uid set — the credible one (validation r≈0.73 vs scoring's
+    ≈0). Modes: `--corpus`; `--attack` (best-response search + Goodhart field-gaming, guard-aware);
+    `--calibrate` (scoring + effective Gini vs real emission Gini).
   - `tooling/chain.py`: REAL finney economics per netuid (recycle/burn/emission/kappa/stake-Gini/
     top-bloc stake fractions/sybil_cost_ratio), cached in `vocab/chain-params.json` (~103 subnets warmed).
   - `tooling/simulate_cadcad.py`: cadCAD Monte-Carlo; modes `--sweep-reg` (registration barrier threshold),
     `--temporal` (ramp-then-defect under EMA), `--yuma` (validator collusion on real stake + verified
     clipped-median consensus — finding: one validator with 55–88% stake exceeds κ on most subnets).
-  - `tooling/validate_sim.py`: correlates verdicts vs real chain over 148 subnets. **CRITICAL FINDING:
-    sybil-resistance verdicts AGREE with reality, but the concentration/Gini prediction does NOT (r≈0) —
-    real reward concentration is validator-stake-driven, not scoring-driven. Trust the strategic/sybil/
-    economic verdicts; do NOT trust the sim's Gini standalone (use `--calibrate`/`--yuma`).**
+  - `tooling/validate_sim.py`: correlates verdicts vs real chain over 148 subnets. **FINDING:
+    sybil-resistance verdicts AGREE with reality, and concentration is now credible too — the *scoring-only*
+    Gini stays uncorrelated (r≈0.06), but the *effective* Gini (validator-stake dividend + registered-uid
+    tail folded in) correlates at r≈0.73 and recovers the level (median 0.945 vs real 0.984). This confirms
+    the diagnosis: real reward concentration is validator-stake-driven, not scoring-driven — and the
+    effective layer captures it. Trust the effective Gini; the scoring-layer Gini is the within-miner signal.**
 - **Research** — `reports/metric-language-research.md`: adversarially-verified, primary-sourced — the tail
   is a compressibility/MDL question, not impossibility.
 - **Process** — Conventional Commits enforced (commit-msg hook + CI); one commit per task.
@@ -79,14 +85,14 @@ repo is the source of truth; referenced as the `incentive-schema` submodule in `
 2. Comment-preserving formatter (`fmt.py` currently drops `#` comments).
 3. Generation beyond the pipeline archetype (multiplex/gated/tournament) — and wire the spec evaluator into
    generated validator code (`spec:` → a runnable `score_i()`).
-4. **Simulator** — chain economics, cadCAD, best-response/Goodhart, temporal, Yuma collusion, and
-   validation are all done (see Current state). Next, in priority order: (a) **fix concentration** — wire
-   the validator-stake layer (Yuma + real stake) into the main verdict so the Gini becomes credible (the
-   validation showed scoring-only Gini is uncorrelated with reality); (b) **equilibrium dynamics** — iterate
-   best-response to a fixed point (does the mechanism collapse to all-cheaters?) rather than one deviation;
-   (c) the residual blocker is **per-subnet submission semantics** (`submission.<field>` is one stylized
-   quality axis; needs a real validator — not closeable from the corpus). Also: promote `spec:` from
-   `extensions` to a governed schema field once ≥2× corpus instances use it.
+4. **Simulator** — chain economics, cadCAD, best-response/Goodhart, temporal, Yuma collusion, validation,
+   and **concentration (the effective Gini layer, done — validation r≈0.73)** are all complete (see Current
+   state). Next, in priority order: (a) **equilibrium dynamics** — iterate best-response to a fixed point
+   (does the mechanism collapse to all-cheaters?) rather than one deviation; (b) the residual blocker is
+   **per-subnet submission semantics** (`submission.<field>` is one stylized quality axis; needs a real
+   validator — not closeable from the corpus). Also: promote `spec:` from `extensions` to a governed schema
+   field once ≥2× corpus instances use it. Possible refinement on the effective Gini: derive the
+   owner/validator/miner emission split per-subnet from chain rather than the dTAO constants (18/41/41).
 5. Full-subnet description — extend the IR to facets (chain_config/architecture/economics/health).
    `bittensor` is now installed and finney is reachable (`tooling/chain.py` is the adapter), so chain
    facets are now buildable.

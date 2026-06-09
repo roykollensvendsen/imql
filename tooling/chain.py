@@ -95,6 +95,14 @@ def fetch(netuid: int, network: str = _NETWORK) -> dict:
     }
 
 
+def cached(netuid) -> dict:
+    """Cache-only real params (never touches the network). Returns {} if not warmed — used by the
+    simulator's effective-concentration layer so a corpus sweep stays fast and offline-silent."""
+    if netuid is None:
+        return {}
+    return _load().get(str(netuid), {})
+
+
 def params(netuid, refresh: bool = False) -> dict:
     """Cached real params for a subnet. Returns {} if offline and not cached (caller falls back)."""
     if netuid is None:

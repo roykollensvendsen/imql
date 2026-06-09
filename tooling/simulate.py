@@ -17,6 +17,12 @@ spec (tooling/metric_spec.evaluate), so the metric's own structure (gate / penal
 shapes the reward, not just an abstract quality. Relational reductions (winrate/rank) and any spec that
 fails to evaluate fall back to the quality proxy. The report says which reward model was used.
 
+Concentration is reported at two layers. The *scoring-layer* Gini measures inequality among the active
+miners the scoring rule sees — but that alone is uncorrelated with real on-chain emission Gini (validation:
+r~0). The *effective* Gini layers the real dTAO emission split (18% owner / 41% validators by stake / 41%
+miners by score, from chain.py's measured stake concentration) over the full registered-uid set, capturing
+the validator-stake dividend layer + the inactive tail that actually drive real concentration (r~0.7).
+
 Usage:
     simulate.py instances/corpus/<subnet>.yaml [rounds]
 """
@@ -153,7 +159,50 @@ def gini(xs):
     return (2 * cum) / (n * sum(xs)) - (n + 1) / n
 
 
-def simulate(ir: dict, rounds: int = 200, seed: int = 7) -> dict:
+# dTAO per-block emission split (verified: docs.learnbittensor.org/learn/emissions): each subnet's
+# emission is split 18% subnet owner / 41% validators (dividends, by stake) / 41% miners (incentive, by
+# score). The scoring layer the sim models is only the 41% miner share; real per-uid concentration is
+# dominated by the stake-weighted dividend layer and the large registered-but-inactive tail.
+EMIT_OWNER, EMIT_VALIDATOR, EMIT_MINER = 0.18, 0.41, 0.41
+
+
+def _stake_shares(cp: dict, n: int) -> list:
+    """Reconstruct a per-uid validator stake-share vector (length n, sums to 1) from the REAL measured
+    top-k stake fractions (chain.py's stake_top1/3/5) plus a geometrically-decaying tail for the
+    remainder, so the dividend layer carries the actual on-chain validator concentration — not a fit."""
+    t1 = cp.get("stake_top1") or 0.0
+    t3 = cp.get("stake_top3") or t1
+    t5 = cp.get("stake_top5") or t3
+    head = [t1, (t3 - t1) / 2, (t3 - t1) / 2, (t5 - t3) / 2, (t5 - t3) / 2]
+    rest = max(0.0, 1.0 - t5)
+    nrest = max(1, n - len(head))
+    tail = [0.5 ** (i / max(1.0, nrest / 4)) for i in range(nrest)]   # decaying remainder of the stake
+    ts = sum(tail) or 1.0
+    shares = (head + [rest * x / ts for x in tail])[:n]
+    s = sum(shares) or 1.0
+    return [x / s for x in shares]
+
+
+def _effective_gini(miner_shares: list, cp: dict):
+    """Concentration of REAL per-uid emission — not just the scoring layer. Layers the dTAO emission split
+    over the full registered uid set: the owner takes a fixed cut (one uid), validators earn dividends by
+    the real stake concentration, the mechanism's own scoring distribution spreads the miner incentive,
+    and the large registered-but-inactive tail earns ~0 — which is what drives real emission Gini to ~0.98.
+    Returns None when there is no on-chain data for the subnet (caller falls back to the scoring Gini)."""
+    nu = cp.get("num_uids")
+    if not nu or cp.get("stake_top1") is None:
+        return None
+    vec = [0.0] * nu
+    vec[0] += EMIT_OWNER                                          # owner cut -> one uid
+    for i, p in enumerate(_stake_shares(cp, nu)):                # dividends by real validator stake
+        vec[i] += EMIT_VALIDATOR * p
+    ms = sum(miner_shares) or 1.0                                # incentive by the mechanism's scoring shape
+    for i, x in enumerate(miner_shares):
+        vec[i % nu] += EMIT_MINER * x / ms
+    return round(gini(vec), 3)
+
+
+def simulate(ir: dict, rounds: int = 200, seed: int = 7, chain_layer: bool = True) -> dict:
     rng = random.Random(seed)
     agg = ir.get("aggregation") or {}
     method = agg.get("method") or "proportional"
@@ -172,6 +221,8 @@ def simulate(ir: dict, rounds: int = 200, seed: int = 7) -> dict:
     earned = {s: 0.0 for s in STRATEGIES}          # total emission per strategy
     effort = {s: STRATEGIES[s][0] * (STRATEGIES[s][2] + reg_cost) for s in STRATEGIES}
     all_identity_totals = []
+    slot_totals = None                             # per-identity emission, in fixed slot order (the miner
+                                                   # incentive distribution -> the effective-Gini layer)
 
     for _ in range(rounds):
         ids = []   # (strategy, quality, cost, cheat)
@@ -195,10 +246,13 @@ def simulate(ir: dict, rounds: int = 200, seed: int = 7) -> dict:
         peer_qs = [q for _, q, _, _ in ids]
         raw = [_reward(spec, q, cost, cheat, peer_qs) for _, q, cost, cheat in ids]
         w = _weights(raw, method)   # burn scales every miner equally -> it doesn't change relative
-        for (s, _, _, _), wi in zip(ids, w):   # incentives or concentration, so it is reported, not applied
+        if slot_totals is None:                # incentives or concentration, so it is reported, not applied
+            slot_totals = [0.0] * len(ids)
+        for idx, ((s, _, _, _), wi) in enumerate(zip(ids, w)):
             if s in earned:
                 earned[s] += wi
             all_identity_totals.append(wi)
+            slot_totals[idx] += wi
 
     # incentive report
     rpe = {s: (earned[s] / effort[s] / rounds) for s in STRATEGIES}   # reward per unit effort, per round
@@ -208,6 +262,17 @@ def simulate(ir: dict, rounds: int = 200, seed: int = 7) -> dict:
     gameable = sorted(((s, rel[s]) for s in STRATEGIES if s != "honest" and rel[s] > 1.0),
                       key=lambda kv: -kv[1])
     sybil_resistant = earned["sybil"] <= earned["honest"] + 1e-9
+
+    # effective concentration: layer the real validator-stake dividend + the registered-uid tail over the
+    # scoring layer. The scoring Gini alone is uncorrelated with real emission Gini (validation: r~0);
+    # the effective Gini folds in the stake layer that actually drives it (r~0.7).
+    cp = {}
+    if chain_layer:
+        try:
+            import chain
+            cp = chain.cached((ir.get("subnet") or {}).get("netuid")) or {}   # cache-only: fast + silent
+        except Exception:    # noqa: BLE001 — offline / no netuid -> scoring Gini only
+            cp = {}
     return {
         "method": method, "composition": composition, "burn_fraction": round(burn_frac, 3),
         "guards": sorted(guard_kinds),
@@ -216,7 +281,8 @@ def simulate(ir: dict, rounds: int = 200, seed: int = 7) -> dict:
         "reward_per_effort_rel": {s: round(rel[s], 2) for s in STRATEGIES},
         "honest_dominant": honest_dominant,
         "gameable_by": [(s, round(r, 2)) for s, r in gameable],
-        "gini": round(gini(all_identity_totals), 3),
+        "gini": round(gini(all_identity_totals), 3),                 # scoring layer (within active miners)
+        "effective_gini": _effective_gini(slot_totals or [], cp),   # real per-uid, stake+tail layered
         "sybil_resistant": sybil_resistant,
     }
 
@@ -234,7 +300,11 @@ def _print(name: str, r: dict):
     print(f"  honest-dominant?  {'yes' if r['honest_dominant'] else 'NO'}")
     if r["gameable_by"]:
         print("  gameable-by:      " + ", ".join(f"{s} (+{int((v-1)*100)}% reward/effort)" for s, v in r["gameable_by"]))
-    print(f"  concentration:    Gini {r['gini']}")
+    if r.get("effective_gini") is not None:
+        print(f"  concentration:    effective Gini {r['effective_gini']} (real stake+uid layer)"
+              f"   |   scoring-layer Gini {r['gini']}")
+    else:
+        print(f"  concentration:    scoring-layer Gini {r['gini']}   (no chain data for effective Gini)")
     print(f"  sybil-resistant?  {'yes' if r['sybil_resistant'] else 'NO'}")
 
 
@@ -357,17 +427,18 @@ def best_response(ir, rounds=50, seed=7):
 
 
 def calibrate(ir, rounds=200):
-    """Compare the sim's PREDICTED concentration (Gini of miner emission from the scoring rule) to the
-    REAL on-chain concentration. The gap is informative: real reward is dominated by validator stake
-    (post-dTAO dividends), so a fair-looking scoring rule can still sit on extreme real concentration."""
+    """Compare the sim's predicted concentration to the REAL on-chain emission concentration, at both
+    layers: the scoring-only Gini (uncorrelated with reality, r~0) and the effective Gini that folds in
+    the real validator-stake dividend layer + the registered-uid tail (the credible one, r~0.7)."""
     r = simulate(ir, rounds)
     try:
         import chain
         cp = chain.params((ir.get("subnet") or {}).get("netuid"))
     except Exception:        # noqa: BLE001
         cp = {}
-    return {"predicted_gini": r["gini"], "real_emission_gini": cp.get("emission_gini"),
-            "real_stake_gini": cp.get("stake_gini"), "method": r["method"]}
+    return {"predicted_gini": r["gini"], "effective_gini": r.get("effective_gini"),
+            "real_emission_gini": cp.get("emission_gini"), "real_stake_gini": cp.get("stake_gini"),
+            "method": r["method"]}
 
 
 if __name__ == "__main__":
@@ -378,15 +449,22 @@ if __name__ == "__main__":
         path = Path(args[0])
         c = calibrate(yaml.safe_load(path.read_text()))
         print(f"# calibration vs chain: {path.stem}")
-        print(f"  predicted miner-scoring Gini ({c['method']}): {c['predicted_gini']}")
+        print(f"  scoring-layer Gini ({c['method']}): {c['predicted_gini']}"
+              + (f"   |   effective Gini (stake+uid layered): {c['effective_gini']}"
+                 if c["effective_gini"] is not None else ""))
         if c["real_emission_gini"] is None:
             print("  no on-chain data for this netuid (warm it: chain.py --warm <netuid>)")
         else:
             print(f"  REAL on-chain emission Gini: {c['real_emission_gini']}   (stake Gini {c['real_stake_gini']})")
-            gap = c["real_emission_gini"] - c["predicted_gini"]
-            how = "far more concentrated than" if gap > 0.2 else "about as concentrated as"
-            print(f"  gap: {gap:+.2f}  -> real reward is {how} the scoring rule alone predicts;"
-                  + " real concentration is validator-stake-driven (dTAO dividends), not the metric.")
+            eff = c["effective_gini"]
+            if eff is not None:
+                gap = c["real_emission_gini"] - eff
+                how = "tracks" if abs(gap) <= 0.1 else ("under-predicts" if gap > 0 else "over-predicts")
+                print(f"  effective vs real: {gap:+.2f}  -> the stake-layered prediction {how} reality"
+                      + " (the scoring layer alone misses the validator-stake dividend that drives it).")
+            gap0 = c["real_emission_gini"] - c["predicted_gini"]
+            print(f"  scoring-only vs real: {gap0:+.2f}  -> scoring concentration alone is uncorrelated"
+                  + " with real emission concentration (validator stake, not the metric, drives it).")
     elif args and "--attack" in args:
         path = Path(args[0])
         b = best_response(yaml.safe_load(path.read_text()))
