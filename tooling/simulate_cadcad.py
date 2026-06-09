@@ -115,6 +115,53 @@ def run(ir, runs=80, timesteps=120, reg_cost=None):
     return finals, (method, spec, guards, reg, src, cp), timesteps
 
 
+def temporal(ir, rounds=120, defect_at=None):
+    """Does the mechanism's smoothing let a ramp-then-defect miner free-ride? (a temporal exploit)
+    Model: a defector is honest until `defect_at`, then drops effort; an EMA carries its score forward,
+    so under slow smoothing it keeps earning while not working. Compares it to a steady-honest miner."""
+    sm = (ir.get("weight_setting") or {}).get("smoothing") or {}
+    alpha = sm.get("alpha") if sm.get("kind") == "ema" and sm.get("alpha") else None
+    method = (ir.get("aggregation") or {}).get("method") or "proportional"
+    da = defect_at if defect_at is not None else rounds // 2
+    a = alpha if alpha else 1.0   # alpha=1 -> no memory -> no temporal window
+    _RNG.seed(7)
+
+    def p_round(params, substep, history, prev):
+        t = prev["timestep"]
+        st = dict(prev["st"])
+        d_q, d_e = (0.80, 1.0) if t < params["da"] else (0.20, 0.1)   # defector ramps then defects
+        st["def_ema"] = (1 - params["a"]) * st["def_ema"] + params["a"] * d_q
+        st["hon_ema"] = (1 - params["a"]) * st["hon_ema"] + params["a"] * 0.80
+        j = lambda: _RNG.gauss(0, 0.03)                              # jitter so WTA ties break fairly
+        scores = [0.80 + j() for _ in range(S.N_HONEST_FIELD)] + [st["def_ema"] + j(), st["hon_ema"] + j()]
+        scores = [max(0.0, s) for s in scores]
+        w = S._weights(scores, params["method"])
+        st["def_earn"] += w[-2]; st["hon_earn"] += w[-1]
+        st["def_eff"] += d_e; st["hon_eff"] += 1.0
+        return {"st": st}
+
+    def s_st(params, substep, history, prev, pi):
+        return ("st", pi["st"])
+
+    exp = Experiment()
+    exp.append_configs(
+        initial_state={"st": {"def_ema": 0.0, "hon_ema": 0.0, "def_earn": 0.0, "hon_earn": 0.0,
+                              "def_eff": 0.0, "hon_eff": 0.0}},
+        partial_state_update_blocks=[{"policies": {"r": p_round}, "variables": {"st": s_st}}],
+        sim_configs=config_sim({"N": 1, "T": range(rounds), "M": {
+            "method": [method], "a": [a], "da": [da]}}),
+    )
+    import contextlib, io, os
+    ctx = ExecutionContext(ExecutionMode().single_proc)
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(open(os.devnull, "w")):
+        records, _, _ = Executor(exec_context=ctx, configs=exp.configs).execute()
+    st = pd.DataFrame(records).iloc[-1]["st"]
+    rpe_def = st["def_earn"] / st["def_eff"] if st["def_eff"] else 0.0
+    rpe_hon = st["hon_earn"] / st["hon_eff"] if st["hon_eff"] else 1e-9
+    return {"alpha": alpha, "method": method, "defect_at": da, "rounds": rounds,
+            "margin": round(rpe_def / rpe_hon, 2) if rpe_hon else 99.0}
+
+
 def _print(name, ir, runs, timesteps):
     finals, (method, spec, guards, reg, src, cp), T = run(ir, runs, timesteps)
     hd = sy = 0
@@ -163,7 +210,15 @@ if __name__ == "__main__":
         sys.exit(2)
     path = Path(args[0])
     ir = yaml.safe_load(path.read_text())
-    if "--sweep-reg" in args:
+    if "--temporal" in args:
+        t = temporal(ir)
+        print(f"# cadCAD temporal exploit: {path.stem}")
+        print(f"  smoothing: {('EMA alpha=' + str(t['alpha'])) if t['alpha'] else 'none (no memory)'}"
+              f"   aggregation: {t['method']}")
+        print(f"  ramp-then-defect (honest until round {t['defect_at']}/{t['rounds']}, then free-ride)")
+        print(f"  = {t['margin']}x steady-honest reward/effort  "
+              + ("(TEMPORAL EXPLOIT — smoothing rewards free-riding)" if t["margin"] > 1.05 else "(no temporal exploit)"))
+    elif "--sweep-reg" in args:
         _sweep_reg(path.stem, ir)
     else:
         nums = [int(a) for a in args[1:] if a.isdigit()]
