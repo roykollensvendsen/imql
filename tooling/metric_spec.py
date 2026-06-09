@@ -59,11 +59,15 @@ GENERATORS = {
     "count":      (["any"], "Num"),
     "rate":       (["any"], "Num"),
     "share":      (["Num", "Items"], "Num"),
-    # relational / peer
+    # relational / peer (population vectors)
     "winrate":    (["Items"], "Vec"),
     "rank":       (["Items"], "Vec"),
     "softmax":    (["Vec"], "Vec"),
     "zscore":     (["Vec"], "Vec"),
+    # relational / peer (FOCAL: this miner's value vs the field -> a per-miner scalar)
+    "beats":      (["Num", "Items"], "Num"),   # fraction of peers the focal value exceeds (focal win rate)
+    "rank_of":    (["Num", "Items"], "Num"),   # normalized rank of the focal value among peers (0..1)
+    "zscore_of":  (["Num", "Items"], "Num"),   # standardized focal value vs the peer distribution
     "peer_score": (["G", "any", "any"], "Num"),   # peer prediction / surrogate scoring rule
     # transforms
     "clip":       (["Num", "Num", "Num"], "Num"),
@@ -313,6 +317,9 @@ GEN_IMPL = {
     "share":      lambda x, peers: float(x) / (sum(_aslist(peers)) or 1.0),
     "softmax":    lambda v: [math.exp(z) / sum(math.exp(w) for w in v) for z in v],
     "zscore":     lambda v: [(z - (sum(v) / len(v))) / (statistics_pstdev(v) or 1.0) for z in v],
+    "beats":      lambda x, peers: (sum(1.0 for p in _aslist(peers) if x > p) / len(_aslist(peers))) if _aslist(peers) else 0.0,
+    "rank_of":    lambda x, peers: (sum(1.0 for p in _aslist(peers) if x >= p) / len(_aslist(peers))) if _aslist(peers) else 0.0,
+    "zscore_of":  lambda x, peers: ((x - sum(_aslist(peers)) / len(_aslist(peers))) / (statistics_pstdev(_aslist(peers)) or 1.0)) if _aslist(peers) else 0.0,
     "clip":       lambda x, a, b: max(float(a), min(float(b), float(x))),
     "affine":     lambda x, m, c: float(m) * float(x) + float(c),
     "penalty":    lambda x: -float(x),

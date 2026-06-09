@@ -45,7 +45,8 @@ surface-distinct metrics share structure once decomposed.
 | `threshold` | `(Num, τ) → Bool` | ratio/value thresholds |
 | `rate` | `(Items → Bool) → Num` | pass-rate = mean of a gate over items |
 | `share` | `(Num, Items) → Num` | `x / Σ peers` (stake/emission share) |
-| `winrate` / `rank` | `Items → Vec` | relational/peer outcomes |
+| `winrate` / `rank` | `Items → Vec` | relational/peer outcomes (population vector) |
+| `beats` / `rank_of` / `zscore_of` | `Num × Items → Num` | a focal miner's standing vs the field (per-miner) |
 | `softmax` / `zscore` | `Vec → Vec` | peer normalization |
 | `mean` / `sum` / `max` / `min` / `count` | `(Vec∣Items) → Num` | reductions |
 | `clip` / `affine` / `penalty` / `neg` / `sign` / `normalize` | `Num → Num` | transforms |

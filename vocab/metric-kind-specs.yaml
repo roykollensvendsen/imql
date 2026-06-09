@@ -31,7 +31,7 @@
 - kind: engagement
   spec: submission.engagement
 - kind: win_rate
-  spec: mean(winrate(peers))
+  spec: beats(submission.score, peers)
 - kind: vlm_judgment
   spec: similarity(submission.output, groundTruth.judge)
 - kind: risk_adjusted_ratio

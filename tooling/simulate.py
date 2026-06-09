@@ -45,8 +45,13 @@ def _load(name, key):
 _TAIL = _load("metric-tail-specs.yaml", "raw")
 _KIND = _load("metric-kind-specs.yaml", "kind")
 
-# relational reductions whose per-miner result needs a focal-miner the algebra doesn't model yet -> skip
+# population-vector reductions that collapse per-miner -> skip (the FOCAL forms beats/rank_of/zscore_of
+# are per-miner and evaluate fine, so they are deliberately NOT here).
 _RELATIONAL = {"winrate", "rank", "zscore", "softmax"}
+
+# guards that make a sybil identity COSTLY (a registration barrier) rather than catchable — modelled as a
+# per-identity cost, not a rejection: many identities are valid, just expensive to run at scale.
+_COST_GUARDS = {"proof_of_work", "collateral", "hardware_validation", "stake_weighting", "registration_cost"}
 
 
 class _Q(dict):
@@ -91,9 +96,9 @@ def _reward(spec, q, cost, cheat, peer_qs):
 # guard kind -> the cheat it neutralises (best-effort mapping over the corpus's anti_gaming vocabulary)
 CATCHES = {
     "plagiarism": {"plagiarism_detection", "deduplication", "content_hash", "code_inspection", "honeypot"},
-    "sybil":      {"proof_of_work", "collateral", "hardware_validation", "registration_cost", "stake"},
     "low_effort": {"liveness_check", "spot_check", "challenge_period", "deterministic_check", "commit_reveal"},
     "collusion":  {"deduplication", "peer_review", "honeypot"},
+    # 'sybil' is intentionally absent — a registration barrier makes sybils COSTLY, not invalid (see _COST_GUARDS)
 }
 
 # strategy -> (n_identities, quality_mean, effort_per_identity, cheat_type)
@@ -157,8 +162,11 @@ def simulate(ir: dict, rounds: int = 200, seed: int = 7) -> dict:
     guard_kinds = {a.get("kind") for a in (ir.get("anti_gaming") or []) if isinstance(a, dict)}
     spec = _mech_spec(ir)                          # the subnet's actual metric, if expressible
 
+    # a registration barrier adds a per-identity cost -> multi-identity strategies (sybil/colluder) pay
+    # it K times, so running many identities is expensive exactly when the mechanism makes it so.
+    reg_cost = 0.5 if (_COST_GUARDS & guard_kinds) else 0.0
     earned = {s: 0.0 for s in STRATEGIES}          # total emission per strategy
-    effort = {s: STRATEGIES[s][0] * STRATEGIES[s][2] for s in STRATEGIES}
+    effort = {s: STRATEGIES[s][0] * (STRATEGIES[s][2] + reg_cost) for s in STRATEGIES}
     all_identity_totals = []
 
     for _ in range(rounds):
