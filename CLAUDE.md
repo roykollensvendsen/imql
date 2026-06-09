@@ -51,10 +51,21 @@ Phases complete and committed (see `docs/pipeline.md` — "The full picture" —
   (no schema field yet — accumulating ≥2× evidence). Spec: `spec/06-metric-spec-language.md`.
 - **Dataflow diagrams** — `tooling/graph.py` (mechanism) + `metric_spec.to_mermaid` (spec) → Mermaid, live
   on each example page's Dataflow tab.
-- **Incentive simulator (MVP)** — `tooling/simulate.py`: strategic miners (honest/lazy/sybil/plagiarist/
-  colluder) vs a mechanism's structure; reports honest-dominance / gameability / Gini / sybil-resistance.
-  Drives 173/180 subnets by their real metric spec. Stylized (no per-subnet submission schema) — triage,
-  not proof. NOT published to the docs site (per-subnet "gameable" verdicts are reputationally sensitive).
+- **Incentive simulator (chain-grounded, validated)** — a suite, NOT published to the docs site
+  (per-subnet "gameable" verdicts are reputationally sensitive). Optional deps in
+  `tooling/requirements-sim.txt` (cadCAD + bittensor, now installed in `.venv`).
+  - `tooling/simulate.py`: strategic miners vs a mechanism's structure → honest-dominance / gameability /
+    Gini / sybil-resistance; drives 173/180 by their real spec. Modes: `--corpus`; `--attack`
+    (best-response search + Goodhart field-gaming, guard-aware); `--calibrate` (predicted vs real Gini).
+  - `tooling/chain.py`: REAL finney economics per netuid (recycle/burn/emission/kappa/stake-Gini/
+    top-bloc stake fractions/sybil_cost_ratio), cached in `vocab/chain-params.json` (~103 subnets warmed).
+  - `tooling/simulate_cadcad.py`: cadCAD Monte-Carlo; modes `--sweep-reg` (registration barrier threshold),
+    `--temporal` (ramp-then-defect under EMA), `--yuma` (validator collusion on real stake + verified
+    clipped-median consensus — finding: one validator with 55–88% stake exceeds κ on most subnets).
+  - `tooling/validate_sim.py`: correlates verdicts vs real chain over 148 subnets. **CRITICAL FINDING:
+    sybil-resistance verdicts AGREE with reality, but the concentration/Gini prediction does NOT (r≈0) —
+    real reward concentration is validator-stake-driven, not scoring-driven. Trust the strategic/sybil/
+    economic verdicts; do NOT trust the sim's Gini standalone (use `--calibrate`/`--yuma`).**
 - **Research** — `reports/metric-language-research.md`: adversarially-verified, primary-sourced — the tail
   is a compressibility/MDL question, not impossibility.
 - **Process** — Conventional Commits enforced (commit-msg hook + CI); one commit per task.
@@ -68,15 +79,17 @@ repo is the source of truth; referenced as the `incentive-schema` submodule in `
 2. Comment-preserving formatter (`fmt.py` currently drops `#` comments).
 3. Generation beyond the pipeline archetype (multiplex/gated/tournament) — and wire the spec evaluator into
    generated validator code (`spec:` → a runnable `score_i()`).
-4. **Simulator fidelity** — MVP + the cadCAD backend (`tooling/simulate_cadcad.py`, Monte-Carlo +
-   reg-cost sweep) and the live chain adapter (`tooling/chain.py` → real recycle/burn/stake-Gini from
-   finney, cached in `vocab/chain-params.json`) are done; the economics blocker is closed where the chain
-   is reachable. **Remaining blocker: per-subnet submission semantics** — `submission.<field>` is still
-   derived from one stylized quality axis (no data source for what each subnet's miners actually deliver).
-   Also: promote `spec:` from `extensions` to a governed schema field once ≥2× corpus instances use it
-   (`vocab/metric-*-specs.yaml` is the evidence base).
-5. Full-subnet description — extend the IR to facets (chain_config/architecture/economics/health);
-   chain facets need `btcli`/`bittensor` (not installed).
+4. **Simulator** — chain economics, cadCAD, best-response/Goodhart, temporal, Yuma collusion, and
+   validation are all done (see Current state). Next, in priority order: (a) **fix concentration** — wire
+   the validator-stake layer (Yuma + real stake) into the main verdict so the Gini becomes credible (the
+   validation showed scoring-only Gini is uncorrelated with reality); (b) **equilibrium dynamics** — iterate
+   best-response to a fixed point (does the mechanism collapse to all-cheaters?) rather than one deviation;
+   (c) the residual blocker is **per-subnet submission semantics** (`submission.<field>` is one stylized
+   quality axis; needs a real validator — not closeable from the corpus). Also: promote `spec:` from
+   `extensions` to a governed schema field once ≥2× corpus instances use it.
+5. Full-subnet description — extend the IR to facets (chain_config/architecture/economics/health).
+   `bittensor` is now installed and finney is reachable (`tooling/chain.py` is the adapter), so chain
+   facets are now buildable.
 
 Re-running bulk extraction needs the `academia-archives` corpus (not vendored): set
 `ARCHIVES=/path/to/academia-archives/repos` for `tooling/list-pending.sh`. The `extract-corpus` workflow
