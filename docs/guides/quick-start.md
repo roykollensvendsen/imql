@@ -1,5 +1,10 @@
 # Quick start
 
+!!! tip "First time with IMML?"
+    This page is the condensed command reference. If you've never written a mechanism before, the
+    **[hands-on tutorial](../learn/tutorial/index.md)** walks through the same steps slowly, explaining every
+    decision — and ends by simulating the mechanism against cheaters.
+
 ## Install
 
 ```bash

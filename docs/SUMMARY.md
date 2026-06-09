@@ -1,4 +1,15 @@
 - [Home](index.md)
+- Learn
+    - [Why IMML exists](learn/why.md)
+    - [The mental model](learn/mental-model.md)
+    - Tutorial — zero to hero
+        - [0. Setup](learn/tutorial/index.md)
+        - [1. Design the mechanism](learn/tutorial/01-design.md)
+        - [2. Write it in IMML](learn/tutorial/02-write.md)
+        - [3. Compile & read the IR](learn/tutorial/03-compile.md)
+        - [4. Generate a validator scaffold](learn/tutorial/04-generate.md)
+        - [5. Simulate & read the verdict](learn/tutorial/05-simulate.md)
+        - [6. Where to go next](learn/tutorial/06-next.md)
 - [The full picture](pipeline.md)
 - Guides
     - [Overview](guides/overview.md)
@@ -13,6 +24,7 @@
 - Reference
     - [All primitives](reference/index.md)
     - [Metric families](reference/metric-families.md)
+    - [Glossary](reference/glossary.md)
 - [Examples](examples/)
 - Toolchain
     - [CLI reference](toolchain/cli.md)

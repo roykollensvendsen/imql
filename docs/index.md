@@ -1,29 +1,36 @@
 # IMML
 
-**IMML** is a declarative language for **Bittensor incentive-mechanism design, description, and
-generation** — a QML-style surface where you compose a mechanism from typed primitives, and the one
-per-subnet thing (the scoring metric) is an explicit hole.
+**IMML is a language for writing down how a Bittensor subnet rewards its miners** — precisely enough to
+read it at a glance, compile it to code, and simulate it against cheaters before you ship.
 
-It is derived inductively from a corpus of **189 real Bittensor subnets**: every one round-trips through
-the language losslessly, and the language compiles to a runnable validator scaffold.
+Every subnet hand-codes that reward rule in its own validator. IMML gives it a shared, readable form: you
+compose a mechanism from reusable [primitives](reference/glossary.md), and the one part that's genuinely
+bespoke to each subnet — the scoring [metric](reference/glossary.md) — is an explicit, marked hole. The
+language was derived from **189 real subnets**, every one of which round-trips through it losslessly.
+
+!!! tip "New here? Start with the story, then build one."
+    **[Why IMML exists →](learn/why.md)** (3-minute read) · then **[the hands-on tutorial →](learn/tutorial/index.md)**
+    takes you from zero to a simulated, attack-tested mechanism.
 
 <div class="grid cards" markdown>
 
+-   :material-rocket-launch: **[Start here](learn/why.md)**
+
+    Why IMML exists, the mental model in one diagram, and a hand-held tutorial from zero to hero.
+
 -   :material-book-open-variant: **[Guides](guides/overview.md)**
 
-    What IMML is, how to author a mechanism, and how mechanisms were reverse-engineered from real subnets.
+    Author a mechanism, read a real subnet, or reverse-engineer one from source.
 
--   :material-code-braces: **[Language reference](language/index.md)**
+-   :material-code-braces: **[Language & reference](language/index.md)**
 
-    The grammar, the ~50 reusable primitives, the four combinators, and the metric type system.
+    The grammar, the ~50 reusable primitives, the four combinators, the metric type system, and a
+    [glossary](reference/glossary.md).
 
 -   :material-view-gallery: **[Examples](examples/index.md)**
 
-    All 189 corpus subnets, each lifted to IMML — filter by archetype, language, or burn status.
-
--   :material-tools: **[Toolchain](toolchain/cli.md)**
-
-    `lift` · `compile` · `validate` · `coverage` · `canonicalize` · `generate`.
+    All 189 corpus subnets, each lifted to IMML with a dataflow diagram — filter by archetype, language, or
+    burn status.
 
 </div>
 
@@ -90,3 +97,6 @@ Mechanism {
     }
 }
 ```
+
+New to all this? The line-by-line walkthrough of a (simpler) version of the file above is
+**[Step 2 of the tutorial](learn/tutorial/02-write.md)**.

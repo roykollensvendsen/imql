@@ -1,0 +1,34 @@
+Mechanism {
+    id: priceOracle
+
+    netuid: 42
+    lang: python
+    status: active
+    submission: signals
+
+    @guards {
+        DeterministicCheck {
+            enforcement: rejection
+        }
+    }
+
+    Pipeline {
+        score: Metric {
+            kind: accuracy
+            direction: higher_is_better
+            normalization: none
+        }
+        groundTruth: DeterministicDataset {
+            trust_model: trusted
+        }
+        aggregate: Proportional {
+            normalization: sum_to_one
+        }
+        smooth: Ema {
+            alpha: 0.2
+        }
+        publish: SetWeights {
+            cadence: per_epoch
+        }
+    }
+}

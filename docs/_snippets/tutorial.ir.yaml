@@ -1,0 +1,41 @@
+subnet:
+  name: priceOracle
+  netuid: 42
+  implementation_lang: python
+task:
+  submission_format:
+  - signals
+  summary: (authored via IMML)
+scoring_signals:
+- name: metric
+  direction: higher_is_better
+  normalization: none
+  metric_kind: accuracy
+mechanism_status: active
+anti_gaming:
+- kind: deterministic_check
+  enforcement: rejection
+composition:
+  shape: pipeline
+  overlays:
+  - guards
+  extern_count: 0
+aggregation:
+  method: proportional
+  normalization: sum_to_one
+  burn_allocation:
+    enabled: false
+weight_setting:
+  smoothing:
+    kind: ema
+    alpha: 0.2
+  on_chain_call: set_weights
+  cadence: per_epoch
+ground_truth_sources:
+- kind: deterministic_dataset
+  trust_model: trusted
+schema_version: 1.2.0
+instance_kind: authored
+documentation:
+  status: sparse
+

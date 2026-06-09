@@ -2,6 +2,10 @@ site_name: IMML
 site_description: A declarative language for Bittensor incentive-mechanism design, description, and generation.
 docs_dir: docs
 site_dir: site
+# Snippet sources (shared diagrams, the tutorial's .imml/IR/scaffold) live under docs/_snippets/ and are
+# pulled in via pymdownx.snippets; they are not pages, so keep them out of the built site / nav.
+exclude_docs: |
+  _snippets/
 repo_url: https://github.com/fx-integral/academia
 repo_name: academia
 
