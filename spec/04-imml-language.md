@@ -9,6 +9,10 @@ orthogonal overlays, and leave the one per-subnet thing (the leaf metric) as a t
 control flow; the four empirical combinators are the only composition operators. Grammar: `lang/imml.ebnf`.
 
 ## The model in one breath
+
+If you'd rather see this as a picture than as notation, the [mental model](../learn/mental-model.md) page
+draws the same thing as boxes and arrows. In one breath:
+
 ```
 mechanism = overlays( combinator )
 combinator ∈ { pipeline, multiplex, gate/product, leaf }

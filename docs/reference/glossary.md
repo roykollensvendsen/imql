@@ -29,7 +29,7 @@ model — the *hole*. A clean compile with an `extern` leaf means "this judgment
 
 ### gameable
 A mechanism is gameable if some strategy earns more reward per unit of effort than honest work — i.e. it
-pays to cheat. The [simulator](../pipeline.md) measures this.
+pays to cheat. The [simulator](../understand/simulator.md) measures this.
 
 ### ground-truth source
 What a *score* is measured against: a dataset, a reference model, on-chain data, human review, or peer
@@ -52,7 +52,7 @@ back into IMML. They are exact inverses over a mechanism's structure (*round-tri
 ### MDL
 Minimum Description Length — the information-theoretic idea behind IMML's central claim: the *metric* tail
 is irreducible not because metrics are impossible to describe, but because they don't compress (each is
-genuinely distinct). See [the theory](../pipeline.md).
+genuinely distinct). See [the theory](../understand/theory.md).
 
 ### metric
 The function that scores one miner's *submission* — the `score` stage. The one part of a mechanism that is
@@ -109,4 +109,4 @@ A participant in a *subnet* that scores *miners* and sets the on-chain weights t
 
 ### Yuma consensus
 Bittensor's mechanism for combining many validators' weight reports into one consensus, by stake-weighted
-clipped median. Relevant to whether a validator bloc can skew rewards — see [the simulator](../pipeline.md).
+clipped median. Relevant to whether a validator bloc can skew rewards — see [the simulator](../understand/simulator.md).

@@ -96,7 +96,7 @@ economics** — and it's the boundary where structure ends and economics begin.
 !!! warning "The simulator is a screen, not a proof"
     A verdict is a strong, fast hypothesis — "this design has a plagiarism hole" — not a guarantee about the
     deployed subnet. The submission model is stylized; the mechanism's *shape* is faithful. Read verdicts as
-    triage: they tell you where to look. See [the full picture](../../pipeline.md) for how the chain-grounded
+    triage: they tell you where to look. See [the simulator](../../understand/simulator.md) for how the chain-grounded
     modes (`--attack`, `--calibrate`, `--equilibrium`) sharpen them.
 
 ## What just happened

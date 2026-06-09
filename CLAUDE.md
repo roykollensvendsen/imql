@@ -40,7 +40,7 @@ Commits follow `<type>[(scope)][!]: <description>` (e.g. `feat(lang): …`, `fix
 one commit per completed task.
 
 ## Current state (handoff)
-Phases complete and committed (see `docs/pipeline.md` — "The full picture" — for the consolidated map):
+Phases complete and committed (see `docs/understand/pipeline.md` — "The full picture" — for the consolidated map):
 - **schema→IR v1.2.0** + the **IMML language**, fully QML-faithful (`Mechanism { id: … }`, PascalCase
   types, `groundTruth`/`publish`, list-valued `score`/`groundTruth`, `Metric { … }`); lift/compile
   round-trip at **100% over 189 subnets**. The metric ontology (95.8% structural); the generator (53/53).

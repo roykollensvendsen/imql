@@ -10,12 +10,13 @@
         - [4. Generate a validator scaffold](learn/tutorial/04-generate.md)
         - [5. Simulate & read the verdict](learn/tutorial/05-simulate.md)
         - [6. Where to go next](learn/tutorial/06-next.md)
-- [The full picture](pipeline.md)
 - Guides
-    - [Overview](guides/overview.md)
     - [Quick start](guides/quick-start.md)
-    - [Authoring a mechanism](guides/authoring.md)
-    - [Extraction guide](guides/extraction.md)
+    - [Author a mechanism](guides/author.md)
+    - [Read an existing subnet](guides/read-a-subnet.md)
+    - [Extract a subnet from source](guides/extract.md)
+    - [Generate a scaffold](guides/generate.md)
+    - [Simulate a mechanism](guides/simulate.md)
 - Language
     - [The IMML language](language/index.md)
     - [Grammar](language/grammar.md)
@@ -26,6 +27,11 @@
     - [Metric families](reference/metric-families.md)
     - [Glossary](reference/glossary.md)
 - [Examples](examples/)
+- Understand
+    - [The full picture](understand/pipeline.md)
+    - [The metric hole](understand/metric-hole.md)
+    - [The simulator](understand/simulator.md)
+    - [Theory: why this framing](understand/theory.md)
 - Toolchain
     - [CLI reference](toolchain/cli.md)
 - Status

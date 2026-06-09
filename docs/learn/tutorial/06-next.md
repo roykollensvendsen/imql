@@ -10,12 +10,12 @@ depending on what you want next.
   language rests on.
 - **[The mental model](../mental-model.md)** — the anatomy diagram and the four combinator shapes, in one
   page.
-- **[The full picture](../../pipeline.md)** — the metric hole, the typed metric algebra, dataflow diagrams,
-  and the simulator's chain-grounded modes, in depth.
+- **[The full picture](../../understand/pipeline.md)** — the metric hole, the typed metric algebra, dataflow
+  diagrams, and the simulator's chain-grounded modes, in depth.
 
 ## Do real work
 
-- **[Author a mechanism](../../guides/authoring.md)** — the prescriptive checklist for designing your own,
+- **[Author a mechanism](../../guides/author.md)** — the prescriptive checklist for designing your own,
   beyond the toy example.
 - **[Read existing subnets](../../examples/index.md)** — all 189 real corpus mechanisms, each lifted to IMML
   with a dataflow diagram. Find one close to your problem and learn from it.

@@ -78,13 +78,13 @@ flowchart TD
 ```
 
 - **Author** — you're designing a mechanism. Start with the [tutorial](tutorial/index.md), then the
-  [authoring guide](../guides/authoring.md).
+  [authoring guide](../guides/author.md).
 - **Read** — you want to understand an existing subnet. Browse the [examples gallery](../examples/index.md);
   every one of the 189 subnets is lifted to IMML with a dataflow diagram.
 - **Extract** — you're reverse-engineering a subnet from its source. See the
-  [extraction guide](../guides/extraction.md).
+  [extraction guide](../guides/extract.md).
 - **Simulate** — you want to know if a mechanism actually holds up against strategic miners. See
-  [the full picture](../pipeline.md).
+  [the simulator](../understand/simulator.md).
 
 ---
 

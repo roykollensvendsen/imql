@@ -18,6 +18,10 @@ generators over `(submission, groundTruth, task, peers)`. Generality comes from 
 description comes from the small generator set; *compressibility* comes from the fact that
 surface-distinct metrics share structure once decomposed.
 
+If you just want to *use* the language, skip ahead to the **Worked examples** below — most real metrics are
+one or two generator calls. The Sorts and Generators sections that follow are the formal reference: a metric
+is a typed term, and these are the types its pieces have.
+
 ## Sorts
 
 | sort | meaning |
@@ -90,11 +94,6 @@ field projection (`submission.param_count`) or a single wrap (`penalty(submissio
 the empirical answer to the theory question: the *surface* tail is flat (75/75 distinct, 0 recur), but
 the *structural* tail is nearly trivial — the diversity lived in field names and prose, not in
 computation. Two generators (`gate`, `penalty`) cover ~⅓ of the whole tail.
-
-Two structural by-products fall out, and they matter: several "metrics" aren't metrics at all —
-**multipliers/bonuses** belong to the existing `Multiplicative` combinator, **EMA-smoothing** belongs to
-the `smooth:` stage, and **validity gates** belong to `@guards`. The spec language sharpens *what is
-actually a metric* versus what was mis-recorded as one.
 
 Two structural by-products fall out, and they matter: several "metrics" aren't metrics at all —
 **multipliers/bonuses** belong to the existing `Multiplicative` combinator, **EMA-smoothing** belongs to

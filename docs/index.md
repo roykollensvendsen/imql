@@ -18,7 +18,7 @@ language was derived from **189 real subnets**, every one of which round-trips t
 
     Why IMML exists, the mental model in one diagram, and a hand-held tutorial from zero to hero.
 
--   :material-book-open-variant: **[Guides](guides/overview.md)**
+-   :material-book-open-variant: **[Guides](guides/author.md)**
 
     Author a mechanism, read a real subnet, or reverse-engineer one from source.
 

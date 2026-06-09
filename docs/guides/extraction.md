@@ -1,1 +1,0 @@
---8<-- "spec/03-extraction-guide.md"
