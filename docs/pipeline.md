@@ -60,7 +60,8 @@ substrate for the simulator.
 `tooling/simulate.py` instantiates a mechanism's structure (guards, aggregation, burn, sybil economics)
 and runs strategic miners — honest / lazy / sybil / plagiarist / colluder — for N rounds, scoring each by
 the subnet's **actual metric spec** where expressible (**173/180** subnets), then reports: honest-dominant?
-gameable-by? Gini concentration? sybil-resistant?
+gameable-by? concentration (Gini)? sybil-resistant? — and, with `--equilibrium`, whether honest is the
+*evolutionary attractor* or the population collapses to a dominant cheat.
 
 The headline corpus finding (stylized model, directional): **the aggregation method is the dominant
 incentive lever** — only the winner-take-all / tournament family is reliably honest-dominant (at the cost
@@ -72,8 +73,7 @@ below.
 bittensor — registration (recycle) cost, burn, emission, on-chain stake-Gini, top-validator stake
 fractions — cached for offline use, so the sybil barrier and stake distribution are no longer stylized.
 `tooling/simulate_cadcad.py` runs the model as a **cadCAD** simulation across N Monte-Carlo trajectories
-(a verdict reads "honest-dominant in X% of runs"). Five chain-grounded analyses, none needing a real
-validator:
+(a verdict reads "honest-dominant in X% of runs"). Six analyses, none needing a real validator:
 
 - **Monte-Carlo + reg-cost sweep** — robustness of the verdict, and the registration barrier needed for
   sybil-resistance vs the subnet's *actual* on-chain barrier (apex flips at reg_cost ~2.0 but its real
@@ -86,8 +86,16 @@ validator:
 - **Yuma validator-collusion** (`--yuma`) — applies the verified clipped-median consensus to the real
   stake distribution: on netuids 1/4/8 a *single* validator (55–88% of stake) exceeds κ=50% and can
   unilaterally skew the weight consensus.
-- **Chain calibration** (`--calibrate`) — predicted vs real concentration: matches for winner-take-all
-  (gap +0.02), but a fair-looking proportional rule masks validator-stake-driven concentration (gap +0.84).
+- **Chain calibration** (`--calibrate`) — concentration at two layers vs real on-chain emission Gini: the
+  scoring-only Gini is uncorrelated (r ≈ 0), but the **effective Gini** — which layers the real dTAO
+  emission split (validator dividends by on-chain stake + the registered-uid tail) over the scoring layer —
+  tracks reality (**r ≈ 0.75** over 148 subnets). A proportional rule that looks fair carries
+  validator-stake-driven concentration, and the effective layer captures it.
+- **Equilibrium dynamics** (`simulate.py --equilibrium`) — replicator dynamics with a mutation floor: is
+  honest the attractor, or does the population converge to a dominant cheat? `--equilibrium --corpus` agrees
+  with the one-shot verdict on **91% of 180** mechanisms; the disagreements are the frequency-dependent
+  cases (a cheat that pays only when rare, or one that self-limits once common — e.g. plagiarists need
+  honest work to copy). The better predictor of which mechanisms hold up under play.
 
 ## 5. Theory — why this framing is the right one
 
@@ -109,7 +117,7 @@ construction — which the algebra already does.
 | `tooling/fmt.py` | canonical formatter (`imml-fmt`) | `--check` (gate) |
 | `tooling/metric_spec.py` | spec parse / type-check / evaluate / graph | `--report`, `--selftest`, `--graph` |
 | `tooling/graph.py` | mechanism → Mermaid dataflow | `graph.py <instance>` |
-| `tooling/simulate.py` | incentive sim + best-response/Goodhart + chain calibration | `--corpus`, `--attack`, `--calibrate` |
+| `tooling/simulate.py` | incentive sim + best-response/Goodhart + chain calibration + equilibrium | `--corpus`, `--attack`, `--calibrate`, `--equilibrium` |
 | `tooling/chain.py` | real per-subnet economics from finney (cached) | `chain.py <netuid>`, `--warm` |
 | `tooling/simulate_cadcad.py` | cadCAD Monte-Carlo, reg-sweep, temporal, Yuma collusion | `--sweep-reg`, `--temporal`, `--yuma` |
 
@@ -123,9 +131,12 @@ construction — which the algebra already does.
   mechanism's *shape* and *economics* are faithful; the per-field submission *content* is not. Read a
   verdict as a strong, chain-grounded hypothesis — triage, not a proof of a runnable exploit.
 - **Validated where it counts** (`tooling/validate_sim.py`, 148 chain-confirmed subnets): the sim's
-  **sybil-resistance verdict agrees** with the real registration barrier, but its **concentration
-  prediction does *not* track reality** (predicted vs real emission Gini, r ≈ 0) — real reward
-  concentration is validator-stake-driven, not scoring-driven. So trust the strategic / sybil / economic
-  verdicts; for concentration use the chain (`--calibrate` / `--yuma`), not the scoring sim alone.
+  **sybil-resistance verdict agrees** with the real registration barrier. Concentration is reported at two
+  layers — the **scoring-only Gini is uncorrelated** with real emission Gini (r ≈ 0), because real reward
+  concentration is validator-stake-driven, not scoring-driven; the **effective Gini** folds in the real
+  validator-stake dividend layer + the registered-uid tail and **tracks reality (r ≈ 0.75)**. Trust the
+  effective Gini and the strategic / sybil / economic verdicts; the scoring-only Gini is the within-miner
+  signal, not the headline. **Still unvalidated**: the honest-dominant / gameable verdicts — there is no
+  clean on-chain "is this gamed" signal to correlate against.
 - The **theory** conclusions are primary-sourced for the compressibility framing; the Bittensor /
   simulator-framework regions of the research remain partly unverified.

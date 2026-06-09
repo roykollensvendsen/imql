@@ -24,7 +24,9 @@ captures the structure as a typed language and isolates the metric as an explici
 - **Dataflow diagrams** — every mechanism and metric renders as a Mermaid graph (inputs → … → weights),
   live on each example page's *Dataflow* tab.
 - **An incentive simulator** — `tooling/simulate.py`: run honest/lazy/sybil/plagiarist/colluder miners
-  against a mechanism and measure honest-dominance, gameability, concentration, sybil-resistance.
+  against a mechanism and measure honest-dominance, gameability, concentration (chain-grounded), and
+  sybil-resistance — or `--equilibrium` for whether honest is the evolutionary attractor under replicator
+  dynamics.
 - **A 189-subnet corpus** + a **metric ontology** + a **Qt-style docs site**.
 
 ## Layout
