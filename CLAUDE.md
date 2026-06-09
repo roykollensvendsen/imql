@@ -60,7 +60,10 @@ Phases complete and committed (see `docs/pipeline.md` — "The full picture" —
     split (18% owner / 41% validators-by-stake / 41% miners-by-score, from `chain.py`'s measured stake
     concentration) over the full registered-uid set — the credible one (validation r≈0.73 vs scoring's
     ≈0). Modes: `--corpus`; `--attack` (best-response search + Goodhart field-gaming, guard-aware);
-    `--calibrate` (scoring + effective Gini vs real emission Gini).
+    `--calibrate` (scoring + effective Gini vs real emission Gini); `--equilibrium` (replicator dynamics
+    with a mutation floor → is honest the *attractor*, or does the population collapse to a dominant cheat?
+    `--equilibrium --corpus` checks it vs the one-shot verdict: 91% agree over 180, the 15 disagreements
+    split 2 fragile / 13 lenient — equilibrium is frequency-dependent, the better predictor of real play).
   - `tooling/chain.py`: REAL finney economics per netuid (recycle/burn/emission/kappa/stake-Gini/
     top-bloc stake fractions/sybil_cost_ratio/validator_emission_frac), cached in `vocab/chain-params.json`
     (~103 subnets warmed). `cached()` is the cache-only accessor the sim uses (no live fetch).
@@ -87,11 +90,13 @@ repo is the source of truth; referenced as the `incentive-schema` submodule in `
 3. Generation beyond the pipeline archetype (multiplex/gated/tournament) — and wire the spec evaluator into
    generated validator code (`spec:` → a runnable `score_i()`).
 4. **Simulator** — chain economics, cadCAD, best-response/Goodhart, temporal, Yuma collusion, validation,
-   and **concentration (the effective Gini layer, done — validation r≈0.73)** are all complete (see Current
-   state). Next, in priority order: (a) **equilibrium dynamics** — iterate best-response to a fixed point
-   (does the mechanism collapse to all-cheaters?) rather than one deviation; (b) the residual blocker is
-   **per-subnet submission semantics** (`submission.<field>` is one stylized quality axis; needs a real
-   validator — not closeable from the corpus). Also: promote `spec:` from `extensions` to a governed schema
+   **concentration (the effective Gini layer, validation r≈0.73)**, and **equilibrium dynamics
+   (`--equilibrium`: replicator with a mutation floor; 91% agreement with the one-shot verdict over 180,
+   the better predictor of real play)** are all complete (see Current state). Next, in priority order:
+   (a) the residual blocker is **per-subnet submission semantics** (`submission.<field>` is one stylized
+   quality axis; needs a real validator — not closeable from the corpus); (b) the **honest_dominant /
+   gameable_by verdicts are still unvalidated** against chain (no clean on-chain "is this gamed" signal —
+   sybil-resistance and concentration are validated, these are not). Also: promote `spec:` to a governed schema
    field once ≥2× corpus instances use it. (Tried and rejected: a per-subnet emission split from chain —
    `chain.py` now records `validator_emission_frac` — A/B'd neutral over 148 subnets (effective-Gini r
    0.750→0.746); the validator/miner split is second-order vs stake concentration + the uid tail, and a

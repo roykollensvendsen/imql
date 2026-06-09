@@ -23,8 +23,16 @@ r~0). The *effective* Gini layers the real dTAO emission split (18% owner / 41% 
 miners by score, from chain.py's measured stake concentration) over the full registered-uid set, capturing
 the validator-stake dividend layer + the inactive tail that actually drive real concentration (r~0.7).
 
+The one-shot report asks "does honest beat each fixed deviation?". The `--equilibrium` mode asks the
+stronger, frequency-dependent question — "if miners keep best-responding to each other, does the population
+converge to honest, or collapse to a dominant cheat?" — via replicator dynamics with a mutation floor (so
+rare strategies can always re-invade, making the fixed point an ESS-style stability check).
+
 Usage:
-    simulate.py instances/corpus/<subnet>.yaml [rounds]
+    simulate.py instances/corpus/<subnet>.yaml [rounds]   # one-shot incentive report
+    simulate.py <subnet>.yaml --equilibrium               # replicator dynamics: is honest the attractor?
+    simulate.py instances --equilibrium --corpus          # equilibrium vs one-shot agreement over the corpus
+    simulate.py <subnet>.yaml --attack | --calibrate      # best-response search | concentration vs chain
 """
 from __future__ import annotations
 
@@ -365,7 +373,7 @@ def _rewarded_field(spec):
 def _reg_cost(ir, guards):
     try:
         import chain
-        cp = chain.params((ir.get("subnet") or {}).get("netuid"))
+        cp = chain.cached((ir.get("subnet") or {}).get("netuid"))   # cache-only: fast + offline-silent
         if cp.get("sybil_cost_ratio") is not None:
             return round(min(5.0, cp["sybil_cost_ratio"]), 3), "chain"
     except Exception:        # noqa: BLE001
@@ -432,6 +440,131 @@ def best_response(ir, rounds=50, seed=7):
     return best
 
 
+# --------------------------------------------------------------------------- #
+# equilibrium dynamics: the one-shot verdict asks "does honest beat these fixed deviations?". This asks the
+# stronger, frequency-dependent question — "if miners keep best-responding to each other, does the
+# population converge to honest, or collapse to all-cheaters?" — via replicator dynamics with a mutation
+# floor (so rare strategies can always re-invade, making the fixed point an ESS-style stability check).
+# --------------------------------------------------------------------------- #
+def _gen_identities(strategy, honest_pool, rng, guards):
+    """Identities [(quality, effort, cheat)] for ONE player of `strategy`, given the honest outputs
+    currently available to plagiarise (parasitic strategies collapse when there is no good work to copy)."""
+    k, qmean, eff, cheat = STRATEGIES[strategy]
+    out = []
+    for _ in range(k):
+        if cheat == "plagiarism":
+            q = rng.choice(honest_pool) if honest_pool else max(0.0, rng.gauss(0.30, 0.10))
+        elif cheat == "collusion":
+            q = max(0.0, rng.gauss(qmean, 0.10)) + 0.20
+        else:
+            q = max(0.0, rng.gauss(qmean, 0.10))
+        if _caught(cheat, guards, rng):
+            q = 0.0
+        out.append((q, eff, cheat))
+    return out
+
+
+def _invasion_fitness(p, method, spec, guards, effort, rng, rounds, resident):
+    """Reward-per-effort of each strategy as a focal player against a resident field drawn from the current
+    population mix p. A strategy's payoff thus depends on what everyone else is doing (frequency-dependent)."""
+    strategies = list(STRATEGIES)
+    wp = [p[s] for s in strategies]
+    earned = {s: 0.0 for s in strategies}
+    for _ in range(rounds):
+        res_players = rng.choices(strategies, weights=wp, k=resident)
+        honest_pool, res_ids = [], []
+        for rp in res_players:                         # genuine work first -> the pool plagiarists copy
+            if rp == "honest":
+                for (q, e, c) in _gen_identities(rp, honest_pool, rng, guards):
+                    res_ids.append((q, e, c))
+                    honest_pool.append(q)
+        for rp in res_players:
+            if rp != "honest":
+                res_ids.extend(_gen_identities(rp, honest_pool, rng, guards))
+        res_q = [q for q, _, _ in res_ids]
+        for s in strategies:                           # each strategy invades the SAME resident field
+            focal = _gen_identities(s, honest_pool, rng, guards)
+            allq = res_q + [q for q, _, _ in focal]
+            raw = ([_reward(spec, q, e, c, allq) for q, e, c in res_ids]
+                   + [_reward(spec, q, e, c, allq) for q, e, c in focal])
+            w = _weights(raw, method)
+            earned[s] += sum(w[len(res_ids):])         # the focal player's captured weight
+    return {s: (earned[s] / rounds / effort[s]) if effort[s] else 0.0 for s in strategies}
+
+
+def equilibrium(ir, generations=80, rounds=24, resident=20, mu=0.02, seed=7):
+    """Replicator dynamics over the strategy space -> the population's stable composition. Reports whether
+    honest is the attractor (honest_stable) or the mechanism collapses to a dominant cheat."""
+    rng = random.Random(seed)
+    method = (ir.get("aggregation") or {}).get("method") or "proportional"
+    guards = frozenset(a.get("kind") for a in (ir.get("anti_gaming") or []) if isinstance(a, dict))
+    spec = _mech_spec(ir)
+    reg_cost = _reg_cost(ir, guards)[0]                # chain-grounded sybil barrier where available
+    effort = {s: STRATEGIES[s][0] * (STRATEGIES[s][2] + reg_cost) for s in STRATEGIES}
+    p = {s: 1.0 / len(STRATEGIES) for s in STRATEGIES}
+    floor = mu / len(STRATEGIES)
+    gens = 0
+    for gens in range(1, generations + 1):
+        fit = _invasion_fitness(p, method, spec, guards, effort, rng, rounds, resident)
+        mean = sum(p[s] * fit[s] for s in STRATEGIES) or 1e-9
+        nxt = {s: p[s] * fit[s] / mean for s in STRATEGIES}       # replicator: grow above-mean strategies
+        tot = sum(nxt.values()) or 1e-9
+        nxt = {s: (1 - mu) * nxt[s] / tot + floor for s in STRATEGIES}   # mutation floor -> re-invasion
+        delta = sum(abs(nxt[s] - p[s]) for s in STRATEGIES)
+        p = nxt
+        if delta < 1e-3:
+            break
+    dominant = max(p, key=p.get)
+    return {"method": method, "reward_model": "spec" if spec else "abstract quality (proxy)",
+            "reg_cost": round(reg_cost, 3), "generations": gens,
+            "equilibrium": {s: round(p[s], 3) for s in STRATEGIES},
+            "dominant": dominant, "honest_share": round(p["honest"], 3),
+            "honest_stable": dominant == "honest"}
+
+
+def _print_eq(name, r):
+    print(f"# equilibrium dynamics: {name}   (replicator, converged in {r['generations']} generations)")
+    print(f"  aggregation: {r['method']}   reward model: {r['reward_model']}   reg_cost: {r['reg_cost']}")
+    print(f"  stable population mix:")
+    for s, v in sorted(r["equilibrium"].items(), key=lambda kv: -kv[1]):
+        bar = "#" * int(round(v * 40))
+        print(f"      {s:11} {v:>5.2f} {bar}")
+    print(f"  dominant strategy at equilibrium: {r['dominant']}  (honest share {r['honest_share']})")
+    print(f"  honest-stable?  {'yes — honest is the attractor' if r['honest_stable'] else 'NO — collapses to ' + r['dominant']}")
+
+
+def _equilibrium_corpus(root="instances", generations=50, rounds=16):
+    """Consistency check: does the equilibrium verdict contradict the one-shot honest-dominant verdict?"""
+    import glob
+    n = eq_stable = os_dom = agree = 0
+    fragile = lenient = 0          # one-shot says yes / equilibrium says no, and vice-versa
+    from collections import Counter
+    collapse = Counter()
+    for pth in sorted(glob.glob(f"{root}/**/*.yaml", recursive=True)):
+        ir = yaml.safe_load(Path(pth).read_text())
+        if not isinstance(ir, dict) or not ir.get("scoring_signals"):
+            continue
+        one = simulate(ir, rounds=120)["honest_dominant"]
+        eq = equilibrium(ir, generations=generations, rounds=rounds)
+        n += 1
+        eq_stable += eq["honest_stable"]
+        os_dom += one
+        agree += (one == eq["honest_stable"])
+        fragile += (one and not eq["honest_stable"])      # passed one-shot, invaded in equilibrium
+        lenient += (not one and eq["honest_stable"])       # failed one-shot, the cheat self-limits
+        if not eq["honest_stable"]:
+            collapse[eq["dominant"]] += 1
+    print(f"# equilibrium vs one-shot — {n} mechanisms")
+    print(f"  one-shot honest-dominant:   {os_dom}/{n} ({100*os_dom//n}%)")
+    print(f"  equilibrium honest-stable:  {eq_stable}/{n} ({100*eq_stable//n}%)")
+    print(f"  the two verdicts agree:     {agree}/{n} ({100*agree//n}%)")
+    print(f"  collapses to:               " + (", ".join(f"{s} {c}" for s, c in collapse.most_common()) or "(none)"))
+    print(f"  disagreements ({n-agree}): {fragile} fragile (honest-dominant one-shot, but invaded once a cheat is")
+    print(f"  rare) + {lenient} lenient (fails the fixed slate, but the cheat self-limits in the population —")
+    print(f"  e.g. plagiarists need honest work to copy). The equilibrium test is frequency-dependent, not")
+    print(f"  strictly stricter: it is the better predictor of which mechanisms actually hold up under play.")
+
+
 def calibrate(ir, rounds=200):
     """Compare the sim's predicted concentration to the REAL on-chain emission concentration, at both
     layers: the scoring-only Gini (uncorrelated with reality, r~0) and the effective Gini that folds in
@@ -451,6 +584,11 @@ if __name__ == "__main__":
     args = sys.argv[1:]
     if args and args[0] == "--corpus":
         _corpus(args[1] if len(args) > 1 else "instances")
+    elif args and "--equilibrium" in args and "--corpus" in args:
+        _equilibrium_corpus(next((a for a in args if not a.startswith("--")), "instances"))
+    elif args and "--equilibrium" in args:
+        path = Path(args[0])
+        _print_eq(path.stem, equilibrium(yaml.safe_load(path.read_text())))
     elif args and "--calibrate" in args:
         path = Path(args[0])
         c = calibrate(yaml.safe_load(path.read_text()))
