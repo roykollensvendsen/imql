@@ -1,0 +1,5 @@
+# Optional dependencies — for the cadCAD simulator (tooling/simulate_cadcad.py) and the live chain
+# adapter (tooling/chain.py). The core gates (validate / coverage / generate / fmt / docs) do NOT need
+# these; the stylized simulator (tooling/simulate.py) and metric_spec.py run on the base requirements.
+cadCAD>=0.5.3
+bittensor>=10.4        # only for LIVE chain fetches; vocab/chain-params.json caches results for offline use
