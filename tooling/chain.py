@@ -69,6 +69,12 @@ def fetch(netuid: int, network: str = _NETWORK) -> dict:
     emission_list = [_f(x) for x in (getattr(info, "emission", []) or [])]
     emission_alpha = _sum(emission_list)                           # total alpha emitted to uids / epoch
     emission_gini = _gini(emission_list)                           # real concentration of per-uid reward
+    # realized validator-dividend share of emission (alpha; tao dividends are ~0 post-dTAO). A mid-epoch
+    # snapshot, so it is noisy. Recorded as a real economic fact; the simulator A/B-tested using it for a
+    # per-subnet emission split and found it second-order vs stake concentration, so it keeps the flat dTAO
+    # constants (see simulate.py). Still useful for the planned economics facet.
+    alpha_div = sum(_f(a) or 0.0 for _, a in (getattr(info, "alpha_dividends_per_hotkey", []) or []))
+    validator_emission_frac = round(alpha_div / emission_alpha, 4) if emission_alpha else None
     stakes = sorted((_f(x) for x in (getattr(info, "total_stake", []) or []) if (_f(x) or 0) > 0), reverse=True)
     stake_gini = _gini(stakes)                                     # real concentration
     tot = sum(stakes) or 1.0
@@ -87,6 +93,7 @@ def fetch(netuid: int, network: str = _NETWORK) -> dict:
         "num_uids": num,
         "kappa": _f(getattr(info, "kappa", None)),
         "emission_gini": emission_gini,
+        "validator_emission_frac": validator_emission_frac,
         "stake_gini": stake_gini,
         "stake_top1": topf(1),
         "stake_top3": topf(3),

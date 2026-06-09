@@ -163,6 +163,12 @@ def gini(xs):
 # emission is split 18% subnet owner / 41% validators (dividends, by stake) / 41% miners (incentive, by
 # score). The scoring layer the sim models is only the 41% miner share; real per-uid concentration is
 # dominated by the stake-weighted dividend layer and the large registered-but-inactive tail.
+#
+# These are the flat protocol constants, kept on purpose. A per-subnet validator/miner split derived from
+# chain (chain.py's validator_emission_frac, shrunk toward the 50/50 prior) was implemented and A/B-tested
+# over 148 subnets: it left the fit unchanged (effective-Gini r 0.750 -> 0.746, median 0.945 -> 0.946).
+# The split is second-order — stake concentration and the registered-uid tail dominate — and a single
+# metagraph snapshot of the dividend share is mid-epoch noisy, so the constants are retained.
 EMIT_OWNER, EMIT_VALIDATOR, EMIT_MINER = 0.18, 0.41, 0.41
 
 

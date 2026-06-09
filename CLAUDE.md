@@ -62,7 +62,8 @@ Phases complete and committed (see `docs/pipeline.md` — "The full picture" —
     ≈0). Modes: `--corpus`; `--attack` (best-response search + Goodhart field-gaming, guard-aware);
     `--calibrate` (scoring + effective Gini vs real emission Gini).
   - `tooling/chain.py`: REAL finney economics per netuid (recycle/burn/emission/kappa/stake-Gini/
-    top-bloc stake fractions/sybil_cost_ratio), cached in `vocab/chain-params.json` (~103 subnets warmed).
+    top-bloc stake fractions/sybil_cost_ratio/validator_emission_frac), cached in `vocab/chain-params.json`
+    (~103 subnets warmed). `cached()` is the cache-only accessor the sim uses (no live fetch).
   - `tooling/simulate_cadcad.py`: cadCAD Monte-Carlo; modes `--sweep-reg` (registration barrier threshold),
     `--temporal` (ramp-then-defect under EMA), `--yuma` (validator collusion on real stake + verified
     clipped-median consensus — finding: one validator with 55–88% stake exceeds κ on most subnets).
@@ -91,8 +92,11 @@ repo is the source of truth; referenced as the `incentive-schema` submodule in `
    (does the mechanism collapse to all-cheaters?) rather than one deviation; (b) the residual blocker is
    **per-subnet submission semantics** (`submission.<field>` is one stylized quality axis; needs a real
    validator — not closeable from the corpus). Also: promote `spec:` from `extensions` to a governed schema
-   field once ≥2× corpus instances use it. Possible refinement on the effective Gini: derive the
-   owner/validator/miner emission split per-subnet from chain rather than the dTAO constants (18/41/41).
+   field once ≥2× corpus instances use it. (Tried and rejected: a per-subnet emission split from chain —
+   `chain.py` now records `validator_emission_frac` — A/B'd neutral over 148 subnets (effective-Gini r
+   0.750→0.746); the validator/miner split is second-order vs stake concentration + the uid tail, and a
+   single snapshot is mid-epoch noisy, so the flat dTAO constants (18/41/41) are retained. A multi-epoch
+   average might carry signal a snapshot doesn't.)
 5. Full-subnet description — extend the IR to facets (chain_config/architecture/economics/health).
    `bittensor` is now installed and finney is reachable (`tooling/chain.py` is the adapter), so chain
    facets are now buildable.
