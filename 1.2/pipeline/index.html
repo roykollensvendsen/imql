@@ -5882,6 +5882,14 @@ incentive lever</strong> — only the winner-take-all / tournament family is rel
 of extreme concentration), while proportional-family methods are gameable unless guards and a real
 registration barrier hold. It is a structural red-flag screen, not a verdict — see the honest boundaries
 below.</p>
+<p><strong>Chain-grounded + Monte-Carlo.</strong> <code>tooling/chain.py</code> pulls <em>real</em> per-subnet economics from finney via
+bittensor — registration (recycle) cost, burn, emission, on-chain stake-Gini — cached for offline use, so
+the sybil barrier is no longer a stylized constant. <code>tooling/simulate_cadcad.py</code> runs the model as a
+<strong>cadCAD</strong> simulation across N Monte-Carlo trajectories (a verdict now reads "honest-dominant in X% of
+runs") and can <strong>sweep the registration barrier</strong> to find the threshold at which a mechanism flips
+sybil-resistant — then compare it to the subnet's <em>actual</em> on-chain barrier. E.g. apex (netuid 1) flips
+sybil-resistant at reg_cost ~2.0 but its real on-chain <code>sybil_cost_ratio</code> is 0.17 → economically
+sybil-vulnerable.</p>
 <h2 id="5-theory-why-this-framing-is-the-right-one">5. Theory — why this framing is the right one<a class="headerlink" href="#5-theory-why-this-framing-is-the-right-one" title="Permanent link">&para;</a></h2>
 <p>A focused, adversarially-verified literature pass (<code>reports/metric-language-research.md</code>) grounds the
 design in primary sources: describing the tail is a <strong>compressibility / MDL question, not an
@@ -5936,18 +5944,30 @@ construction — which the algebra already does.</p>
 </tr>
 <tr>
 <td><code>tooling/simulate.py</code></td>
-<td>incentive simulation</td>
+<td>incentive simulation (stylized, fast)</td>
 <td><code>simulate.py &lt;instance&gt;</code>, <code>--corpus</code></td>
+</tr>
+<tr>
+<td><code>tooling/chain.py</code></td>
+<td>real per-subnet economics from finney (cached)</td>
+<td><code>chain.py &lt;netuid&gt;</code>, <code>--warm</code></td>
+</tr>
+<tr>
+<td><code>tooling/simulate_cadcad.py</code></td>
+<td>cadCAD Monte-Carlo + chain-grounded sybil economics</td>
+<td><code>simulate_cadcad.py &lt;instance&gt; [--sweep-reg]</code></td>
 </tr>
 </tbody>
 </table>
 <h2 id="honest-boundaries">Honest boundaries<a class="headerlink" href="#honest-boundaries" title="Permanent link">&para;</a></h2>
 <ul>
 <li>The <strong>metric residual</strong> (<code>extern</code>, ~10% of the tail) is genuinely opaque — by design and by evidence.</li>
-<li>The <strong>simulator is stylized</strong>: no per-subnet submission schema, so a miner is an abstract
-  quality/effort/cheat profile and the registration cost is a fixed constant. The mechanism's <em>shape</em>
-  (which cheats its guards catch, how scores become weights, sybil economics) is faithful; the magnitudes
-  are not. Read it as triage, not proof.</li>
+<li>The <strong>simulator's economics are now chain-grounded</strong> (real registration cost, burn, stake-Gini from
+  finney) — that blocker is closed where the chain is reachable. <strong>But the submission semantics are still
+  stylized</strong>: there is no per-subnet schema for <em>what a miner actually delivers</em>, so a miner remains an
+  abstract quality/effort/cheat profile and <code>submission.&lt;field&gt;</code> is derived from one quality axis. The
+  mechanism's <em>shape</em> and <em>economics</em> are faithful; the per-field submission <em>content</em> is not. Read a
+  verdict as a strong, chain-grounded hypothesis — triage, not a proof of a runnable exploit.</li>
 <li>The <strong>theory</strong> conclusions are primary-sourced for the compressibility framing; the Bittensor /
   simulator-framework regions of the research remain partly unverified.</li>
 </ul>
