@@ -29,8 +29,8 @@ language was derived from **189 real subnets**, every one of which round-trips t
 
 -   :material-view-gallery: **[Examples](examples/index.md)**
 
-    All 189 corpus subnets, each lifted to IMML with a dataflow diagram — filter by archetype, language, or
-    burn status.
+    All 189 corpus subnets, each lifted to IMML with a dataflow diagram — browse by use case, or search by
+    name, primitive, or metric.
 
 </div>
 

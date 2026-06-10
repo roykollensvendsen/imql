@@ -38,6 +38,17 @@ for p in INSTANCE_PATHS:
         d["__path"] = p
         IRS.append(d)
 
+# Curated use-case tags for the gallery (vocab/use-case-tags.yaml is the source of truth; the heuristic
+# only seeds it). Falls back gracefully to "other" when a subnet isn't tagged.
+_TAGS = yaml.safe_load((ROOT / "vocab" / "use-case-tags.yaml").read_text()) or {}
+USE_LABELS = _TAGS.get("labels", {})
+USE_ASSIGN = _TAGS.get("assignments", {})
+
+
+def use_case(stem: str) -> str:
+    """Display label for a subnet's primary use-case tag."""
+    return USE_LABELS.get(USE_ASSIGN.get(stem, "other"), "Other / general")
+
 
 def w(path: str, text: str):
     with mkdocs_gen_files.open(path, "w") as f:
@@ -267,13 +278,14 @@ def gen_grammar():
 # 4. EXAMPLES GALLERY (189, via lift)
 # =========================================================================== #
 def gen_examples():
-    by_shape = defaultdict(list)
+    by_use = defaultdict(list)
     rows = []
     for ir in IRS:
         sub = ir.get("subnet") or {}
         repo = sub.get("owner_repo") or ir["__path"].stem
         stem = ir["__path"].stem
         shape = (ir.get("composition") or {}).get("shape") or "?"
+        usecase = use_case(stem)
         lang = sub.get("implementation_lang") or "?"
         status = ir.get("mechanism_status") or "unknown"
         name = sub.get("name") or repo
@@ -292,6 +304,7 @@ def gen_examples():
                 f"| | |\n|---|---|",
                 f"| Subnet | `{repo}` |",
                 f"| netuid | {netuid} |",
+                f"| Use case | {usecase} |",
                 f"| Archetype | `{shape}` |",
                 f"| Language | `{lang}` |",
                 f"| Mechanism status | `{status}` |",
@@ -309,25 +322,31 @@ def gen_examples():
                 *(f"    {ln}" for ln in ir_yaml.splitlines()),
                 "    ```\n"]
         w(f"examples/{stem}.md", "\n".join(page))
-        by_shape[shape].append((name, stem))
-        rows.append((name, netuid, shape, lang, status, stem))
+        by_use[usecase].append((name, stem))
+        rows.append((name, netuid, usecase, shape, lang, status, stem))
 
     # index with a sortable-ish table
     idx = [f"# Examples\n",
            f"All **{len(IRS)}** corpus subnets, each reverse-engineered into the IR and lifted to IMML. "
-           f"Grouped in the nav by archetype. Use search to filter by name, primitive, or metric.\n",
-           "\n| subnet | netuid | archetype | lang | status |",
-           "|---|---|---|---|---|"]
-    for name, netuid, shape, lang, status, stem in sorted(rows, key=lambda r: r[0].lower()):
+           f"Grouped in the nav by **use case**. Use search to filter by name, primitive, or metric.\n",
+           "\n| subnet | netuid | use case | archetype | lang | status |",
+           "|---|---|---|---|---|---|"]
+    for name, netuid, usecase, shape, lang, status, stem in sorted(rows, key=lambda r: r[0].lower()):
         idx.append(f"| [{name}]({stem}.md) | {netuid if netuid is not None else ''} | "
-                   f"`{shape}` | {lang} | {status} |")
+                   f"{usecase} | `{shape}` | {lang} | {status} |")
     w("examples/index.md", "\n".join(idx))
 
-    # nav (grouped by archetype) via a literate-nav SUMMARY for the examples dir
+    # nav (grouped by use case) via a literate-nav SUMMARY for the examples dir. Group order follows the
+    # legend in vocab/use-case-tags.yaml, with any extra labels appended; empty groups are skipped.
+    order = list(USE_LABELS.values()) or sorted(by_use)
+    seen = set()
     nav = ["- [Gallery](index.md)"]
-    for shape in sorted(by_shape):
-        nav.append(f"- {shape}")
-        for name, stem in sorted(by_shape[shape], key=lambda x: x[0].lower()):
+    for label in order + sorted(by_use):
+        if label in seen or label not in by_use:
+            continue
+        seen.add(label)
+        nav.append(f"- {label}")
+        for name, stem in sorted(by_use[label], key=lambda x: x[0].lower()):
             nav.append(f"    - [{name}]({stem}.md)")
     w("examples/SUMMARY.md", "\n".join(nav) + "\n")
 
