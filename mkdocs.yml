@@ -6,8 +6,8 @@ site_dir: site
 # pulled in via pymdownx.snippets; they are not pages, so keep them out of the built site / nav.
 exclude_docs: |
   _snippets/
-repo_url: https://github.com/fx-integral/academia
-repo_name: academia
+repo_url: https://github.com/roykollensvendsen/imml
+repo_name: roykollensvendsen/imml
 
 extra_css:
   - assets/custom.css
@@ -78,6 +78,6 @@ extra:
     default: latest
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/fx-integral/academia
+      link: https://github.com/roykollensvendsen/imml
 
 # Nav lives in docs/SUMMARY.md (literate-nav); generated sections append their own SUMMARY fragments.
