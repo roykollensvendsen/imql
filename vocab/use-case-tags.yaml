@@ -1,8 +1,7 @@
 # Use-case tags for the example gallery (consumed by docs/gen/build.py).
 #
-# One PRIMARY use-case tag per corpus subnet. SEEDED by a keyword heuristic over
-# task.summary and meant to be HUMAN-CURATED — correct any assignment freely; THIS
-# file is the source of truth, not the heuristic. Governed like the rest of vocab/.
+# One PRIMARY use-case tag per corpus subnet. Hand-curated (seeded by a heuristic, then
+# reviewed against every subnet's task summary). THIS file is the source of truth.
 #
 # Closed tag set (key: gallery label):
 labels:
@@ -19,27 +18,15 @@ labels:
   other: Other / general
 
 # stem -> tag.  Grouped by tag for review; order is irrelevant to the build.
-# Trailing comment is the subnet name. Scan each group and move any outlier.
 assignments:
-  # --- Prediction & trading (32) ---
+  # --- Prediction & trading (18) ---
   Barbariandev__MANTIS:                                 prediction_trading         # MANTIS
   CandlesTAO__candles:                                  prediction_trading         # Candles Subnet
-  Datura-ai__compute-subnet:                            prediction_trading         # Compute Subnet (Lium.io)
-  Datura-ai__lium-io:                                   prediction_trading         # Lium / Compute Subnet (Datura)
-  Djinn-Inc__djinn:                                     prediction_trading         # Djinn Protocol
   EfficientFrontier-SignalPlus__EfficientFrontier:      prediction_trading         # EfficientFrontier-SignalPlus
-  GraphiteAI__Graphite-Subnet:                          prediction_trading         # Graphite
-  Orpheus-AI__Zeus:                                     prediction_trading         # Zeus — Environmental Forecasting Subnet
-  Rich-Kids-of-TAO__rkt-subnet:                         prediction_trading         # Rich Kids of TAO
-  SN98-ForeverMoney__forever-money:                     prediction_trading         # SN98 ForeverMoney
-  TensorUSD__subnet:                                    prediction_trading         # TensorUSD Subnet
   amedeo-gigaver__infinite_games:                       prediction_trading         # Infinite Games
   astridintelligence__sn-127:                           prediction_trading         # Astrid (SN-127) Arena Trading Validator
-  backend-developers-ltd__InfiniteHash:                 prediction_trading         # InfiniteHash (subnet auction incentive system)
-  bitrecs__bitrecs-subnet:                              prediction_trading         # Bitrecs
   coinmetrics__precog:                                  prediction_trading         # CoinMetrics Precog
   korapilot-ai__sn71-kora:                              prediction_trading         # Kora, AI trading agent
-  manifold-inc__targon:                                 prediction_trading         # Targon
   mobiusfund__investing:                                prediction_trading         # Investing - Decentralized AUM
   mobiusfund__staking:                                  prediction_trading         # Investing - Decentralized AUM
   mode-network__synth-subnet:                           prediction_trading         # Synth Subnet
@@ -48,40 +35,31 @@ assignments:
   sparket-ai__sparket-ai:                               prediction_trading         # Sparket Subnet
   sportstensor__sn41:                                   prediction_trading         # Sportstensor
   taos-im__sn-79:                                       prediction_trading         # taos ☯ Intelligent Markets
+  taoshidev__proprietary-trading-network:               prediction_trading         # Vanta Network (Proprietary Trading Network / P
   taoshidev__vanta-network:                             prediction_trading         # Vanta Network (formerly Proprietary Trading Ne
-  tigerinvests-com__sn107-alpha:                        prediction_trading         # ALPHA — Company Intelligence / Verifiable On-C
-  tplr-ai__basilica:                                    prediction_trading         # Basilica
-  v0idai__SN106:                                        prediction_trading         # SN106
   wahoo-predict__wahoot:                                prediction_trading         # Wahooτ (Wahoot)
-  xpenlab__taolend:                                     prediction_trading         # TaoLend
-  # --- LLM & language (10) ---
+  # --- LLM & language (14) ---
   CheckerChain__checkerchain-subnet:                    llm_language               # CheckerChain SN87 — AI-powered trustless crypt
   DendriteHQ__SOMA:                                     llm_language               # SOMA
-  NuanceNetwork__Nuance:                                llm_language               # Nuance
+  LogicNet-Subnet__LogicNet:                            llm_language               # LogicNet
+  SentiVerse-AI__soulx:                                 llm_language               # SoulX - The Sentient NPC Protocol
+  StorynetAI__storynet-subnet:                          llm_language               # StoryNet Subnet
+  babelbit__babelbit_subnet:                            llm_language               # Babelbit
+  bitrecs__bitrecs-subnet:                              llm_language               # Bitrecs
   bitrecs__bitrecs-v2:                                  llm_language               # Bitrecs V2
+  compelle__compelle-validator:                         llm_language               # Compelle
   condenses__neural-condense-subnet:                    llm_language               # Neural Condense Subnet (Decentralized Text Com
-  entrius__allways:                                     llm_language               # Allways
   frkrueger__bittensor-brain-subnet:                    llm_language               # Bittensor Brain Subnet
-  leadpoet__leadpoet:                                   llm_language               # Leadpoet
-  openevolai__evolai:                                   llm_language               # EvolAI
+  macrocosm-os__apex:                                   llm_language               # Apex (Subnet 1)
+  macrocosm-os__prompting:                              llm_language               # Subnet 1: Apex
   shiftlayer-llc__brainplay-subnet:                     llm_language               # Brainplay
-  # --- Media generation (21) ---
+  # --- Media generation (11) ---
   404-Repo__404-gen-subnet:                             media_generation           # 404-GEN Competition System
-  CortexLM__platform:                                   media_generation           # Platform (PlatformNetwork multi-challenge)
+  404-Repo__three-gen-subnet:                           media_generation           # 404-GEN (three-gen-subnet)
   SocialTensor__SocialTensorSubnet:                     media_generation           # NicheImage (SocialTensor)
-  autoppia__autoppia_web_agents_subnet:                 media_generation           # Web Agents Subnet (Autoppia / Infinite Web Are
-  bitcast-network__bitcast:                             media_generation           # Bitcast — The Decentralized Creator Economy
-  chutesai__chutes:                                     media_generation           # Chutes (chutes.ai)
   goneuralai__neural-subnet:                            media_generation           # NeuralAI (3D Asset Generator)
-  gopher-lab__subnet-42:                                media_generation           # Subnet 42 (Gopher)
-  gradients-ai__G.O.D:                                  media_generation           # Gradients on Demand (G.O.D)
-  latent-to__cacheon:                                   media_generation           # Cacheon (SN14)
-  manifold-inc__hone:                                   media_generation           # Hone (ARC-AGI-2 Benchmarking)
-  omegalabsinc__omegalabs-bittensor-subnet:             media_generation           # OMEGA Labs Any-to-Any / Multimodal Dataset (SN
-  rayonlabs__chutes:                                    media_generation           # Chutes
   reboot-org__reboot-subnet:                            media_generation           # Reboot Subnet (Robotics)
   subnet99__Neza:                                       media_generation           # Neza
-  swarm-subnet__swarm:                                  media_generation           # Swarm — Autonomous Drone Navigation
   talkheadai__talkhead-subnet:                          media_generation           # TalkHead Subnet
   vidaio-subnet__vidaio-subnet:                         media_generation           # Vidaio Subnet
   vocence-78__vocence:                                  media_generation           # Vocence
@@ -89,85 +67,104 @@ assignments:
   womboai__edge-maxxing:                                media_generation           # WOMBO EdgeMaxxing
   # --- Agents & code (24) ---
   AlphaCoreBittensor__alphacore:                        agents_code                # AlphaCore
+  Aurelius-Protocol__Aurelius-Protocol:                 agents_code                # Aurelius Protocol
   Aurelius-Protocol__aurelius-whitepaper:               agents_code                # Aurelius
   Eastworld-AI__eastworld-subnet:                       agents_code                # Eastworld
   ORO-AI__oro:                                          agents_code                # ORO
   OpenGradient__BitQuant-Subnet:                        agents_code                # BitQuant Subnet
   RedTeamSubnet__RedTeam:                               agents_code                # RedTeam Subnet (by Innerworks)
   SN-Hermes__hermes-subnet:                             agents_code                # SubQuery Hermes Subnet
-  TrishoolAI__trishool-subnet:                          agents_code                # Trishool Subnet
+  TatsuProject__ChipForge_SN84:                         agents_code                # ChipForge
+  autoppia__autoppia_web_agents_subnet:                 agents_code                # Web Agents Subnet (Autoppia / Infinite Web Are
   brokespace__code:                                     agents_code                # SWE-Rizzo (Gen42 / Code)
   entrius__gittensor:                                   agents_code                # Gittensor
-  fx-integral__academia:                                agents_code                # Academia
   harnyx__harnyx:                                       agents_code                # Harnyx
   hashi115__hashichain:                                 agents_code                # HashiChain
-  helionlink__Chi:                                      agents_code                # Chi
+  manifold-inc__hone:                                   agents_code                # Hone (ARC-AGI-2 Benchmarking)
   qbittensor-labs__enigma:                              agents_code                # Enigma
   ridgesai__ridges:                                     agents_code                # Ridges
-  subnet108__internet-of-intelligence:                  agents_code                # SN108 Internet of Intelligence (Agent Launchpa
   subnet112__minotaur_subnet:                           agents_code                # Minotaur — Agentic Intent Execution Platform
   sundae-bar__bittensor-subnet:                         agents_code                # SN121 — sundae_bar Generalist Agent
-  sundae-bar__sundae_bar-bittensor-subnet:              agents_code                # sundae_bar (SN121)
   taoagents__agentao:                                   agents_code                # Ridges AI (Agentao)
   tensorplex-labs__dojo:                                agents_code                # Dojo v2
+  tigerinvests-com__sn107-alpha:                        agents_code                # ALPHA — Company Intelligence / Verifiable On-C
   trajectoryRL__trajectoryRL:                           agents_code                # TrajectoryRL
   unarbos__tau:                                         agents_code                # tau (unarbos)
-  # --- Model training (13) ---
+  # --- Model training (21) ---
+  AffineFoundation__affine:                             model_training             # Affine
   FLock-io__FLock-subnet:                               model_training             # FLock OFF
   KMFODA__DistributedTraining:                          model_training             # Distributed Training Subnet
   SILX-LABS__QUASAR-SUBNET:                             model_training             # Quasar
+  coldint__coldint_validator:                           model_training             # CoLaborative Distributed INcentivized Training
   deval-core__De-Val:                                   model_training             # de_val
+  gradients-ai__G.O.D:                                  model_training             # Gradients on Demand (G.O.D)
   macrocosm-os__finetuning:                             model_training             # Finetuning (Subnet 37)
   macrocosm-os__iota:                                   model_training             # IOTA (Incentivized Orchestrated Training Archi
   macrocosm-os__pretraining:                            model_training             # Pretraining (SN9)
   nepher-ai__nepher-subnet:                             model_training             # Nepher Robotics Subnet
+  neuronlogic__NASChain:                                model_training             # NASChain
   omegalabsinc__omegalabs-anytoany-bittensor:           model_training             # OMEGA Labs Any-to-Any (SN21)
+  one-covenant__crusades:                               model_training             # Templar Crusades
+  openevolai__evolai:                                   model_training             # EvolAI
   rayonlabs__G.O.D:                                     model_training             # Gradients on Demand (G.O.D)
+  swarm-subnet__swarm:                                  model_training             # Swarm — Autonomous Drone Navigation
   synapsec-ai__soundsright-subnet:                      model_training             # SoundsRight
+  tplr-ai__grail:                                       model_training             # GRAIL
   tplr-ai__templar:                                     model_training             # templar (τemplar)
   unarbos__distil:                                      model_training             # Distil — SN97 (GLM-5 / Kimi-K2.6 distillation)
-  # --- Compute & serving (23) ---
-  AffineFoundation__affine:                             compute_serving            # Affine
+  # --- Compute & serving (31) ---
   Beam-Network__beam:                                   compute_serving            # BEAM
+  Datura-ai__compute-subnet:                            compute_serving            # Compute Subnet (Lium.io)
+  Datura-ai__lium-io:                                   compute_serving            # Lium / Compute Subnet (Datura)
+  Handshake58__HS58:                                    compute_serving            # Handshake58 (HS58)
   HashTensor__HashTensor_Subnet:                        compute_serving            # HashTensor (Subnet 16)
   Level114__level114-subnet:                            compute_serving            # Level114
-  LogicNet-Subnet__LogicNet:                            compute_serving            # LogicNet
   PolarisCloud-AI__polarisvalidator:                    compute_serving            # Polaris Cloud Subnet
-  SentiVerse-AI__soulx:                                 compute_serving            # SoulX - The Sentient NPC Protocol
-  TatsuProject__ChipForge_SN84:                         compute_serving            # ChipForge
   backend-developers-ltd__ComputeHorde:                 compute_serving            # ComputeHorde
+  backend-developers-ltd__InfiniteHash:                 compute_serving            # InfiniteHash (subnet auction incentive system)
   beyond-stake__tpn-subnet:                             compute_serving            # TPN - Tao Private Network
+  bigideaafrica__polaris:                               compute_serving            # Polaris (Polaris Node Manager / Compute)
   byteleapai__byteleap-Miner:                           compute_serving            # ByteLeap Compute Network (Miner)
-  coldint__coldint_validator:                           compute_serving            # CoLaborative Distributed INcentivized Training
-  creativebuilds__sn77:                                 compute_serving            # Subnet77 Liquidity Auction & Voting
+  chutesai__chutes:                                     compute_serving            # Chutes (chutes.ai)
+  dogelayer-ai__dogelayer:                              compute_serving            # DogeLayer
   eclipsevortex__SubVortex:                             compute_serving            # SubVortex
   inference-labs-inc__omron-subnet:                     compute_serving            # Omron / Subnet 2 (Proof of Inference)
   inference-labs-inc__subnet-2:                         compute_serving            # Subnet 2 — Proof of Inference (Inference Labs)
-  patrol_subnet:                                        compute_serving            # Patrol
+  latent-to__cacheon:                                   compute_serving            # Cacheon (SN14)
+  latent-to__taohash:                                   compute_serving            # TAOHash
+  manifold-inc__targon:                                 compute_serving            # Targon
   qbittensor-labs__quantum-compute:                     compute_serving            # Quantum Compute
+  rayonlabs__chutes:                                    compute_serving            # Chutes
+  subnet108__internet-of-intelligence:                  compute_serving            # SN108 Internet of Intelligence (Agent Launchpa
   taofu-labs__tpn-subnet:                               compute_serving            # TPN - Tao Private Network
+  taoillium__bittensor-subnet-taoillium:                compute_serving            # Bittensor Subnet Taoillium
   tensorclaw__tensorclaw:                               compute_serving            # Tensorclaw
   thenervelab__thebrain:                                compute_serving            # Hippius (thebrain / theNerveLab)
+  tplr-ai__basilica:                                    compute_serving            # Basilica
   unconst__ConstantinopleFront:                         compute_serving            # Constantinople
+  unitone-labs__FlameWire:                              compute_serving            # FlameWire
   verathos-ai__verathos:                                compute_serving            # Verathos
-  # --- Data & retrieval (8) ---
+  # --- Data & retrieval (15) ---
+  BitKoopLabs__BitKoop:                                 data_retrieval             # BitKoop
+  Djinn-Inc__djinn:                                     data_retrieval             # Djinn Protocol
   OpenKaito__openkaito:                                 data_retrieval             # OpenKaito (Decentralized Embedding, Bittensor 
-  babelbit__babelbit_subnet:                            data_retrieval             # Babelbit
+  afterpartyai__bittensor-conversation-genome-project:  data_retrieval             # ReadyAI / Conversation Genome Project
   datura-ai__desearch:                                  data_retrieval             # Desearch (SN22)
+  dfusionai__Vericore:                                  data_retrieval             # Vericore
+  gopher-lab__subnet-42:                                data_retrieval             # Subnet 42 (Gopher)
+  leadpoet__leadpoet:                                   data_retrieval             # Leadpoet
   macrocosm-os__data-universe:                          data_retrieval             # Data Universe (SN13)
+  masa-finance__masa-bittensor:                         data_retrieval             # Masa Subnet 42 (Real-Time Data Scraping)
   masa-finance__subnet-42:                              data_retrieval             # Subnet 42 (Gopher / Masa)
-  one-covenant__crusades:                               data_retrieval             # Templar Crusades
+  omegalabsinc__omegalabs-bittensor-subnet:             data_retrieval             # OMEGA Labs Any-to-Any / Multimodal Dataset (SN
   oneoneone-io__subnet-111:                             data_retrieval             # oneoneone (subnet 111)
+  patrol_subnet:                                        data_retrieval             # Patrol
   resi-labs-ai__resi:                                   data_retrieval             # RESI - Real Estate Super Intelligence
-  # --- Detection & classification (23) ---
-  404-Repo__three-gen-subnet:                           detection_classification   # 404-GEN (three-gen-subnet)
+  # --- Detection & classification (17) ---
   AlveusLabs__SN94-BitSota:                             detection_classification   # BitSota
-  Aurelius-Protocol__Aurelius-Protocol:                 detection_classification   # Aurelius Protocol
   BitMind-AI__bitmind-subnet:                           detection_classification   # GAS — Generative Adversarial Subnet (BitMind)
   Bitsec-AI__sandbox:                                   detection_classification   # Bitsec Subnet v2 (Security Agent)
   Bitsec-AI__subnet:                                    detection_classification   # Bitsec Subnet
-  Delta-Compute__infinitevibe:                          detection_classification   # InfiniteVibe (TensorFlix)
-  General-Tao-Ventures__cartha-cli:                     detection_classification   # Cartha
   It-s-AI__llm-detection:                               detection_classification   # It's AI - Decentralized AI Detection
   MIAOAI-Subnet__MIAOAI_SUBNET:                         detection_classification   # MiaoAI
   Poker44__Poker44-subnet:                              detection_classification   # Poker44 — Poker Bot Detection Subnet
@@ -175,49 +172,50 @@ assignments:
   TatsuProject__Document_Understanding_Subnet:          detection_classification   # Docs-Insights (Document Understanding Subnet)
   Team-Rizzo__talisman-ai:                              detection_classification   # Talisman AI (SN45) — Perception Subnet for On-
   TrishoolAI__trishool-phase2:                          detection_classification   # Trishool Subnet Phase 2 (Alignet / AI guard mo
-  bigideaafrica__polaris:                               detection_classification   # Polaris (Polaris Node Manager / Compute)
-  compelle__compelle-validator:                         detection_classification   # Compelle
+  TrishoolAI__trishool-subnet:                          detection_classification   # Trishool Subnet
   gutenberg-team__fakenews-subnet:                      detection_classification   # FakeNews Subnet
   natixnetwork__streetvision-subnet:                    detection_classification   # Natix StreetVision (SN72)
-  neuronlogic__NASChain:                                detection_classification   # NASChain
   safe-scan-ai__cancer-ai:                              detection_classification   # SAFE SCAN (cancer-ai)
   score-technologies__score-vision:                     detection_classification   # Score Vision (SN44 / GSR)
-  taoshidev__proprietary-trading-network:               detection_classification   # Vanta Network (Proprietary Trading Network / P
-  # --- Science & specialized (9) ---
+  yanez-compliance__MIID-subnet:                        detection_classification   # MIID Subnet 54 - Identity Testing Network
+  # --- Science & specialized (7) ---
   BetterTherapy__BetterTherapy-Subnet:                  science_specialized        # BetterTherapy
-  Handshake58__HS58:                                    science_specialized        # Handshake58 (HS58)
+  Orpheus-AI__Zeus:                                     science_specialized        # Zeus — Environmental Forecasting Subnet
   genomesio__subnet-niome:                              science_specialized        # NIOME (Privacy-Safe Genomic Intelligence)
   macrocosm-os__folding:                                science_specialized        # Mainframe (Folding / Protein-Folding, SN25)
   macrocosm-os__mainframe:                              science_specialized        # Mainframe (Subnet 25, formerly Protein-Folding
   metanova-labs__nova:                                  science_specialized        # NOVA
   minos-protocol__minos_subnet:                         science_specialized        # Minos
-  taoillium__bittensor-subnet-taoillium:                science_specialized        # Bittensor Subnet Taoillium
-  unitone-labs__FlameWire:                              science_specialized        # FlameWire
-  # --- Social & engagement (0 seeded; assign here if any belong) ---
-  # --- Other / general (26) ---
-  BitKoopLabs__BitKoop:                                 other                      # BitKoop
+  # --- Social & engagement (4) ---
+  Delta-Compute__infinitevibe:                          social_engagement          # InfiniteVibe (TensorFlix)
+  FirstTensorLabs__BitAds:                              social_engagement          # BitAds
+  NuanceNetwork__Nuance:                                social_engagement          # Nuance
+  bitcast-network__bitcast:                             social_engagement          # Bitcast — The Decentralized Creator Economy
+  # --- Other / general (27) ---
   Casino-TAO__casino-tao-subnet:                        other                      # Casino TAO
-  FirstTensorLabs__BitAds:                              other                      # BitAds
+  CortexLM__platform:                                   other                      # Platform (PlatformNetwork multi-challenge)
+  General-Tao-Ventures__cartha-cli:                     other                      # Cartha
   General-Tao-Ventures__cartha-validator:               other                      # Cartha
+  GraphiteAI__Graphite-Subnet:                          other                      # Graphite
   NeuralNexusII__NullUntilBoot:                         other                      # NullUntilBoot
   Oceans-Subnet__oceans_subnet:                         other                      # Oceans Subnet 66
   PlatformNetwork__platform:                            other                      # Platform (PlatformNetwork)
-  StorynetAI__storynet-subnet:                          other                      # StoryNet Subnet
+  Rich-Kids-of-TAO__rkt-subnet:                         other                      # Rich Kids of TAO
+  SN98-ForeverMoney__forever-money:                     other                      # SN98 ForeverMoney
   Sturdy-Subnet__sturdy-subnet:                         other                      # Swap (formerly Sturdy Subnet)
   Swap-Subnet__swap-subnet:                             other                      # Swap
   TAO-Colosseum__tao-colosseum-subnet:                  other                      # TAO Colosseum
-  afterpartyai__bittensor-conversation-genome-project:  other                      # ReadyAI / Conversation Genome Project
-  dfusionai__Vericore:                                  other                      # Vericore
-  dogelayer-ai__dogelayer:                              other                      # DogeLayer
+  TensorUSD__subnet:                                    other                      # TensorUSD Subnet
+  creativebuilds__sn77:                                 other                      # Subnet77 Liquidity Auction & Voting
+  entrius__allways:                                     other                      # Allways
+  fx-integral__academia:                                other                      # Academia
   fx-integral__merit:                                   other                      # Merit
-  latent-to__taohash:                                   other                      # TAOHash
-  macrocosm-os__apex:                                   other                      # Apex (Subnet 1)
-  macrocosm-os__prompting:                              other                      # Subnet 1: Apex
-  masa-finance__masa-bittensor:                         other                      # Masa Subnet 42 (Real-Time Data Scraping)
+  helionlink__Chi:                                      other                      # Chi
   mobiusfund__etf:                                      other                      # HODL - The Alpha Exchange and ETF Subnet
   opentensor__bittensor:                                other                      # Bittensor SDK (core library, not a subnet)
+  sundae-bar__sundae_bar-bittensor-subnet:              other                      # sundae_bar (SN121)
   taonado__taonado-cash:                                other                      # Taonado Cash
   taostat__blockmachine:                                other                      # BlockMachine
   toptensor__CliqueAI:                                  other                      # CliqueAI
-  tplr-ai__grail:                                       other                      # GRAIL
-  yanez-compliance__MIID-subnet:                        other                      # MIID Subnet 54 - Identity Testing Network
+  v0idai__SN106:                                        other                      # SN106
+  xpenlab__taolend:                                     other                      # TaoLend
